@@ -66,11 +66,17 @@ class Permuter:
             st.stop.set()
 
     def candidates(self, proj, limit: int = 20) -> list:
+        from . import assistance
+
         return [r for r in self.net.store.all(
             "SELECT * FROM functions WHERE project_id=? AND status='open' AND best_source IS NOT NULL "
             "AND best_score > 0 AND best_score <= n_insns * 100 * ? AND n_insns <= 400 "
+            "AND json_extract(meta,'$.assistance.fingerprint')=? "
+            "AND COALESCE(json_extract(meta,'$.assistance.summary'),'')!='' "
+            "AND COALESCE(json_extract(meta,'$.assistance.fallback_reason'),'')!='' "
             "AND id NOT IN (SELECT function_id FROM claims) ORDER BY CAST(best_score AS REAL) / (n_insns * 100) LIMIT ?",
-            proj["id"], NEAR, limit * 4) if self._turns.get(r["id"], 0) < MAX_TURNS][:limit]
+            proj["id"], NEAR, assistance.fingerprint(self.net, proj), limit * 4) if self._turns.get(r["id"], 0) < MAX_TURNS
+            and assistance.reviewed(self.net, proj, r, permutation=True)][:limit]
 
     def _loop(self, slug: str, st: State) -> None:
         agent, _ = self.net.local_agent("permuter")
@@ -115,6 +121,12 @@ class Permuter:
             db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
 
     def _permute(self, agent, proj, fn, st: State) -> None:
+        from . import assistance
+
+        proj = self.net.project_row(proj["slug"])
+        fn = self.net._function(fn["name"], proj["slug"])
+        if not assistance.reviewed(self.net, proj, fn, permutation=True):
+            return
         if not self._hold(agent, fn):
             return
         st.current, st.tried = fn["name"], st.tried + 1

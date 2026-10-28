@@ -24,7 +24,8 @@ When the user wants a game decompiled:
    (ROM, disc image or program). Ask the user to confirm it is their own legally obtained copy first, and never
    download games: decomp.wtf only works with the user's own copy.
 2. open_gui() so the user can watch: the map lights up as functions match.
-3. Work: claim_function -> compile_and_diff, repeat (guide("workflow") has the loop). For a big game, also
+3. Work: claim_function -> discover_assistance -> read relevant skills and findings -> focused analysis ->
+   record_assistance -> compile_and_diff (guide("workflow") has the loop). For a big game, also
    start_agents(count) to add helper agents working in parallel; progress() shows everyone's work.
 4. export_project() writes a decomp project that rebuilds the game byte for byte: the base for ports and mods.
 Report progress in terms of functions and % of code matched. The game's code is the user's: never publish it.

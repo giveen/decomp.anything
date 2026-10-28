@@ -1124,10 +1124,43 @@ class RomNetwork(Network):
                                f"{', '.join(sorted(rea.ANALYSIS_ALLOWED))}")
         try:
             client = rea.analysis_client(cfg["target"], cfg.get("provider") or "")
-            value = client.call(tool, arguments or {}, timeout=1800, any_tool=True)
+            record = client.call(tool, arguments or {}, timeout=1800, any_tool=True, envelope=True)
         except rea.ReaError as e:
             raise NetworkError(str(e)) from e
-        return analysis.pretty(value)
+        return analysis.pretty({"evidence": rea.evidence_metadata(record), "result": rea.unwrap(record)})
+
+    def agent_rea_tool(self, slug: str, tool: str, arguments: dict | None = None) -> str:
+        proj = self.project_row(slug)
+        if self.is_analysis(proj):
+            return self.analysis_tool(slug, tool, arguments)
+        cfg = self.cfg(proj)
+        if cfg.get("platform") not in X86_PLATFORMS or self.fork_slug(slug):
+            raise NetworkError("direct REA tools need an analysis or Windows/Linux matching project")
+        if tool not in rea.NATIVE_ALLOWED:
+            raise NetworkError(f"REA tool {tool!r} isn't available to agents")
+        target = {"path": str(Path(proj["root"]) / cfg["rom"]["program"])}
+        try:
+            client = rea.agent_client(target, native=True, connect=True)
+            record = client.call(tool, arguments or {}, timeout=1800, any_tool=True, envelope=True)
+        except rea.ReaError as e:
+            raise NetworkError(str(e)) from e
+        return analysis.pretty({"evidence": rea.evidence_metadata(record), "result": rea.unwrap(record)})
+
+    def discover_assistance(self, slug: str, query: str = "", function: str = "", connect: bool = False,
+                            refresh: bool = False) -> str:
+        from . import assistance
+
+        return json.dumps(assistance.discover(self, slug, query, function, connect, refresh), ensure_ascii=False)
+
+    def read_skill(self, slug: str, skill: str) -> str:
+        from . import assistance
+
+        return assistance.read_skill(self, slug, skill)
+
+    def record_assistance(self, agent: Agent, slug: str, function: str, summary: str, fallback_reason: str = "") -> str:
+        from . import assistance
+
+        return assistance.record(self, agent, slug, function, summary, fallback_reason)
 
     def analysis_search(self, slug: str, query: str) -> str:
         _, cfg = self.analysis_cfg(slug)

@@ -599,6 +599,14 @@ The stable merge check is **CI passed**. It succeeds only when every required jo
 complete Python matrix. PR updates cancel superseded PR runs; branch pushes run CI on `main` only, avoiding
 duplicate checks for the same PR. Dependabot proposes weekly updates to the pinned GitHub Actions.
 
+Agents use a knowledge-first work loop: `discover_assistance(query, function)` finds relevant bundled guides,
+skills, shared findings and approved REA tools with their live schemas. `read_skill(id)` loads that guidance;
+`record_assistance(function, summary, fallback_reason)` shares the review with the next agent. Add a skill folder's
+full path to the project's instructions to expose its `SKILL.md` files through the existing read-only reference
+boundary. Discovery reuses a connected REA session; `connect=true` explicitly requests a potentially cold import.
+CLI and built-in API agents receive the same MCP-derived tool schemas. Repeated compile trials require a current
+review, and the background permuter only considers reviewed functions with a recorded fallback reason.
+
 <details>
 <summary><b>Repository layout</b></summary>
 <br>

@@ -621,3 +621,16 @@ def test_builtin_agent_schemas_for_analysis():
     names = {t["function"]["name"] for t in api_tool_schemas(analysis=True)}
     assert {"complete_function", "rea_tool", "claim_function"} <= names
     assert "compile_and_diff" not in names and "edit_context" not in names
+
+
+def test_agent_discovery_round_trips_the_actual_mcp_catalog(fake):
+    client = rea.Client(fake)
+    try:
+        result = rea.agent_catalog(client, rea.NATIVE_ALLOWED)
+        names = {tool["name"] for tool in result["tools"]}
+        assert "analyze_function" in names
+        assert "open_binary" not in names and "install_adb_package" not in names
+        assert all(isinstance(tool["inputSchema"], dict) for tool in result["tools"])
+        assert rea.agent_catalog(client, rea.NATIVE_ALLOWED) == result
+    finally:
+        client.close()

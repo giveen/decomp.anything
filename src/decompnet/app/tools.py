@@ -6,6 +6,9 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from functools import cache
 from importlib import resources
 
 import anyio
@@ -40,6 +43,7 @@ GUIDES = {
     "aarch64": "AArch64 and Clang (Switch): registers, matching Clang output",
     "similarity": "finding similar functions and reusing matched code",
     "analysis": "REA analysis projects: reading a target, recording findings, tasks",
+    "rea": "knowledge-first REA discovery, actual tool schemas, provider limits and evidence",
 }
 
 # Guides worth reading first on each platform.
@@ -56,6 +60,9 @@ that compiles to exactly the same machine code; analysis projects read any binar
 Start with project_info. `search_facts` finds functions, strings, APIs and addresses with their callers;
 `list_subsystems` names the areas the imports and strings point at. Then claim_function. guide(topic) has know-how.
 Everything runs on the user's computer.
+Before hard manual work, discover_assistance(query, function) finds relevant skills, prior knowledge and REA tools.
+Read selected skills with read_skill; use actual advertised schemas, then record_assistance with what you learned.
+Refresh the investigation when stuck. Only use trial/permutation after relevant assistance is exhausted or unavailable.
 The target is the user's: never publish it or its code anywhere.
 """
 
@@ -215,13 +222,34 @@ def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: st
     batch of small ones."""
     strategy = strategy or ("finish" if net.fork_slug(slug) else "easiest")
     if not function and int(count or 1) > 1:
-        return net.claim_many(agent, slug, int(count), strategy)
+        text = net.claim_many(agent, slug, int(count), strategy)
+        return text + _claim_assistance(net, agent, slug, count)
     try:
-        return net.claim(agent, slug, function or None, strategy)
+        return net.claim(agent, slug, function or None, strategy) + _claim_assistance(net, agent, slug, 1)
     except NetworkError as e:
         if not function or not re.search(r"already matched|is hand-written assembly|is claimed by", str(e)):
             raise
-        return f"({e}. Here's the next free function instead.)\n\n" + net.claim(agent, slug, None, strategy)
+        return (f"({e}. Here's the next free function instead.)\n\n" + net.claim(agent, slug, None, strategy)
+                + _claim_assistance(net, agent, slug, 1))
+
+
+def _claim_assistance(net: RomNetwork, agent: Agent, slug: str, count: int) -> str:
+    proj = net.project_row(slug)
+    rows = net.store.all("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id "
+                         "WHERE c.agent_id=? AND f.project_id=? ORDER BY c.claimed_at DESC LIMIT ?",
+                         agent.id, proj["id"], max(1, min(int(count), 6)))
+    packet = ""
+    for row in rows:
+        result = net.discover_assistance(slug, function=row["name"])
+        if not packet:
+            packet = "\n\n### Relevant assistance\n" + result
+    return packet + _assistance_hint()
+
+
+def _assistance_hint() -> str:
+    return ("\n\nKnowledge first: discover_assistance(query=<the question>, function=<claimed name>) before guessing. "
+            "Read relevant skills, search prior findings, and use a focused REA tool if applicable. "
+            "record_assistance(function, summary, fallback_reason) shares the review before repeated trials or permutation.")
 
 
 def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: str) -> str:
@@ -230,6 +258,15 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
         return ("This is an analysis project: there is no compiler or original build. Read the work item with "
                 "get_function, go deeper with rea_tool, then complete_function(function, summary).")
     names = [n.strip() for n in function.split(",") if n.strip()]
+    from . import assistance
+
+    proj = net.project_row(slug)
+    for name in names:
+        fn = net._function(name, slug)
+        if fn["attempts"] >= 2 and not assistance.reviewed(net, proj, fn):
+            return (f"Knowledge review needed for {name} before more compile trials. "
+                    "Call discover_assistance(query=<remaining question>, function=<name>), read relevant skills or "
+                    "inspect evidence, then record_assistance(function, summary).")
     if len(names) <= 1:
         return net.compile_and_diff(agent, names[0] if names else function, source, slug)
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
@@ -243,10 +280,15 @@ def _rea_tool(net: RomNetwork, agent: Agent, slug: str, tool: str, arguments=Non
             return "error: arguments must be a JSON object"
     if not isinstance(arguments, dict):
         return "error: arguments must be a JSON object"
-    return net.analysis_tool(slug, tool, arguments)
+    return net.agent_rea_tool(slug, tool, arguments)
 
 
 HANDLERS: dict[str, Callable[..., str]] = {
+    "discover_assistance": lambda net, agent, slug, query="", function="", connect=False, refresh=False:
+        net.discover_assistance(slug, query, function, connect, refresh),
+    "read_skill": lambda net, agent, slug, skill: net.read_skill(slug, skill),
+    "record_assistance": lambda net, agent, slug, function, summary, fallback_reason="":
+        net.record_assistance(agent, slug, function, summary, fallback_reason),
     "project_info": lambda net, agent, slug: project_info(net, slug),
     "claim_function": lambda net, agent, slug, function="", strategy="", count=1:
         _claim(net, agent, slug, function, strategy, count),
@@ -295,12 +337,14 @@ HANDLERS: dict[str, Callable[..., str]] = {
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "retire_function",
-            "import_debug_info", "export_debug_info", "compare_version", "write_source"}
+            "import_debug_info", "export_debug_info", "compare_version", "write_source", "rea_tool",
+            "inspect_binary", "search_binary"}
 FORK_ONLY = {"edit_file", "file_status", "split_file"}
-ANALYSIS_ONLY = {"complete_function", "rea_tool", "read_artifact_entry"}
+ANALYSIS_ONLY = {"complete_function", "read_artifact_entry"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
                   "rea_tool", "read_artifact_entry", "write_source", "inspect_binary", "search_binary", "read_data",
-                  "list_functions", "add_note", "search_notes", "guide", "read_file", "search_code", "search_facts"}
+                  "list_functions", "add_note", "search_notes", "guide", "read_file", "search_code", "search_facts",
+                  "discover_assistance", "read_skill", "record_assistance"}
 
 
 def _hot_text(rows) -> str:
@@ -369,6 +413,26 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "project_info")
 
     @mcp.tool(meta=ALWAYS_LOAD)
+    async def discover_assistance(ctx: Context, query: str = "", function: str = "", connect: bool = False,
+                                  refresh: bool = False) -> str:
+        """Before hard manual work: find relevant skills, prior knowledge and read-only REA tools with actual schemas.
+        Pass the claimed function and the question you need answered. connect=true can start its REA session;
+        otherwise use existing sessions only. refresh=true reloads the live catalog and availability."""
+        return await run(ctx, "discover_assistance", query=query, function=function, connect=connect, refresh=refresh)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def read_skill(ctx: Context, skill: str) -> str:
+        """Read a bundled guide or a SKILL.md from this project's user-shared reference folders.
+        Use a skill id returned by discover_assistance; the same knowledge is available to CLI and API agents."""
+        return await run(ctx, "read_skill", skill=skill)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def record_assistance(ctx: Context, function: str, summary: str, fallback_reason: str = "") -> str:
+        """Record the guidance/evidence you checked after discover_assistance, including evidence IDs and limits.
+        A fallback_reason explains why bounded permutation is now appropriate. Shared as a function note."""
+        return await run(ctx, "record_assistance", function=function, summary=summary, fallback_reason=fallback_reason)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def claim_function(ctx: Context, function: str = "", strategy: str = "", count: int = 1) -> str:
         """Claim the next function to decompile (or a specific one by name or address).
 
@@ -410,10 +474,11 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def rea_tool(ctx: Context, tool: str, arguments: str = "{}") -> str:
-        """Analysis projects: run one read-only REA tool on the target (search_strings, search_procedures,
+        """Analysis and PC matching projects: run one read-only REA tool on the target (search_strings, search_procedures,
         analyze_function, xrefs, procedure_callers, procedure_callees, list_segments, read_bytes, inspect_native_api,
         batch_decompile, get_call_graph, trace_call_path, trace_feature, trace_native_values, search_bytes).
-        `arguments` is a JSON object; the answer comes back as text."""
+        Discover its actual schema with discover_assistance first. `arguments` is a JSON object string;
+        the answer includes evidence provenance and limitations when REA supplies them."""
         try:
             args = json.loads(arguments or "{}")
         except ValueError:
@@ -631,3 +696,18 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return "Call project_info first, then follow the decomp.anything work loop for up to " + count + " functions."
 
     return mcp
+
+
+@cache
+def _tool_specs() -> tuple[dict, ...]:
+    # Use the public MCP schema API in a separate thread, also when the caller already has an event loop.
+    server = build_mcp(None, lambda ctx: None)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        specs = executor.submit(anyio.run, server.list_tools).result()
+    return tuple({"type": "function", "function": {"name": t.name, "description": t.description or "",
+                                                    "parameters": t.input_schema}} for t in specs)
+
+
+def tool_schemas(fork: bool = False, analysis: bool = False) -> list[dict]:
+    names = set(tool_names(fork, analysis))
+    return deepcopy([t for t in _tool_specs() if t["function"]["name"] in names])
