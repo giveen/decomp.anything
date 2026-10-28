@@ -1205,7 +1205,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if not isinstance(args, dict):
             return fail(ValueError("arguments must be an object"))
         try:
-            why = await call(console.needs_confirm, tool)
+            why, connection_id = await call(console.prepare_call, tool)
         except ConsoleError as e:
             return fail(e)
         if why and data.get("confirm") is not True:
@@ -1215,7 +1215,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if job["kind"] == "rea" and job["state"] != "running" and time.time() - job["t"] > 600:
                 jobs.jobs.pop(jid, None)
                 jobs.done.pop(jid, None)
-        return JSONResponse({"job": jobs.start("rea", lambda log: console.call(tool, args, log))})
+        return JSONResponse({"job": jobs.start("rea", lambda log: console.call(tool, args, log, connection_id=connection_id))})
 
     @mcp.custom_route("/api/rea/stop", methods=["POST"])
     async def api_rea_stop(request: Request) -> Response:

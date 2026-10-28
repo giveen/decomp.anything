@@ -153,6 +153,7 @@ def test_answers_are_unwrapped_and_errors_read(fake):
             {"result": {"path": "/tmp/game.exe", "format": "elf", "architecture": "x86_64"}}
         assert client.call("procedure_pseudo_code", {"procedure": "0x1000"}).startswith("int sub_0x1000")
         assert client.call("procedure_pseudo_code", {"procedure": "0x1"}, envelope=True)["confidence"] == "observed"
+        assert client.server_info == {"name": "fake-rea", "version": "0"}
         with pytest.raises(rea.ReaError, match=r"^No app is open\. Call open_binary"):
             client.call("xrefs", {})
         assert [t["name"] for t in client.tools()][:2] == ["open_binary", "procedure_pseudo_code"]
@@ -264,6 +265,9 @@ def test_console_api_asks_before_tools_that_act(monkeypatch, fake, tmp_path):
     h = {"X-Decomp": "1"}
     assert client.get("/api/rea").json()["configured"] is True
     assert len(client.get("/api/rea/tools").json()) == 8
+    connection = client.get("/api/rea").json()["connection"]
+    assert connection["server"] == {"name": "fake-rea", "version": "0"}
+    assert connection["source"] == "DECOMP_REA" and connection["command"] == fake
     assert client.post("/api/rea/call", json={"tool": "open_binary", "arguments": {"path": "/x"}}).status_code == 403
     r = client.post("/api/rea/call", json={"tool": "install_adb_package", "arguments": {}}, headers=h)
     assert r.status_code == 409 and r.json()["confirm"]

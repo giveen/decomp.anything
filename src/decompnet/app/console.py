@@ -12,6 +12,7 @@ import json
 import re
 import threading
 import time
+import uuid
 
 from .. import rea
 
@@ -83,61 +84,81 @@ class Console:
         self.client: rea.Client | None = None
         self.catalog: list[dict] | None = None
         self.target: dict | None = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.started = 0.0
+        self.connection: dict | None = None
 
     def _client(self) -> rea.Client:
         if self.client is None or not self.client.alive():
-            self.client = rea.Client(timeout=1800)
-            self.target, self.started = None, time.time()
+            if self.client is not None:
+                self.client.close()
+            self.client, self.catalog, self.target, self.connection = None, None, None, None
+            cfg = rea.settings()
+            self.client = rea.Client(cfg["command"], timeout=1800, env=cfg["env"], provider=cfg.get("provider"))
+            self.started = time.time()
+            self.connection = {"id": uuid.uuid4().hex, "source": cfg.get("source"), "command": list(self.client.argv),
+                               "server": dict(self.client.server_info)}
         return self.client
 
     def status(self) -> dict:
         cfg = rea.settings()
+        running = bool(self.client and self.client.alive())
         return {"settings": rea.public(cfg), "providers": list(rea.PROVIDERS), "package": rea.PACKAGE,
-                "configured": bool(cfg["command"]), "running": bool(self.client and self.client.alive()),
-                "target": self.target, "tools": len(self.catalog or [])}
+                "configured": bool(cfg["command"]), "running": running, "connection": self.connection if running else None,
+                "target": self.target if running else None, "tools": len(self.catalog or []) if running else 0}
 
     def tools(self) -> list[dict]:
         with self.lock:
-            if self.catalog is None:
-                try:
-                    found = self._client().tools()
-                except rea.ReaError as e:
-                    raise ConsoleError(str(e)) from e
-                self.catalog = [{"name": t["name"], "title": t.get("title") or t["name"],
-                                 "description": t.get("description", ""), "inputSchema": t.get("inputSchema") or {},
-                                 "annotations": t.get("annotations") or {}, "risky": risky(t)}
-                                for t in found if t.get("name")]
+            try:
+                client = self._client()  # even a cached catalog belongs to a particular live process
+                if self.catalog is not None:
+                    return self.catalog
+                found = client.tools()
+            except rea.ReaError as e:
+                raise ConsoleError(str(e)) from e
+            self.catalog = [{"name": t["name"], "title": t.get("title") or t["name"],
+                             "description": t.get("description", ""), "inputSchema": t.get("inputSchema") or {},
+                             "annotations": t.get("annotations") or {}, "risky": risky(t)}
+                            for t in found if t.get("name")]
             return self.catalog
 
     def needs_confirm(self, tool: str) -> list[str]:
-        spec = next((t for t in self.tools() if t["name"] == tool), None)
-        if spec is None:
-            raise ConsoleError(f"REA has no tool named {tool!r}")
-        return spec["risky"]
+        return self.prepare_call(tool)[0]
 
-    def call(self, tool: str, arguments: dict | None = None, log=None) -> dict:
+    def prepare_call(self, tool: str) -> tuple[list[str], str]:
+        """Check this connection's catalog; queued jobs must execute on that same connection."""
+        with self.lock:
+            spec = next((t for t in self.tools() if t["name"] == tool), None)
+            if spec is None:
+                raise ConsoleError(f"REA has no tool named {tool!r}")
+            return spec["risky"], self.connection["id"]
+
+    def call(self, tool: str, arguments: dict | None = None, log=None, *, connection_id: str | None = None) -> dict:
         start = time.time()
         with self.lock:
             try:
-                record = self._client().call(tool, arguments or {}, any_tool=True, envelope=True)
+                if connection_id is not None and (not self.client or not self.client.alive()
+                                                   or not self.connection or connection_id != self.connection["id"]):
+                    raise ConsoleError("REA reconnected before this tool ran; check the refreshed tool and retry")
+                client = self._client()
+                ident = self.connection["id"]
+                record = client.call(tool, arguments or {}, any_tool=True, envelope=True)
             except rea.ReaError as e:
                 raise ConsoleError(str(e)) from e
-        value = slim(tool, rea.unwrap(record))
+            value = slim(tool, rea.unwrap(record))
+            if tool == "open_binary" and isinstance(value, dict):
+                self.target = value.get("result") if isinstance(value.get("result"), dict) else value
+            elif tool == "close_binary":
+                self.target = None
         meta = {}
         if isinstance(record, dict) and "operation" in record:
             meta = {"provider": (record.get("provider") or {}).get("name"), "confidence": record.get("confidence"),
                     "authority": record.get("authority"), "limitations": record.get("limitations") or [],
                     "evidence_id": record.get("evidence_id"), "subject": record.get("subject")}
-        if tool == "open_binary" and isinstance(value, dict):
-            self.target = value.get("result") if isinstance(value.get("result"), dict) else value
-        elif tool == "close_binary":
-            self.target = None
         truncated = False
         if isinstance(value, list) and len(value) > _MAX_ITEMS:
             value, truncated = value[:_MAX_ITEMS], True
-        return {"tool": tool, "arguments": arguments or {}, "result": value, "meta": meta,
+        return {"tool": tool, "arguments": arguments or {}, "result": value, "meta": meta, "connection_id": ident,
                 "ms": round((time.time() - start) * 1000), "truncated": truncated,
                 "size": len(json.dumps(value, default=str))}
 
@@ -156,4 +177,4 @@ class Console:
         with self.lock:
             if self.client is not None:
                 self.client.close()
-            self.client, self.catalog, self.target = None, None, None
+            self.client, self.catalog, self.target, self.connection = None, None, None, None
