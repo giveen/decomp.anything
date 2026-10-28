@@ -656,8 +656,14 @@ class ForkEngine:
                         self._matched(db, proj, old, agent, texts[uname])
             gone = [r["id"] for rs in moved.values() for r in rs]  # functions no unit has any more
             if gone:
-                with_history = {r["function_id"] for r in db.execute(
-                    f"SELECT DISTINCT function_id FROM attempts WHERE function_id IN ({','.join('?' * len(gone))})", gone)}
+                # One bound variable per id passes SQLite's limit once a project's units are
+                # regenerated differently and every function moves, so ask in chunks.
+                with_history = set()
+                for i in range(0, len(gone), 500):
+                    chunk = gone[i:i + 500]
+                    with_history |= {r["function_id"] for r in db.execute(
+                        f"SELECT DISTINCT function_id FROM attempts WHERE function_id IN ({','.join('?' * len(chunk))})",
+                        chunk)}
                 for fid in gone:
                     if fid in with_history:
                         db.execute("UPDATE functions SET status='nosource' WHERE id=?", (fid,))
