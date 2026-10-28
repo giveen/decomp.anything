@@ -2,37 +2,210 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_VERSION: '0.12.18'
+  PYTHONUTF8: '1'
+  DECOMP_UPDATES: 'off'
+
 jobs:
   lint:
     name: ruff
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: '3.12'
           enable-cache: true
-      - name: Sync dependencies
-        run: uv sync --group dev
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
+
+  workflows:
+    name: GitHub workflow validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate workflow syntax, expressions, and shell commands
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 
   test:
-    name: pytest
-    runs-on: ubuntu-latest
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: '3.12'
+            toolchains: true
+          - python: '3.14'
+            toolchains: false
+    env:
+      DECOMPNET_TOOLCHAINS: ${{ github.workspace }}/.ci-toolchains
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python }}
           enable-cache: true
-      - name: Sync dependencies
-        run: uv sync --group dev
-      # Tests that need a period toolchain (gcc-2.7.2-kmc, CodeWarrior, agbcc, ...) skip themselves with a
-      # reason when it isn't installed; `decompnet toolchain install <id>` is all CI needs to turn them on.
+      - name: Install host and cross compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap gcc-multilib g++-multilib gcc-mingw-w64 g++-mingw-w64 clang-18 lld-18 llvm-18
+          echo /usr/lib/llvm-18/bin >> "$GITHUB_PATH"
+          # Ubuntu's AppArmor restriction otherwise prevents the compiler's bubblewrap sandbox.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Verify required compiler binaries
+        run: |
+          for tool in bwrap gcc g++ i686-w64-mingw32-gcc i686-w64-mingw32-g++ \
+            x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ clang-cl lld-link llvm-pdbutil ld.lld llvm-objcopy; do
+            command -v "$tool"
+          done
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+      - name: Cache pinned compiler binaries
+        if: matrix.toolchains
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .ci-toolchains/gcc-2.7.2-kmc
+            .ci-toolchains/objdiff-cli
+          key: toolchains-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/decompnet/toolchains.toml') }}
+      - name: Install pinned decompilation tools and build demo fixtures
+        if: matrix.toolchains
+        run: |
+          for tool in gcc-2.7.2-kmc objdiff-cli m2c; do
+            uv run --no-sync decompnet toolchain install "$tool"
+            uv run --no-sync decompnet toolchain path "$tool"
+          done
+          uv run --no-sync python projects/zlib-n64/prepare.py
+          uv run --no-sync python projects/demo-rom/build.py
+      - name: Prepare test artifacts
+        run: mkdir -p .ci-artifacts
       - name: Test
-        run: uv run pytest -q
+        run: >-
+          uv run --no-sync pytest -ra
+          --junitxml=.ci-artifacts/pytest-${{ matrix.python }}.xml
+          --basetemp=.ci-artifacts/tmp
+      - name: Summarize tests and skipped coverage
+        if: always()
+        run: uv run --no-sync python tools/ci/test_summary.py .ci-artifacts/pytest-${{ matrix.python }}.xml
+      - name: Upload test results and failure fixtures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-${{ matrix.python }}
+          include-hidden-files: true
+          path: .ci-artifacts/
+          retention-days: 7
+
+  windows:
+    name: Windows host behavior
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: '3.12'
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+      - name: Prepare test artifacts
+        run: mkdir -p .ci-artifacts
+      - name: Test Windows launchers, paths, and host integration
+        run: >-
+          uv run --no-sync pytest -ra
+          tests/test_platform.py tests/test_wsl_messages.py tests/test_hostenv.py
+          tests/test_base_header.py tests/test_names.py
+          --junitxml=.ci-artifacts/pytest-windows.xml
+          --basetemp=.ci-artifacts/tmp
+      - name: Summarize tests and skipped coverage
+        if: always()
+        run: uv run --no-sync python tools/ci/test_summary.py .ci-artifacts/pytest-windows.xml
+      - name: Upload test results and failure fixtures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-windows
+          include-hidden-files: true
+          path: .ci-artifacts/
+          retention-days: 7
+
+  package:
+    name: Distribution build and install
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: '3.12'
+          enable-cache: true
+      - name: Verify lockfile
+        run: uv lock --check
+      - name: Build wheel and source distribution
+        run: uv build --no-sources
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv "$RUNNER_TEMP/package-smoke"
+          uv pip install --python "$RUNNER_TEMP/package-smoke/bin/python" dist/*.whl
+          "$RUNNER_TEMP/package-smoke/bin/python" tools/ci/check_distribution.py
+      - name: Upload distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  required:
+    name: CI passed
+    if: always()
+    needs: [lint, workflows, test, windows, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$NEEDS_JSON" | jq .
+          printf '%s\n' "$NEEDS_JSON" | jq -e 'length > 0 and all(.[]; .result == "success")'

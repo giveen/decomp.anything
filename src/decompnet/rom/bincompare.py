@@ -19,6 +19,7 @@ from pathlib import Path
 from .. import scoring
 from ..elfobj import FunctionObj, Reloc
 from . import elfexe, pe
+from .symbols import AUTO_NAME
 
 
 @dataclass
@@ -103,29 +104,30 @@ def compare_paths(old_path: str | Path, new_path: str | Path, *, old_names: dict
 
 
 def _match(old: list[VersionFunction], new: list[VersionFunction], threshold: float) -> list[dict]:
-    """Pair exact fingerprints, then same names, then instruction-sequence look-alikes."""
+    """Pair reliable names, then exact fingerprints, then instruction-sequence look-alikes."""
     used_new: set[int] = set()
     paired: dict[int, int] = {}
-    by_fp: dict[str, list[int]] = {}
-    for i, fn in enumerate(new):
-        by_fp.setdefault(fn.fingerprint, []).append(i)
+    # Address-derived names are not identities across builds: another function can move there.
+    by_name: dict[str, list[int]] = {}
+    for j, fn in enumerate(new):
+        if fn.name and fn.name not in ("entry", f"sub_{fn.address:08X}") and not AUTO_NAME.match(fn.name):
+            by_name.setdefault(fn.name, []).append(j)
     for i, fn in enumerate(old):
-        bucket = by_fp.get(fn.fingerprint)
+        bucket = by_name.get(fn.name)
         if bucket:
-            j = next((k for k in bucket if k not in used_new), bucket[0])
-            if j not in used_new:
+            j = next((k for k in bucket if k not in used_new), None)
+            if j is not None:
                 paired[i] = j
                 used_new.add(j)
 
-    # Same symbol name is strong evidence when a function's code changed.
-    by_name: dict[str, list[int]] = {}
+    by_fp: dict[str, list[int]] = {}
     for j, fn in enumerate(new):
         if j not in used_new:
-            by_name.setdefault(fn.name, []).append(j)
+            by_fp.setdefault(fn.fingerprint, []).append(j)
     for i, fn in enumerate(old):
         if i in paired:
             continue
-        bucket = by_name.get(fn.name)
+        bucket = by_fp.get(fn.fingerprint)
         if bucket:
             j = next((k for k in bucket if k not in used_new), None)
             if j is not None:

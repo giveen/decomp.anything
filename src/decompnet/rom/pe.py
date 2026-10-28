@@ -450,6 +450,8 @@ def read(data: bytes, name: str = "") -> PeImage:
     if not is_pe(data):
         raise PeError("this isn't a Windows PE executable or DLL")
     machine, arch, image_base, plus, sections, entry, dirs = _headers(data)
+    if arch not in ("x86", "x86_64"):
+        raise PeError(f"this Windows PE program isn't for x86/x86-64 matching ({arch}); open it with REA for analysis")
     symbols: list[Symbol] = []
     seen_names: set[str] = set()
 
