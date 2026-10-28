@@ -59,3 +59,26 @@ def test_rejects_non_pc_inputs(tmp_path):
     junk.write_bytes(b"not a program")
     with pytest.raises(bincompare.CompareError, match="isn't a Windows PE or Linux"):
         bincompare.compare_paths(junk, junk)
+
+
+def test_named_functions_that_exchange_implementations_are_changed(tmp_path):
+    old = _build(tmp_path, "old", "int foo(void) { return 1; } int bar(void) { return 2; } "
+                                  "int main(void) { return foo() + bar(); }")
+    new = _build(tmp_path, "new", "int foo(void) { return 2; } int bar(void) { return 1; } "
+                                  "int main(void) { return foo() + bar(); }")
+    rows = {r["name"]: r for r in bincompare.compare_paths(old, new)["rows"]}
+    for name in ("foo", "bar"):
+        assert rows[name]["other_name"] == name
+        assert rows[name]["status"] == "changed"
+
+
+@pytest.mark.parametrize("base", [0x401000, 0x140001000])
+def test_automatic_names_do_not_override_fingerprints(base):
+    # A stripped function moved to an address previously occupied by different code.
+    old = [bincompare.VersionFunction(f"sub_{base:08X}", base, 1, ["ret"], "ret"),
+           bincompare.VersionFunction(f"sub_{base + 16:08X}", base + 16, 2, ["nop", "ret"], "nop-ret")]
+    new = [bincompare.VersionFunction(f"sub_{base + 16:08X}", base + 16, 1, ["ret"], "ret"),
+           bincompare.VersionFunction(f"sub_{base + 32:08X}", base + 32, 2, ["nop", "ret"], "nop-ret")]
+    rows = bincompare._match(old, new, 0.82)
+    assert all(r["status"] == "same" for r in rows)
+    assert [r["other_address"] for r in rows] == [base + 16, base + 32]

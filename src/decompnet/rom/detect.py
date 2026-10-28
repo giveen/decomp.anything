@@ -59,7 +59,10 @@ def _program(data: bytes, name: str = "") -> Picked | None:
         elf, info = ps2.read_elf(data, name)
         return Picked("ps2", elf, _filename(name, "game.elf"), info, False)
     if pe.is_pe(data):
-        image = pe.read(data, name)
+        try:
+            image = pe.read(data, name)
+        except pe.PeError as e:
+            raise RomError(str(e)) from e
         return Picked("windows", data, _filename(name, "game.exe"), image.info, False, image=image)
     if elfexe.is_x86_elf(data):
         try:
