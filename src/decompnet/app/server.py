@@ -34,7 +34,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from .. import __version__, hostenv, rea, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
-from . import agents, chat, collab, connect, tools, updates
+from . import agents, chat, collab, connect, rea_updates, tools, updates
 from .console import Console, ConsoleError
 from .engine import COMPILERS, MW_VERSIONS, PLATFORM_STATUS, SHORT_NAMES, TOOLS, RomNetwork
 
@@ -213,6 +213,7 @@ class Settings:
                 "per_session": self.data.get("per_session", agents.PER_SESSION), "last_project": self.data.get("last_project"),
                 "autopilot": self.data.get("autopilot", True), "budget_usd": self.data.get("budget_usd") or 0,
                 "auto_update": bool(self.data.get("auto_update")), "check_updates": self.data.get("check_updates", True) is not False,
+                "auto_update_rea": bool(self.data.get("auto_update_rea")),
                 "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
 
 
@@ -1159,6 +1160,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             settings.data["budget_usd"] = max(0.0, float(data["budget_usd"] or 0))
         if "auto_update" in data:
             settings.data["auto_update"] = bool(data["auto_update"])
+        if "auto_update_rea" in data:
+            settings.data["auto_update_rea"] = bool(data["auto_update_rea"])
         if "check_updates" in data:
             settings.data["check_updates"] = bool(data["check_updates"])
         settings.save()
@@ -1230,14 +1233,27 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return bad
         if request.method == "POST":
             try:
-                await call(updater.apply)
+                target = (await body(request)).get("target", "app")
+                await call(apply_update, target)
             except ValueError as e:
                 return fail(e)
         refresh = request.query_params.get("refresh") == "1"
         if not refresh and not checking():  # the user turned checks off: only "Check now" asks
             return JSONResponse({"disabled": True, "available": False, "current": updates.installed(),
-                                 "job": updater.job, "runtime": hostenv.runtime()})
-        return JSONResponse(await call(lambda: updater.status(refresh)))
+                                 "job": updater.job, "runtime": hostenv.runtime(),
+                                 "rea": {"disabled": True, "available": False, "current": rea_updates.current(),
+                                         "job": rea_updater.job}})
+        return JSONResponse(await call(lambda: {**updater.status(refresh), "rea": rea_updater.status(refresh)}))
+
+    update_lock = threading.Lock()
+
+    def apply_update(target: str = "app") -> None:
+        if target not in ("app", "rea"):
+            raise ValueError("unknown update target")
+        with update_lock:
+            if any(u.job["state"] in ("installing", "restarting") for u in (updater, rea_updater)):
+                raise ValueError("an update is already running")
+            (rea_updater if target == "rea" else updater).apply()
 
     def checking() -> bool:
         return settings.data.get("check_updates", True) is not False and os.environ.get("DECOMP_UPDATES") != "off"
@@ -1251,9 +1267,16 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 continue
             try:
                 st = updater.status()
-                busy = any(s.state in ("starting", "working") for s in manager.sessions.values())
+                rst = rea_updater.status()
+                busy = (any(s.state in ("starting", "working") for s in list(manager.sessions.values()))
+                        or any(j["state"] == "running" for j in list(jobs.jobs.values())))
+                failed_rea = (rst["job"]["state"] == "error"
+                              and rst["job"].get("version") == (rst.get("latest") or {}).get("version"))
                 if st.get("available") and st.get("can_apply") and settings.data.get("auto_update") and not busy:
-                    updater.apply()
+                    apply_update()
+                elif (rst.get("available") and rst.get("can_apply") and settings.data.get("auto_update_rea")
+                      and not busy and not failed_rea):
+                    apply_update("rea")
             except (ValueError, OSError):
                 pass
             time.sleep(300)
@@ -1507,7 +1530,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     def before_restart() -> None:  # what quitting does: helpers stop now and resume in the new version
         manager.stop()
         manager.on_stop()
+        console.stop()
+        rea.close_all()
     updater = updates.Updater(before_restart, port, secret)
+    rea_updater = updates.Updater(before_restart, port, secret, checker=rea_updates.check, installer=rea_updates.install)
     threading.Thread(target=watch_updates, daemon=True, name="updates").start()
 
     security = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=sorted(allowed_hosts),

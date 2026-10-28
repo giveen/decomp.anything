@@ -130,12 +130,15 @@ def test_restart_keeps_port_and_secret(monkeypatch):
 def test_update_api(tmp_path, monkeypatch):
     from starlette.testclient import TestClient
 
+    from decompnet.app import rea_updates
     from decompnet.app.engine import RomNetwork
     from decompnet.app.server import build
 
     monkeypatch.setattr(updates, "check", lambda: {"current": updates.installed(), "available": False, "latest": None,
                                                    "notes": [], "link": None, "error": None, "checked": 1e12,
                                                    "can_apply": True, "why_not": ""})
+    monkeypatch.setattr(rea_updates, "check", lambda: {"current": {"version": "6.7.0"}, "available": False,
+                                                     "latest": None, "checked": 1e12, "error": None})
     home = tmp_path / "home"
     (home / ".decomp").mkdir(parents=True)
     net = RomNetwork(home / ".decomp" / "decomp.db", home)
@@ -149,6 +152,13 @@ def test_update_api(tmp_path, monkeypatch):
     assert st["available"] is False and st["job"]["state"] == "idle" and "runtime" in st
     r = client.post("/api/update", json={"apply": True}, headers={"X-Decomp": "1"})
     assert r.status_code == 400 and "up to date" in r.json()["error"]
+    assert st["rea"]["current"]["version"] == "6.7.0" and st["rea"]["job"]["state"] == "idle"
+    r = client.post("/api/update", json={"target": "invalid"}, headers={"X-Decomp": "1"})
+    assert r.status_code == 400 and "unknown update target" in r.json()["error"]
+    r = client.post("/api/update", json={"target": "rea"}, headers={"X-Decomp": "1"})
+    assert r.status_code == 400 and "up to date" in r.json()["error"]
+    r = client.post("/api/settings", json={"auto_update_rea": True}, headers={"X-Decomp": "1"})
+    assert r.json()["auto_update_rea"] is True
     assert client.post("/api/settings", json={"check_updates": False}, headers={"X-Decomp": "1"}).json()["check_updates"] is False
     assert client.get("/api/update").json()["disabled"] is True
     health = client.get("/health").json()

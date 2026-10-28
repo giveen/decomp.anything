@@ -190,7 +190,11 @@ class Client:
         except OSError as e:
             raise ReaError(f"REA couldn't start ({' '.join(argv)}): {e}") from e
         threading.Thread(target=self._read, daemon=True).start()
-        self._initialize()
+        try:
+            self._initialize()
+        except BaseException:
+            self.close()
+            raise
 
     def _read(self) -> None:
         assert self.proc.stdout is not None
