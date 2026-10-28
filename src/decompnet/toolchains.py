@@ -454,6 +454,13 @@ def binary(tid: str) -> Path:
     """The main executable of an installed tool (objdiff-cli, dtk, coddog, ...), on any OS."""
     tc = get(tid)
     base = require(tid)
+    if tid == "rea":
+        active = (installed(tid) or {}).get("active")
+        if active:
+            selected = (base / active).resolve()
+            if not selected.is_relative_to(base.resolve()):
+                raise ToolchainError("REA's active installation is outside its toolchain folder")
+            base = selected
     name = tc.binary_name or tid
     npm_bin = base / "node_modules" / ".bin"
     for candidate in (base / f"{name}.exe", base / name, base / "bin" / name,

@@ -122,6 +122,13 @@ The Windows installer turns on WSL 2 if needed, creates the `decomp-wtf` distrib
 it, and adds a `decomp` command plus app-menu and desktop shortcuts. Checkout installs record this repository as their
 update source, so updates follow decomp.anything rather than upstream.
 
+**Settings → About** also checks npm for updates to the app-managed REA toolset. **Update REA** installs the exact
+stable release into a separate folder, checks its MCP connection and supported tool catalog, then restarts the app
+to refresh agent connections. A failed installation leaves the selected version intact. REA automatic updates have
+their own switch (off by default), and wait for helpers and background jobs to be idle. **Look for updates** controls
+both feeds; **Check now** checks them manually. Custom REA commands stay externally managed. Ghidra, IDA, Hopper,
+Rizin and external agent registrations or skills retain their own setup and update process.
+
 **From GitHub, without a website:**
 
 ```bash
