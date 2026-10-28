@@ -5,6 +5,9 @@ Goal: C that the game's own compiler turns into exactly the bytes in the ROM. No
 1. `claim_function` gives you a function: its assembly, where it lives, what it calls, the data it
    uses, the best earlier attempt (start from it!), notes from earlier agents, and an m2c draft.
 2. Read `get_context`: the shared header every compile includes (types, structs, prototypes).
+   Consult `discover_assistance(query, function)` for relevant skills, prior findings and available REA tools.
+   Read selected guidance with `read_skill(id)` and resolve the remaining question with a focused tool before guessing.
+   Record what you learned with `record_assistance`; include a fallback reason when only bounded permutation remains.
 3. Write the function, then `compile_and_diff`. Your object is linked at the function's real address
    and compared with the ROM. Score 0 = byte-identical = matched and saved.
 4. Iterate. Change one thing at a time and watch the score; keep what lowers it.
@@ -13,7 +16,8 @@ Goal: C that the game's own compiler turns into exactly the bytes in the ROM. No
      still matches);
    - real names for functions and data -> `rename_symbol` (by address: matches never break);
    - tricks -> `add_note`.
-6. Stuck after ~20 compiles without progress: `release_function` with specific notes (what you tried,
+6. Refresh the knowledge review when stuck. Follow compile_and_diff's stop guidance (usually four compiles without
+   improvement), then `release_function` with specific notes (what you tried,
    what the remaining diff is, what you suspect). The next agent starts from your best attempt.
 
 ## Reading the diff

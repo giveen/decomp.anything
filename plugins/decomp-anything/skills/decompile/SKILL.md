@@ -20,9 +20,15 @@ Its tools come from the `decomp` MCP server.
    there, `list_projects()` and `open_project()`.
 3. **Show it.** `open_gui()` opens the live view: the work map, every agent's work, diffs and progress.
 4. **Work.**
+   - **Knowledge first:** `discover_assistance(query, function)` finds relevant guides, user-shared skills, prior
+     findings and approved REA tools with their actual schemas. Read selected skills with `read_skill(id)`. Use a
+     focused analysis call before hard manual work, then `record_assistance(function, summary)` with what you learned.
+     When REA would help but is not connected, repeat discovery with `connect=true`. Keep evidence IDs and limitations.
+     Record a `fallback_reason` before bounded permutation; repeated compilation requires a current knowledge review.
    - **Matching project:** `claim_function()` gives you a function with its assembly, notes and a machine draft;
      `compile_and_diff(function, source)` until the score is 0. Read `guide("workflow")` first. Share what you learn
-     with `edit_context`, `rename_symbol` and `add_note`. Stuck after ~20 compiles: `release_function` with notes.
+     with `edit_context`, `rename_symbol` and `add_note`. When stalled, revisit relevant assistance and follow the
+     judge's stop guidance, then `release_function` with notes.
    - **Analysis project:** `claim_function()` gives you a procedure or task; go deeper with `rea_tool`, write findings
      with `add_note`, and finish with `complete_function(function, summary)`.
 5. **Scale up.** `start_agents(count)` adds helper agents; `progress()` shows everyone's work.
