@@ -5,8 +5,10 @@ target came from. Function boundaries come from, in order of reliability:
 
 1. the x86-64 exception directory (.pdata): a RUNTIME_FUNCTION for every function, begin and end;
 2. the executable's own COFF symbol table (MinGW keeps one; MSVC release builds usually don't);
-3. exports and the entry point;
-4. direct call targets found by walking the code (32-bit games have no .pdata).
+3. the FPO table in the debug directory: 32-bit MSVC release builds have no .pdata, but one
+   built with /Zi records every frame-pointer-omitted function's start and exact size;
+4. exports and the entry point;
+5. direct call targets found by walking the code.
 
 Relocations are discovered by decoding the code: a relative call/jump or a RIP-relative memory
 operand says which address the instruction refers to, and which bytes the compiler will patch.
@@ -269,6 +271,37 @@ def _pdata(data: bytes, sections: list[PeSection], dirs: list[tuple[int, int]], 
     return out
 
 
+def _fpo(data: bytes, sections: list[PeSection], dirs: list[tuple[int, int]], image_base: int,
+         machine: int) -> list[tuple[int, int]]:
+    """Function bounds from the FPO table of a 32-bit image (the debug directory's type 3).
+
+    A 32-bit MSVC release build has no exception directory, but one compiled with /Zi writes an
+    FPO_DATA record per function: start RVA and exact byte size, written by the compiler itself.
+    The debug records are reached through PointerToRawData, a file offset -- AddressOfRawData is
+    commonly 0 because the data is not mapped into the image.
+    """
+    if machine != 0x014C or len(dirs) < 7:
+        return []
+    rva, size = dirs[6]
+    if not rva or not size:
+        return []
+    bounds: dict[int, int] = {}
+    for k in range(size // 28):
+        entry = _rva(data, sections, rva + 28 * k, 28)
+        if entry is None:
+            break
+        _chars, _time, _major, _minor, kind, nbytes, addr_raw, ptr_raw = struct.unpack("<IIHHIIII", entry)
+        if kind != 3 or not nbytes:  # IMAGE_DEBUG_TYPE_FPO
+            continue
+        records = data[ptr_raw:ptr_raw + nbytes] if ptr_raw else (_rva(data, sections, addr_raw, nbytes) or b"")
+        for j in range(len(records) // 16):
+            start, length = struct.unpack_from("<II", records, 16 * j)
+            # Keep the largest size if a start is recorded twice; a zero-length record is a stub.
+            if length and bounds.get(start, 0) < length:
+                bounds[start] = length
+    return [(image_base + a, image_base + a + n) for a, n in sorted(bounds.items())]
+
+
 # ------------------------------------------------------------------ code
 
 def _md(arch: str) -> capstone.Cs:
@@ -431,7 +464,7 @@ def read(data: bytes, name: str = "") -> PeImage:
         add(sym)
     for sym in _imports(data, sections, dirs, image_base, plus):
         add(sym)
-    pdata = _pdata(data, sections, dirs, image_base, machine)
+    pdata = _pdata(data, sections, dirs, image_base, machine) or _fpo(data, sections, dirs, image_base, machine)
     functions, symbols, data_rows = build(data, arch, image_base, sections, symbols, pdata,
                                           image_base + entry if entry else 0)
     compiler = "MSVC" if b"Rich" in data[:0x400] and b"rsds" not in data else "MinGW-w64" \
