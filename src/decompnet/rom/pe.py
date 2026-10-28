@@ -5,8 +5,12 @@ target came from. Function boundaries come from, in order of reliability:
 
 1. the x86-64 exception directory (.pdata): a RUNTIME_FUNCTION for every function, begin and end;
 2. the executable's own COFF symbol table (MinGW keeps one; MSVC release builds usually don't);
-3. exports and the entry point;
-4. direct call targets found by walking the code (32-bit games have no .pdata).
+3. the FPO table in the debug directory: 32-bit MSVC release builds have no .pdata, but one
+   built with /Zi records every frame-pointer-omitted function's start and exact size. Unlike
+   .pdata it is not a complete list -- a function with an ordinary stack frame has no record --
+   so the sources below still have to run;
+4. exports and the entry point;
+5. direct call targets found by walking the code.
 
 Relocations are discovered by decoding the code: a relative call/jump or a RIP-relative memory
 operand says which address the instruction refers to, and which bytes the compiler will patch.
@@ -269,6 +273,37 @@ def _pdata(data: bytes, sections: list[PeSection], dirs: list[tuple[int, int]], 
     return out
 
 
+def _fpo(data: bytes, sections: list[PeSection], dirs: list[tuple[int, int]], image_base: int,
+         machine: int) -> list[tuple[int, int]]:
+    """Function bounds from the FPO table of a 32-bit image (the debug directory's type 3).
+
+    A 32-bit MSVC release build has no exception directory, but one compiled with /Zi writes an
+    FPO_DATA record per function: start RVA and exact byte size, written by the compiler itself.
+    The debug records are reached through PointerToRawData, a file offset -- AddressOfRawData is
+    commonly 0 because the data is not mapped into the image.
+    """
+    if machine != 0x014C or len(dirs) < 7:
+        return []
+    rva, size = dirs[6]
+    if not rva or not size:
+        return []
+    bounds: dict[int, int] = {}
+    for k in range(size // 28):
+        entry = _rva(data, sections, rva + 28 * k, 28)
+        if entry is None or len(entry) < 28:  # a directory running past the end of the file
+            break
+        _chars, _time, _major, _minor, kind, nbytes, addr_raw, ptr_raw = struct.unpack("<IIHHIIII", entry)
+        if kind != 3 or not nbytes:  # IMAGE_DEBUG_TYPE_FPO
+            continue
+        records = data[ptr_raw:ptr_raw + nbytes] if ptr_raw else (_rva(data, sections, addr_raw, nbytes) or b"")
+        for j in range(len(records) // 16):
+            start, length = struct.unpack_from("<II", records, 16 * j)
+            # Keep the largest size if a start is recorded twice; a zero-length record is a stub.
+            if length and bounds.get(start, 0) < length:
+                bounds[start] = length
+    return [(image_base + a, image_base + a + n) for a, n in sorted(bounds.items())]
+
+
 # ------------------------------------------------------------------ code
 
 def _md(arch: str) -> capstone.Cs:
@@ -434,8 +469,9 @@ def read(data: bytes, name: str = "") -> PeImage:
     for sym in _imports(data, sections, dirs, image_base, plus):
         add(sym)
     pdata = _pdata(data, sections, dirs, image_base, machine)
-    functions, symbols, data_rows = build(data, arch, image_base, sections, symbols, pdata,
-                                          image_base + entry if entry else 0)
+    fpo = _fpo(data, sections, dirs, image_base, machine) if not pdata else []
+    functions, symbols, data_rows = build(data, arch, image_base, sections, symbols, pdata or fpo,
+                                          image_base + entry if entry else 0, ranges_complete=not fpo)
     compiler = "MSVC" if b"Rich" in data[:0x400] and b"rsds" not in data else "MinGW-w64" \
         if any(s.name.startswith("__mingw") or s.name == "_start" for s in symbols) else "unknown"
     comment = next((s.data(data) for s in sections if s.name == ".comment"), b"")
@@ -456,9 +492,14 @@ def read(data: bytes, name: str = "") -> PeImage:
 
 
 def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], symbols: list[Symbol],
-          ranges: list[tuple[int, int]], entry: int, *, image_lo: int | None = None, absolute: bool = False):
+          ranges: list[tuple[int, int]], entry: int, *, image_lo: int | None = None, absolute: bool = False,
+          ranges_complete: bool = True):
     """(functions, symbols, data rows) of an x86 image, PE or ELF. `ranges` are exact function bounds (.pdata,
-    .eh_frame, sized symbols); `entry` is an absolute address (0: none)."""
+    .eh_frame, sized symbols); `entry` is an absolute address (0: none).
+
+    `ranges_complete` says the list names every function, which is what lets the scans below be
+    skipped. An FPO table does not: it gives exact bounds for the functions it covers and leaves the
+    rest out, so it is passed as not complete and discovery carries on around it."""
     image_lo = image_base if image_lo is None else image_lo
     exec_sections = [s for s in sections if s.code and s.raw_size]
     md = _md(arch)
@@ -466,6 +507,7 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
     md.skipdata = True
     image_hi = image_base + max((s.va + max(s.size, s.raw_size) for s in sections), default=0x1000)
     pdata = ranges
+    exhaustive = bool(pdata) and ranges_complete
 
     # Function starts: exception directory, symbols, exports, entry, then direct call targets.
     # A jump target is deliberately *not* a start: in 32-bit code it is usually another block of the
@@ -481,9 +523,9 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
     if entry:
         starts.setdefault(entry, "entry" if not any(s.address == entry for s in symbols) else "")
     # .pdata is the authoritative x86-64 function table; scanning megabytes of code for direct calls is
-    # only needed when it is absent (32-bit PE, or an x86-64 image with no unwind data), or cheap enough
-    # to keep finding leaf functions in ordinary-sized executables.
-    if not pdata or sum(s.raw_size for s in exec_sections) <= 4 << 20:
+    # only needed when no complete table is there (32-bit PE, an x86-64 image with no unwind data, an
+    # FPO table), or cheap enough to keep finding leaf functions in ordinary-sized executables.
+    if not exhaustive or sum(s.raw_size for s in exec_sections) <= 4 << 20:
         for sec in exec_sections:
             body = sec.data(data)
             for ins in md.disasm(body, image_base + sec.va):
@@ -545,7 +587,7 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
     # Code no root reaches (a function only named by a vtable, or called indirectly) is still a
     # function: walk every non-padding gap left in a code section, one aligned block at a time.
     for sec in exec_sections:
-        if sec.raw_size > WALK_LIMIT or pdata:
+        if sec.raw_size > WALK_LIMIT or exhaustive:
             continue
         base = image_base + sec.va
         body = sec.data(data)
