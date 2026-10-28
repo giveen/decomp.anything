@@ -82,9 +82,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            bubblewrap gcc-multilib g++-multilib gcc-mingw-w64 g++-mingw-w64 clang lld llvm
+            bubblewrap gcc-multilib g++-multilib gcc-mingw-w64 g++-mingw-w64 clang-18 lld-18 llvm-18
+          echo /usr/lib/llvm-18/bin >> "$GITHUB_PATH"
           # Ubuntu's AppArmor restriction otherwise prevents the compiler's bubblewrap sandbox.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Verify required compiler binaries
+        run: |
           for tool in bwrap gcc g++ i686-w64-mingw32-gcc i686-w64-mingw32-g++ \
             x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ clang-cl lld-link llvm-pdbutil ld.lld llvm-objcopy; do
             command -v "$tool"
@@ -108,6 +111,8 @@ jobs:
           done
           uv run --no-sync python projects/zlib-n64/prepare.py
           uv run --no-sync python projects/demo-rom/build.py
+      - name: Prepare test artifacts
+        run: mkdir -p .ci-artifacts
       - name: Test
         run: >-
           uv run --no-sync pytest -ra
@@ -140,6 +145,8 @@ jobs:
           enable-cache: true
       - name: Install locked dependencies
         run: uv sync --locked --group dev
+      - name: Prepare test artifacts
+        run: mkdir -p .ci-artifacts
       - name: Test Windows launchers, paths, and host integration
         run: >-
           uv run --no-sync pytest -ra
