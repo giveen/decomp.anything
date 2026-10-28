@@ -20,10 +20,10 @@ def runtime(monkeypatch):
 def test_windows_paths_reach_the_game_from_wsl(runtime, monkeypatch):
     runtime("wsl")
     monkeypatch.setattr(hostenv.subprocess, "run", _no_wslpath)
-    assert str(hostenv.local_path(r"C:\Users\Sam Wolfs\Games\mp6.rvz")) == "/mnt/c/Users/Sam Wolfs/Games/mp6.rvz"
-    assert str(hostenv.local_path('"D:/roms/game.z64"')) == "/mnt/d/roms/game.z64"  # quoted, forward slashes
-    assert str(hostenv.local_path(r"\\wsl.localhost\decomp-wtf\home\decomp\game.z64")) == "/home/decomp/game.z64"
-    assert str(hostenv.local_path("/home/decomp/x.z64")) == "/home/decomp/x.z64"  # Linux paths stay
+    assert hostenv.local_path(r"C:\Users\Sam Wolfs\Games\mp6.rvz").as_posix() == "/mnt/c/Users/Sam Wolfs/Games/mp6.rvz"
+    assert hostenv.local_path('"D:/roms/game.z64"').as_posix() == "/mnt/d/roms/game.z64"  # quoted, forward slashes
+    assert hostenv.local_path(r"\\wsl.localhost\decomp-wtf\home\decomp\game.z64").as_posix() == "/home/decomp/game.z64"
+    assert hostenv.local_path("/home/decomp/x.z64").as_posix() == "/home/decomp/x.z64"  # Linux paths stay
     assert hostenv.host_os() == "windows"
 
 
@@ -38,8 +38,8 @@ def test_wsl_paths_shown_to_windows(runtime, monkeypatch):
 
 def test_docker_home_is_the_users_home(runtime):
     runtime("docker", DECOMP_HOST_HOME="/Users/sam", DECOMP_HOST_OS="macos")
-    assert str(hostenv.local_path("~/Downloads/game.iso")) == "/Users/sam/Downloads/game.iso"
-    assert str(hostenv.local_path("/Users/sam/x.z64")) == "/Users/sam/x.z64"
+    assert hostenv.local_path("~/Downloads/game.iso").as_posix() == "/Users/sam/Downloads/game.iso"
+    assert hostenv.local_path("/Users/sam/x.z64").as_posix() == "/Users/sam/x.z64"
     assert hostenv.open_url("http://127.0.0.1:1/") is False  # the computer opens the browser, not the container
     assert "docker cp" in hostenv.open_folder(hostenv.Path("/home/decomp/Decomp/p"))
     assert hostenv.host_bridge() == ["/Users/sam/.local/bin/decomp", "mcp"]
@@ -50,7 +50,7 @@ def test_native_changes_nothing(runtime):
     runtime("native")
     assert hostenv.host_bridge() is None
     assert hostenv.terminal_hint() == "Open a terminal"
-    assert str(hostenv.local_path("~/x")).endswith("/x") and "~" not in str(hostenv.local_path("~/x"))
+    assert hostenv.local_path("~/x").name == "x" and "~" not in str(hostenv.local_path("~/x"))
 
 
 def test_agent_signin_says_where_to_sign_in(runtime):
