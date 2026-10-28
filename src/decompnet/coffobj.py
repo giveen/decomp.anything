@@ -137,19 +137,19 @@ def _defined_in(symbols: list[_Symbol], section: int) -> list[_Symbol]:
             and not (s.storage == IMAGE_SYM_CLASS_STATIC and s.type == 0) and s.name not in (".text", ".data", ".bss")]
 
 
-def _symbol_name(symbols: list[_Symbol], index: int, sections: list[_Section]) -> str:
+def _symbol_name(symbols: list[_Symbol], index: int, sections: list[_Section]) -> tuple[str, int]:
     sym = next((s for s in symbols if s.index == index), None)
     if sym is None:
-        return f"sym_{index}"
+        return f"sym_{index}", 0
     if sym.section > 0 and sym.name.startswith((".text", ".data", ".rdata", ".bss")):
         # A section symbol. With -ffunction-sections / -fdata-sections the section holds exactly the
         # object it is named after, so the object's own symbol in that section is its real name.
         named = _defined_in(symbols, sym.section)
         if len(named) == 1:
-            return named[0].name
+            return named[0].name, -named[0].value
         if "$" in sym.name:
-            return sym.name.split("$", 1)[1]
-    return sym.name
+            return sym.name.split("$", 1)[1], 0
+    return sym.name, 0
 
 
 def trim_code(code: bytes, arch: str) -> bytes:
@@ -208,6 +208,9 @@ def extract_function(data: bytes, name: str) -> FunctionObj | None:
         at = r.offset - sym.value
         if not 0 <= at < len(code):
             continue
-        relocs.append(Reloc(at, r.type, _symbol_name(symbols, r.symbol, sections), 0))
+        symbol, adjustment = _symbol_name(symbols, r.symbol, sections)
+        width = 8 if arch == "x86_64" and r.type == 1 else 4
+        addend = int.from_bytes(code[at:at + width], "little", signed=True)
+        relocs.append(Reloc(at, r.type, symbol, addend + adjustment))
     relocs.sort(key=lambda r: r.offset)
     return FunctionObj(name=name, arch=arch, big_endian=False, code=bytes(code), relocs=relocs, format="coff")

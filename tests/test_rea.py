@@ -15,6 +15,8 @@ from decompnet.app import analysis
 from decompnet.app.console import Console, ConsoleError
 from decompnet.network import NetworkError
 
+from .pe_fixtures import arm_image
+
 
 class SlowBatch:
     """A REA client whose batch_decompile blocks until the test lets it go, so two requests can overlap."""
@@ -573,14 +575,15 @@ def test_prefill_requests_for_the_same_batch_share_one_decompile(monkeypatch, fa
         client.close()
 
 
-def test_picking_an_unsupported_binary_opens_a_normal_project(monkeypatch, fake, tmp_path):
+@pytest.mark.parametrize("machine", [None, 0x01C4, 0xAA64])
+def test_picking_an_unsupported_binary_opens_a_normal_project(monkeypatch, fake, tmp_path, machine):
     """The standard import (drop or path) falls back to REA instead of rejecting a file it can't split as a game."""
     from decompnet.app.engine import RomNetwork
     from decompnet.app.server import build
 
     client = rea.Client(fake)
     binary = tmp_path / "mystery.bin"
-    binary.write_bytes(b"not a rom" + b"\0" * 64)
+    binary.write_bytes(arm_image(machine) if machine is not None else b"not a rom" + b"\0" * 64)
     opened = client.call("open_binary", {"path": str(binary)})
     monkeypatch.setattr(rea, "open_analysis", lambda target, provider="": (client, opened))
     home = tmp_path / "home"

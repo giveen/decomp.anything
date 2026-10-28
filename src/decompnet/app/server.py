@@ -46,7 +46,7 @@ def _analyze_instead(error: Exception) -> bool:
     """A file this app can't split as a game or match as a program: REA can still open it as a project."""
     text = str(error)
     return any(phrase in text for phrase in (
-        "isn't a ROM, disc or game program", "isn't for x86/x86-64 Linux",
+        "isn't a ROM, disc or game program", "isn't for x86/x86-64 Linux", "isn't for x86/x86-64 matching",
         "too big for a ROM and isn't a disc image"))
 
 
