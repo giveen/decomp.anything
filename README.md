@@ -588,6 +588,17 @@ uv run pytest
 Python dependencies are locked in `uv.lock`. There is no website in this repository; the Linux and Windows
 installers live in `install/`.
 
+GitHub CI checks the lockfile, Ruff, workflow syntax, Python 3.12 and 3.14, Windows host behavior, and an
+installed wheel's resources and command-line entry points. The Python 3.12 job installs the pinned N64 compiler,
+m2c and objdiff, builds the shareable demo ROM, and exercises the decompilation pipeline. Both Linux jobs also
+install 32/64-bit MinGW and LLVM so PE, ELF and debug-information tests run. Tests requiring other period
+toolchains or private game files still skip, with their reasons listed in the run summary. JUnit reports and
+test fixtures are retained for seven days; built distributions are retained for fourteen days.
+
+The stable merge check is **CI passed**. It succeeds only when every required job succeeds, including the
+complete Python matrix. PR updates cancel superseded PR runs; branch pushes run CI on `main` only, avoiding
+duplicate checks for the same PR. Dependabot proposes weekly updates to the pinned GitHub Actions.
+
 <details>
 <summary><b>Repository layout</b></summary>
 <br>
