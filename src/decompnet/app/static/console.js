@@ -8,7 +8,7 @@ const RC = {
   ready: false, status: null, tools: [], toolMap: new Map(), target: null, overview: null,
   procs: [], byAddr: new Map(), byName: new Map(), strings: null, segments: null,
   side: "functions", fn: null, ftab: "code", trail: [], results: new Map(), seq: 0, busy: 0,
-  history: [], hpos: -1, view: null, cfgSel: null,
+  history: [], hpos: -1, view: null, cfgSel: null, formName: null,
 };
 const RC_HIST = "decomp-wtf-rea-history";
 const rcNorm = (a) => { const m = /^0x0*([0-9a-f]+)$/i.exec(String(a ?? "").trim()); return m ? `0x${m[1].toLowerCase()}` : String(a ?? ""); };
@@ -25,6 +25,12 @@ async function reaCall(tool, args = {}, { quiet = false, confirm = false } = {})
   rcBusy(1);
   const t0 = performance.now();
   try {
+    const connection = RC.status?.connection?.id;
+    await rcStatus();
+    if (!RC.status?.running) throw new Error("REA isn't running; check its settings.");
+    if (connection && connection !== RC.status.connection?.id) {
+      throw new Error("REA reconnected. Review the refreshed tool form or command, then run it again.");
+    }
     let start;
     try {
       start = await rcPost("/api/rea/call", { tool, arguments: args, confirm });
@@ -45,6 +51,7 @@ async function reaCall(tool, args = {}, { quiet = false, confirm = false } = {})
     }
     return res;
   } catch (e) {
+    await rcStatus();
     if (line) { line.className = "l err"; line.innerHTML = `<span class="p">✗</span> ${esc(tool)}: ${esc(e.message)}`; }
     throw e;
   } finally {
@@ -195,19 +202,35 @@ async function showConsole() {
 }
 
 async function rcStatus() {
+  const previous = RC.status?.connection?.id;
+  const previousProvider = RC.status?.settings?.provider;
+  const selectedProvider = $("rcProvider").value;
   try { RC.status = await api("/api/rea"); } catch (e) { RC.status = null; rcSay(e.message, "err"); }
-  const st = RC.status;
+  let st = RC.status;
+  const provider = previousProvider === st?.settings?.provider && selectedProvider
+    ? selectedProvider : st?.settings?.provider || "auto";
   $("rcProvider").innerHTML = ["auto", ...(st?.providers || [])].map((p) =>
-    `<option value="${esc(p)}" ${p === (st?.settings?.provider || "auto") ? "selected" : ""}>${p === "auto" ? "engine: auto" : esc(p)}</option>`).join("");
-  if (st?.target && !RC.target) RC.target = st.target;
+    `<option value="${esc(p)}" ${p === provider ? "selected" : ""}>${p === "auto" ? "engine: auto" : esc(p)}</option>`).join("");
   rcBusy(0);
   if (!st?.configured) { rcSettings(true); return; }
-  if (!RC.tools.length) {
+  const changed = previous !== st.connection?.id;
+  if (changed || !st.running || !RC.tools.length) {
+    RC.tools = []; RC.toolMap.clear();
     try {
       RC.tools = await api("/api/rea/tools");
+      RC.status = st = await api("/api/rea"); // tools may have started a new process
       RC.toolMap = new Map(RC.tools.map((t) => [t.name, t]));
       $("rcNT").textContent = RC.tools.length;
-      rcSay(`REA is ready: ${RC.tools.length} tools (${st.settings.source || "configured"})`);
+      if (previous !== st.connection?.id) {
+        RC.target = st.target; RC.fn = null; RC.trail = []; RC.strings = null; RC.segments = null; RC.overview = null;
+        rcSetProcs([]); $("rcDecomp").hidden = !RC.target;
+        rcRenderSide();
+        rcSay(`REA is ready: ${RC.tools.length} tools (${st.connection?.source || st.settings.source || "configured"})`);
+        if (RC.view === "tool") {
+          if (RC.toolMap.has(RC.formName)) rcToolForm(RC.formName);
+          else rcWelcome();
+        } else if (previous) rcWelcome();
+      }
       if (RC.side === "tools") rcRenderSide();
       if (!RC.target && RC.view === "welcome") rcWelcome();
     } catch (e) {
@@ -215,6 +238,8 @@ async function rcStatus() {
       rcSettings(true);
     }
   }
+  if (st?.target && !RC.target) RC.target = st.target;
+  rcBusy(0);
 }
 
 /* ------------------------------------------------------------------ settings */
@@ -225,11 +250,14 @@ function rcSettings(open) {
   const st = RC.status || { settings: { command: null, env: {}, provider: "ghidra" }, providers: ["ghidra"] };
   const s = st.settings;
   const quote = (a) => (/[\s"']/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a);
+  const running = st.connection;
+  const version = running?.server?.version;
   box.hidden = false;
   box.innerHTML = `<h3>REA settings</h3>
-    <p>REA (<code>${esc(st.package || "rea-agents")}</code>) is the analysis server behind this console and behind the agents' <code>inspect_binary</code>.
-    ${s.source ? `Found: <b>${esc(s.source)}</b>.` : "It isn't set up yet: give the command that starts its MCP server."}
+    <p>${running ? `REA <b>${esc(version || "(version not reported)")}</b> is connected.` : "REA is not running."}
+    ${running?.source || s.source ? `Command source: <b>${esc(running?.source || s.source)}</b>.` : "Give the command that starts its MCP server."}
     Native code needs Ghidra (with Java), Hopper or IDA; JavaScript, web pages and many archives need nothing more.</p>
+    ${running ? `<p class="small">Running command: <code>${esc((running.command || []).map(quote).join(" "))}</code></p>` : ""}
     <div class="row">
       <label class="grow">Command<input class="rc-input" id="rcSetCmd" value="${esc((s.command || []).map(quote).join(" "))}" placeholder="npx -y ${esc(st.package || "rea-agents")} mcp"></label>
       <label>Native engine<select id="rcSetProv">${(st.providers || []).map((p) => `<option ${p === s.provider ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>
@@ -248,6 +276,7 @@ function rcSettings(open) {
     }
     try {
       RC.status = await rcPost("/api/rea/settings", { command: $("rcSetCmd").value, env, provider: $("rcSetProv").value });
+      $("rcProvider").value = RC.status.settings.provider || "auto";
       RC.tools = []; RC.target = null;
       rcSettings(false);
       rcSay("REA settings saved");
@@ -255,7 +284,7 @@ function rcSettings(open) {
     } catch (e) { toast(esc(e.message), "err"); }
   };
 }
-$("rcSetBtn").onclick = () => rcSettings($("rcSetup").hidden);
+$("rcSetBtn").onclick = async () => { const open = $("rcSetup").hidden; if (open) await rcStatus(); rcSettings(open); };
 
 /* ------------------------------------------------------------------ open a target */
 
@@ -737,7 +766,6 @@ function rcSchema(s, root, depth = 0) {
 function rcToolForm(name) {
   const t = RC.toolMap.get(name);
   if (!t) { rcSay(`no REA tool called ${name}`, "err"); return; }
-  RC.view = "tool";
   const root = t.inputSchema || {}, props = root.properties || {}, req = new Set(root.required || []);
   const ex = (root.examples || [])[0] || {};
   const field = ([k, raw]) => {
@@ -762,6 +790,8 @@ function rcToolForm(name) {
       ${Object.entries(props).map(field).join("") || '<p class="rc-empty">No arguments.</p>'}
       <div><button class="rc-btn go" type="submit">Run ${esc(t.name)}</button></div></form>
     <div id="rcOut"></div>`);
+  RC.view = "tool";
+  RC.formName = name;
   s.querySelector("#rcTf").onsubmit = async (e) => {
     e.preventDefault();
     const args = {};
@@ -783,7 +813,10 @@ function rcToolForm(name) {
       if (t.name === "open_binary") { await rcAfterOpen(res); return; }
       $("rcOut").innerHTML = rcResultHtml(res);
       rcWireResult($("rcOut"));
-    } catch (err) { $("rcOut").innerHTML = `<div class="rc-err">${esc(err.message)}</div>`; }
+    } catch (err) {
+      if ($("rcOut")) $("rcOut").innerHTML = `<div class="rc-err">${esc(err.message)}</div>`;
+      else rcSay(err.message, "err");
+    }
   };
 }
 

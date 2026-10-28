@@ -237,8 +237,11 @@ class Client:
                     self._send({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
 
     def _initialize(self) -> None:
-        self._request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                                     "clientInfo": {"name": "decomp.wtf", "version": "1"}}, timeout=30)
+        result = self._request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                              "clientInfo": {"name": "decomp.wtf", "version": "1"}}, timeout=30)
+        info = result.get("serverInfo") if isinstance(result, dict) else None
+        self.server_info = {k: info[k] for k in ("name", "version") if isinstance(info.get(k), str)} \
+            if isinstance(info, dict) else {}
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
     def call(self, tool: str, arguments: dict | None = None, timeout: float | None = None, *,

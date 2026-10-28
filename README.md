@@ -314,6 +314,8 @@ replaces a finding.
 **REA settings** in the console set the command, the native engine and environment variables such as
 `GHIDRA_INSTALL_DIR`, `JAVA_HOME` or `HOPPER_LAUNCHER_PATH`. They're saved in `.decomp/rea.json`, and the agents'
 `inspect_binary` uses them too. Values that look like secrets are never sent to the page.
+The console reports the connected server's version and command source. When REA reconnects, its tool catalog and
+forms refresh; a call prepared for an earlier connection must be reviewed and retried.
 
 **Safety.** The console runs its own REA process, so it never switches the target the agents are reading. Most tools
 only read. Tools that run or drive a program, browser or device, change a device, connect to pages, or write files run
