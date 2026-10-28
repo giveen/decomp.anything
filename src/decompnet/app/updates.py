@@ -206,8 +206,10 @@ def restart(port: int, secret: str) -> None:
 class Updater:
     """The app's update state: the last check (cached) and an update being installed."""
 
-    def __init__(self, before_restart, port: int, secret: str):
+    def __init__(self, before_restart, port: int, secret: str, *, checker=None, installer=None):
         self.before_restart, self.port, self.secret = before_restart, port, secret
+        self.check = checker or check
+        self.install = installer or install
         self.last: dict | None = None
         self.job = {"state": "idle", "log": [], "error": None}
         self._lock = threading.Lock()
@@ -216,7 +218,7 @@ class Updater:
         cur = self.last
         channel = installed()["channel"]
         if refresh or cur is None or time.time() - cur.get("checked", 0) > RECHECK[channel]:
-            self.last = cur = check()
+            self.last = cur = self.check()
         return {**cur, "job": {k: (v[-200:] if k == "log" else v) for k, v in self.job.items()},
                 "runtime": hostenv.runtime()}
 
@@ -225,21 +227,24 @@ class Updater:
         with self._lock:
             if self.job["state"] in ("installing", "restarting"):
                 return
-            found = self.last if self.last and self.last.get("available") else check()
+            found = self.last if self.last and self.last.get("available") else self.check()
             if not found.get("available"):
                 raise ValueError(found.get("error") or "decomp.wtf is up to date")
+            if not found.get("can_apply", True):
+                raise ValueError(found.get("why_not") or "this update cannot be installed automatically")
             ok, why = can_apply()
             if not ok:
                 raise ValueError(why)
-            self.job = {"state": "installing", "log": [], "error": None}
+            self.job = {"state": "installing", "log": [], "error": None,
+                        "version": (found.get("latest") or {}).get("version")}
 
         def log(line: str) -> None:
             self.job["log"].append(str(line))
 
         def run() -> None:
             try:
-                install(found, log=log)
-            except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+                self.install(found, log=log)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
                 self.job.update(state="error", error=str(e))
                 return
             self.job["state"] = "restarting"

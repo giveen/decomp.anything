@@ -291,6 +291,9 @@ def test_the_permuter_finishes_a_near_miss(game):
         db.execute("UPDATE functions SET status='open', matched_source=NULL, best_score=?, best_source=? WHERE id=?",
                    (near[1], near[0], fn["id"]))
     proj = net.project_row(slug)
+    net.discover_assistance(slug, function="entity_update_physics")
+    net.record_assistance(agent, slug, "entity_update_physics", "Compared matching code and compiler guidance",
+                          "Only instruction/register layout remains; bounded equivalent rewrites are appropriate")
     assert [r["name"] for r in net.permuter.candidates(proj)][:1] == ["entity_update_physics"]
     permuter, _ = net.local_agent("permuter")
     st = State()

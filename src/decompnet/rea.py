@@ -33,6 +33,7 @@ from . import toolchains
 PACKAGE = "rea-agents@6.7.0"  # the version tested with decomp.anything
 PROVIDERS = ("ghidra", "hopper", "ida", "rizin")
 CONFIG: Path | None = None  # rea.json, set by the app at start
+_catalog_lock = threading.Lock()
 _SECRET = re.compile(r"key|token|secret|password|auth|cookie|credential", re.IGNORECASE)
 
 # Only read-only analysis. Nothing that opens files by arbitrary path after the initial target,
@@ -54,6 +55,12 @@ ANALYSIS_ALLOWED = (ALLOWED - {"open_binary", "close_binary"}) | {
     "batch_decompile", "get_call_graph", "trace_call_path", "trace_feature", "trace_native_values", "search_bytes",
     # a static trace through the application graph the project was opened with; it opens nothing and runs nothing
     "trace_application_feature",
+    "binary_session", "get_evidence_bundle",
+}
+NATIVE_ALLOWED = (ALLOWED - {"open_binary", "close_binary"}) | {
+    "binary_session", "batch_decompile", "get_call_graph", "trace_call_path", "trace_feature",
+    "trace_native_values", "search_bytes", "inspect_native_api", "inspect_native_data_type",
+    "inspect_address_context", "inspect_analysis_view", "get_evidence_bundle",
 }
 
 
@@ -183,7 +190,11 @@ class Client:
         except OSError as e:
             raise ReaError(f"REA couldn't start ({' '.join(argv)}): {e}") from e
         threading.Thread(target=self._read, daemon=True).start()
-        self._initialize()
+        try:
+            self._initialize()
+        except BaseException:
+            self.close()
+            raise
 
     def _read(self) -> None:
         assert self.proc.stdout is not None
@@ -443,6 +454,66 @@ def open_analysis(target: dict, provider: str = "") -> tuple[Client, object]:
 
 def analysis_client(target: dict, provider: str = "") -> Client:
     return open_analysis(target, provider)[0]
+
+
+def agent_client(target: dict, provider: str = "", *, native: bool = False, connect: bool = False) -> Client | None:
+    """Reuse the project's session; discovery alone does not start a cold native import."""
+    if os.environ.get("DECOMP_REA", "").strip().lower() in ("off", "0", "false", "no"):
+        raise ReaError("REA is disabled by DECOMP_REA; use the available project skills and findings")
+    if native:
+        key = str(Path(target["path"]).resolve())
+        client = _clients.get(key)
+        if connect:
+            with _lock:
+                return _client(Path(key))
+    else:
+        client = _analysis_clients.get(_target_key(target, provider))
+        if connect:
+            return analysis_client(target, provider)
+    return client if client is not None and client.alive() else None
+
+
+def agent_catalog(client: Client, allowed: set[str], refresh: bool = False) -> dict:
+    """Actual schemas and session availability, restricted to the agent's read-only tools."""
+    with _catalog_lock:
+        cached = getattr(client, "_agent_catalog", None)
+        if refresh or cached is None or time.monotonic() - cached[0] > 300:
+            specs = client.tools()
+            availability = {}
+            if any(s.get("name") == "binary_session" for s in specs):
+                try:
+                    session = client.call("binary_session", {}, any_tool=True)
+                    if isinstance(session, dict):
+                        session = session.get("result", session)
+                        availability = session.get("tool_availability", {}) if isinstance(session, dict) else {}
+                except ReaError as e:
+                    availability = {"_error": str(e)}
+            client._agent_catalog = (time.monotonic(), specs, availability)
+        _, specs, availability = client._agent_catalog
+    if isinstance(availability, list):
+        availability = {a.get("name", a.get("tool")): a for a in availability if isinstance(a, dict)}
+    availability = availability if isinstance(availability, dict) else {}
+    tools = []
+    for spec in specs:
+        name = spec.get("name")
+        if name not in allowed:
+            continue
+        state = availability.get(name, {})
+        state = state if isinstance(state, dict) else {"available": state} if isinstance(state, bool) else {}
+        tools.append({"name": name, "description": spec.get("description", ""),
+                      "inputSchema": spec.get("inputSchema") or {}, "available": state.get("available"),
+                      "availability": state})
+    return {"status": "connected", "tools": tools,
+            "availability_note": availability.get("_error") or
+            ("Unreported availability is unknown; an advertised tool may still need a provider." if not availability else "")}
+
+
+def evidence_metadata(record) -> dict:
+    """Keep the provenance and limits that agents need when saving findings or following retained evidence."""
+    if not isinstance(record, dict) or "normalized_result" not in record:
+        return {}
+    return {k: record[k] for k in ("evidence_id", "operation", "provider", "confidence", "authority", "limitations",
+                                 "subject", "retention", "analysis_profile") if k in record}
 
 
 def analysis_result(target: dict, provider: str = "") -> object:

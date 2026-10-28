@@ -18,7 +18,9 @@ open a child yourself: read the claimed entry within its limits.
    starting functions (entry points, then the largest). A native task whose brief names addresses gets those
    functions decompiled in one batch, so you can start from code instead of searching for it.
 2. Read the dossier before calling more tools. It often answers the question on its own.
-3. Go deeper with `rea_tool(tool, arguments)`. Useful tools:
+3. Ask `discover_assistance(query, function)` which skills and tools answer your remaining question. Read relevant
+   skills with `read_skill(id)`, use the live input schemas and session availability, then go deeper with
+   `rea_tool(tool, arguments)`. The examples below are hints; the connected server's schemas are authoritative:
    - `search_strings {"pattern": "..."}` and `search_procedures {"pattern": "..."}`: find things by name or text.
    - `analyze_function {"procedure": "0x401000"}`: a full dossier for any procedure.
    - `xrefs {"address": "0x..."}`: who references an address.
@@ -37,6 +39,8 @@ open a child yourself: read the claimed entry within its limits.
    The trace and graph tools are for native targets. A JavaScript or Electron project uses **Trace a feature**
    in the project instead, which walks the application graph.
 4. Write while you work: `add_note(text, function)` for anything the next agent should know.
+   Preserve REA's evidence IDs, provider, confidence and limitations. `record_assistance(function, summary)` shares
+   the guidance and evidence you checked; do not equate an unavailable tool or incomplete output with absent behavior.
 5. Finish with `complete_function(function, summary)`. The summary is required: what the item does, its inputs and
    outputs, what it calls, the data it touches, and anything surprising. It is saved on the item and in the project's
    notes. When you reconstructed its code too, save it first with `write_source(function, source)`.

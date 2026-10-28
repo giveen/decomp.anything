@@ -3842,12 +3842,19 @@ async function showSettingsPage() {
   const from = inst.channel === "branch" ? `the ${esc(inst.branch)} branch @ <code>${esc((inst.commit || "?").slice(0, 7))}</code>` : "this repository's release feed";
   $("setAbout").innerHTML = `<p class="small">decomp.anything ${esc(st.version)} on ${esc(st.platform)}${esc(where)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
     <div class="field"><span>Updates come from ${from}</span><div class="row"><span class="muted small grow" id="upText">Checking…</span><button class="ghost small-btn" id="upCheck" type="button">Check now</button></div></div>
-    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "the release feed which version is current"}; nothing about you or your projects is sent).</span></label>
+    <div class="field"><span>REA toolset updates come from the rea-agents package on npm</span><div class="row"><span class="muted small grow" id="reaUpText">Checking…</span><button class="primary small-btn" id="reaUpGo" type="button" hidden>Update REA</button></div></div>
+    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (GitHub for decomp.anything and npm for managed REA; nothing about you or your projects is sent).</span></label>
     <label class="check"><input type="checkbox" id="autoUpdateSet" ${st.settings.auto_update ? "checked" : ""}><span><b>Install updates by itself</b> when no helper agent is working (it restarts in a few seconds; agents carry on).</span></label>
+    <label class="check"><input type="checkbox" id="autoReaUpdateSet" ${st.settings.auto_update_rea ? "checked" : ""}><span><b>Install REA updates automatically</b> when helpers and background jobs are idle (restarts decomp.anything to refresh connections).</span></label>
     <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf (upstream)</a><a class="link small" href="https://github.com/giveen/decomp.anything" target="_blank" rel="noopener">Source code</a></div>`;
   const showUpdate = (u) => {
     if (!$("upText") || !u) return;
     $("upText").textContent = u.error ? u.error : u.available ? `New: ${updateName(u)}` : u.disabled ? "Not looking for updates." : "Up to date.";
+    const r = u.rea || {}, rc = r.current || {};
+    $("reaUpText").textContent = r.error || r.why_not || (r.disabled ? "Not looking for REA updates." : r.available ? `REA ${r.latest.version} is ready (current: ${rc.version || "unknown"}).` : `REA ${rc.version || "version unknown"} · ${rc.source || "not configured"}`);
+    $("reaUpGo").hidden = !r.available;
+    $("reaUpGo").disabled = !r.can_apply;
+    $("reaUpGo").onclick = offerReaUpdate;
     if (u.available && !$("upGo2")) {
       const b = document.createElement("button");
       b.className = "primary small-btn"; b.id = "upGo2"; b.type = "button"; b.textContent = "Update now";
@@ -3859,6 +3866,7 @@ async function showSettingsPage() {
   $("upCheck").onclick = async () => { $("upText").textContent = "Checking…"; showUpdate(await checkUpdate(true, false)); };
   $("checkUpdateSet").onchange = () => save({ check_updates: $("checkUpdateSet").checked }, $("checkUpdateSet").checked ? "decomp.anything looks for updates." : "decomp.anything won't look for updates (Check now still does).");
   $("autoUpdateSet").onchange = () => save({ auto_update: $("autoUpdateSet").checked }, $("autoUpdateSet").checked ? "decomp.anything installs updates by itself." : "decomp.anything asks before updating.");
+  $("autoReaUpdateSet").onchange = () => save({ auto_update_rea: $("autoReaUpdateSet").checked }, "REA update preference saved.");
   wireCopies($("setComputer"));
   serviceRow($("svcRow2"), "decomp.anything runs while you have it open.");
   $("themeSeg").querySelectorAll("[data-theme]").forEach((b) => { b.onclick = () => { setTheme(b.dataset.theme); $("themeSeg").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); }; });
@@ -3881,12 +3889,17 @@ function updateName(u) {
 }
 async function checkUpdate(refresh = false, ask = true) {
   try { updateInfo = await api(`/api/update${refresh ? "?refresh=1" : ""}`); } catch { return null; }
-  $("navUpdate").hidden = !updateInfo.available;
+  $("navUpdate").hidden = !updateInfo.available && !updateInfo.rea?.available;
   const job = updateInfo.job || {};
   if (job.state === "installing" || job.state === "restarting") { showUpdating(); return updateInfo; }
+  const rjob = updateInfo.rea?.job || {};
+  if (rjob.state === "installing" || rjob.state === "restarting") { showUpdating("rea"); return updateInfo; }
   let skipped = "";
+  let skippedRea = "";
   try { skipped = localStorage.getItem(UPDATE_SKIP) || ""; } catch { /* storage off */ }
+  try { skippedRea = localStorage.getItem(`${UPDATE_SKIP}:rea`) || ""; } catch { /* storage off */ }
   if (ask && updateInfo.available && skipped !== updateTarget(updateInfo) && $("dialog").hidden && $("drawer").hidden) offerUpdate();
+  else if (ask && updateInfo.rea?.available && skippedRea !== updateTarget(updateInfo.rea) && $("dialog").hidden && $("drawer").hidden) offerReaUpdate();
   return updateInfo;
 }
 function offerUpdate() {
@@ -3911,18 +3924,40 @@ function offerUpdate() {
     showUpdating();
   };
 }
-async function showUpdating() {
+function offerReaUpdate() {
+  const u = updateInfo?.rea;
+  if (!u?.available) return;
+  const body = dialog("A new REA toolset is ready", `<p>REA <b>${esc(u.latest.version)}</b> is available. Current version: ${esc(u.current?.version || "unknown")}.</p>
+    ${(u.notes || []).map((n) => `<p class="small">${esc(n)}</p>`).join("")}
+    <p>The update is installed separately and its MCP tool catalog is checked before use. decomp.anything then restarts to refresh agent connections. Helpers resume afterwards.</p>
+    <p class="muted small">${u.can_apply ? "Your provider settings are kept. This updates REA; provider tools keep their own versions." : esc(u.why_not)}</p>
+    <p><a class="link" href="https://www.npmjs.com/package/rea-agents" target="_blank" rel="noopener">REA releases</a></p>
+    <div class="row"><button class="primary" id="reaGo" type="button" ${u.can_apply ? "" : "disabled"}>Update REA now</button><button class="ghost" id="reaLater" type="button">Later</button></div>`);
+  body.querySelector("#reaLater").onclick = () => {
+    try { localStorage.setItem(`${UPDATE_SKIP}:rea`, updateTarget(u)); } catch { /* storage off */ }
+    closeAll();
+  };
+  body.querySelector("#reaGo").onclick = async (e) => {
+    e.target.disabled = true;
+    try { await api("/api/update", { method: "POST", body: { target: "rea", apply: true } }); }
+    catch (err) { e.target.disabled = false; return toast(esc(err.message), "err"); }
+    showUpdating("rea");
+  };
+}
+async function showUpdating(target = "app") {
   if (S.updating) return;
   S.updating = true;
+  const reaVersion = updateInfo?.rea?.job?.version || updateInfo?.rea?.latest?.version;
   const was = { version: S.st ? S.st.version : "", build: S.st ? S.st.build || "" : "" };
-  dialog("Updating decomp.anything", `<p id="upStep">Installing the update…</p><pre class="joblog tall" id="upLog"></pre>
+  dialog(target === "rea" ? "Updating REA" : "Updating decomp.anything", `<p id="upStep">Installing the update…</p><pre class="joblog tall" id="upLog"></pre>
     <p class="muted small">This tab reloads by itself once the new version is running.</p>`);
   let away = 0;
   for (;;) {
     await sleep(1000);
     let u = null;
     try { u = await api("/api/update"); away = 0; } catch { away++; }
-    const job = (u && u.job) || {};
+    const job = (target === "rea" ? u?.rea?.job : u?.job) || {};
+    if (target === "rea" && job.state === "idle" && u?.rea?.current?.version === reaVersion) { location.reload(); return; }
     if (u && $("upLog")) { $("upLog").textContent = (job.log || []).join("\n"); $("upLog").scrollTop = $("upLog").scrollHeight; }
     if (job.state === "error") {
       S.updating = false;
@@ -3941,7 +3976,7 @@ async function showUpdating() {
     }
   }
 }
-$("navUpdate").onclick = () => (updateInfo && updateInfo.available ? offerUpdate() : checkUpdate(true, true));
+$("navUpdate").onclick = () => (updateInfo?.available ? offerUpdate() : updateInfo?.rea?.available ? offerReaUpdate() : checkUpdate(true, true));
 
 $("quitBtn").onclick = async () => {
   if (!confirm("Quit decomp.anything? Running agents stop.")) return;

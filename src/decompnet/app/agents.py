@@ -769,14 +769,10 @@ class Manager:
         text = self._prompt(s)
         # the know-how every session reads first, given up front (saves each session its first tool calls)
         ov = self.net.overview(s.slug)
-        if ov.get("kind") == "fork":
-            # CodeWarrior's register and stack rules decide most of what's left on GameCube, Wii and DS
-            topics = ["fork", "objdiff", *(["mwcc"] if ov.get("platform") in ("gc", "wii", "nds") else [])]
-        elif ov.get("platform") in ("windows", "linux"):
-            topics = ["workflow", "x86", *(["cpp"] if ov.get("source_language") == "C++" else [])]
-        else:
-            topics = ["workflow", {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(ov.get("platform")) or (
-                "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")]
+        from . import assistance
+
+        topics = assistance.topics(ov)
+        text += "\n" + tools._assistance_hint()
         text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(
             tools._guide(t) for t in topics)
         if (learned := self.net.learnings(s.slug)):
@@ -1015,7 +1011,7 @@ class Manager:
                     for _attempt in range(4):
                         if s.stop.is_set():
                             return True
-                        fit(messages, budget)
+                        fit(messages, budget, trim_latest_tools=True)
                         r = _request_or_stop(s.stop, client, "post", f"{base}/chat/completions", headers=headers,
                                              json={"model": model, "messages": messages, "tools": schema,
                                                    "tool_choice": "auto"})
@@ -1084,9 +1080,10 @@ def _too_long(r) -> bool:
         r"context|too long|exceed|maximum.*tokens|n_ctx|prompt is too|reduce the length", r.text[:2000], re.IGNORECASE))
 
 
-def fit(messages: list[dict], budget: int) -> int:
+def fit(messages: list[dict], budget: int, *, trim_latest_tools: bool = False) -> int:
     """Shrink the conversation to `budget` tokens: older tool output goes first (a function's assembly and diffs
     from several steps ago), then older reasoning. The instructions, the task and the latest exchange stay whole.
+    API requests may also bound an oversized latest tool response, labelled incomplete; task instructions stay whole.
     Returns the estimate after."""
     total = sum(_tokens(m) for m in messages)
     keep_from = max(2, len(messages) - 2)
@@ -1099,6 +1096,18 @@ def fit(messages: list[dict], budget: int) -> int:
                 before = _tokens(m)
                 m["content"] = text[:240] + "\n[... trimmed to save context: call the tool again if you need this]"
                 total -= before - _tokens(m)
+    if trim_latest_tools and total > budget:
+        for message in messages[2:]:
+            text = message.get("content")
+            if message.get("role") != "tool" or not isinstance(text, str) or len(text) <= 600:
+                continue
+            before = _tokens(message)
+            size = max(300, len(text) - (total - budget) * 3 - 300)
+            message["content"] = (text[:size // 2] + "\n[Incomplete tool preview: trimmed to fit context. "
+                                  "Use a focused view or retained evidence; do not infer full coverage.]\n" + text[-size // 2:])
+            total += _tokens(message) - before
+            if total <= budget:
+                break
     return total
 
 
@@ -1156,84 +1165,8 @@ def context_window(client, base: str, options: dict, stop: threading.Event | Non
 
 
 def api_tool_schemas(fork: bool = False, analysis: bool = False) -> list[dict]:
-    """OpenAI-style tool definitions for the built-in agent, from the same tools CLI agents get."""
-    def s(**props):
-        return {"type": "object", "properties": props, "required": [k for k, v in props.items() if v.pop("req", False)]}
-
-    def st(desc, req=False):
-        return {"type": "string", "description": desc, "req": req}
-
-    def it(desc):
-        return {"type": "integer", "description": desc}
-    defs = {
-        "project_info": ("Which game, compiler and progress.", s()),
-        "claim_function": ("Claim the next function (or one by name/address). Returns assembly, data, best attempt, "
-                           "notes and a draft. count > 1: a batch of small functions to judge together.",
-                           s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
-                             count=it("up to 6 small functions at once"))),
-        "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
-        "compile_and_diff": ("Compile C or C++ for the function, link it at its address and diff against the target. "
-                             "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
-                             s(function=st("function name, or several: a, b, c", True), source=st("C or C++ source", True))),
-        "complete_function": ("Analysis projects: mark this work item analyzed and save the finding.",
-                              s(function=st("work item", True),
-                                summary=st("what it does, calls, data, surprises", True))),
-        "write_source": ("Save the code you reconstructed into recovered/: a module, a procedure or task of an "
-                         "analyzed binary, or a function that can't be made byte-exact. Labelled reconstructed "
-                         "(unverified), never a match.",
-                         s(function=st("work item: a module, procedure, task or function", True),
-                           source=st("the complete module, or the function's code", True))),
-        "rea_tool": ("Analysis projects: run one read-only REA tool on the target.",
-                     s(tool=st("tool name, e.g. search_strings", True),
-                       arguments=st("JSON object of arguments (optional)"))),
-        "read_artifact_entry": ("Archive analysis projects: read one file entry in place, without extracting the archive.",
-                                s(entry=st("exact archive path", True), offset=it("byte offset"),
-                                  length=it("bytes, up to 8192"))),
-        "release_function": ("Give up a function with notes for the next agent.",
-                             s(function=st("function", True), notes=st("what you tried, what is left", True))),
-        "get_context": ("The shared header included in every compile.", s()),
-        "edit_context": ("Replace `old` (exactly once) with `new` in the shared header, or append when old is empty.",
-                         s(old=st("text to replace, or empty", True), new=st("replacement", True),
-                           message=st("why", True))),
-        "rename_symbol": ("Give a function or data address a real name.",
-                          s(old=st("current name", True), new=st("new name", True), message=st("why"))),
-        "split_function": ("Split a merged function at an address.",
-                           s(function=st("function", True), at=st("address like 0x80001234", True), new_name=st("name"))),
-        "read_data": ("Hex dump of the original's data at an address or symbol.", s(what=st("address or symbol", True),
-                                                                                    length=it("bytes, up to 512"))),
-        "list_functions": ("List functions by status.", s(status=st("open | matched | all"), limit=it("max rows"))),
-        "search_facts": ("Search functions, symbols, strings, imports and addresses; returns callers and users.",
-                         s(query=st("name, string, API or address", True), limit=it("max rows"))),
-        "list_subsystems": ("Group functions by imported APIs/strings: render, audio, input, network, file, UI, ...",
-                            s(limit=it("groups"))),
-        "add_note": ("Leave a note for other agents.", s(text=st("note", True), function=st("function"))),
-        "search_notes": ("Search notes.", s(query=st("text", True))),
-        "find_similar": ("Functions that look like this one, matched ones first, with the best one's source.",
-                         s(function=st("function", True), limit=it("how many"))),
-        "guide": ("Decompilation know-how; no topic lists topics.", s(topic=st("topic"))),
-        "read_file": ("Read a file with line numbers (forks: the project's; ROM projects: the reference folders the "
-                      "user named).", s(path=st("path from the project (or first reference folder) root", True),
-                                        start=it("first line"), count=it("lines"))),
-        "search_code": ("Regex search (forks: the project's C/C++ sources and headers; ROM projects: the reference "
-                        "folders' text files, case-insensitive, an address as 0x401070).",
-                        s(pattern=st("regular expression", True), glob=st("optional file glob"))),
-        "edit_file": ("Replace `old` (exactly once) with `new` in a source/header file, or append when old is empty. "
-                      "Undone if any match breaks.", s(path=st("file", True), old=st("text to replace, or empty", True),
-                                                       new=st("replacement", True), message=st("why", True))),
-        "file_status": ("How far a source file (or a function's file) is from being linked: functions left, its data "
-                        "next to the original's, why the last link failed.", s(path=st("file or function", True))),
-        "split_file": ("Divide a source file at a function: it and the rest of the file's code (and data from the given "
-                       "offsets) go to a new file. Kept only if the game still builds identically.",
-                       s(path=st("file", True), at=st("function name or .text offset", True),
-                         new_name=st("new file path (optional)"), data=st("e.g. .rodata:0x88 .data:0x28 (optional)"))),
-    }
-    if fork:
-        defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "
-                                    "with objdiff. 100% / score 0 = matched.",
-                                    s(function=st("function name", True), source=st("the function definition", True)))
-    names = set(tools.tool_names(fork, analysis))
-    return [{"type": "function", "function": {"name": n, "description": d, "parameters": p}}
-            for n, (d, p) in defs.items() if n in names]
+    """The same project-scoped schemas the MCP server advertises, without a second handwritten registry."""
+    return tools.tool_schemas(fork, analysis)
 
 
 def _terminate(proc: subprocess.Popen) -> None:
