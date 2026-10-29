@@ -25,6 +25,7 @@ Its tools come from the `decomp` MCP server.
      focused analysis call before hard manual work, then `record_assistance(function, summary)` with what you learned.
      When REA would help but is not connected, repeat discovery with `connect=true`. Keep evidence IDs and limitations.
      Record a `fallback_reason` before bounded permutation; repeated compilation requires a current knowledge review.
+     If the next useful probe is unclear, use the investigate skill or `guide("investigation")`.
    - **Matching project:** `claim_function()` gives you a function with its assembly, notes and a machine draft;
      `compile_and_diff(function, source)` until the score is 0. Read `guide("workflow")` first. Share what you learn
      with `edit_context`, `rename_symbol` and `add_note`. When stalled, revisit relevant assistance and follow the

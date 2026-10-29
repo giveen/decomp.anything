@@ -96,6 +96,16 @@ def test_discovery_respects_explicitly_disabled_rea(project, monkeypatch):
     assert "disabled" in result["rea"]["reason"]
 
 
+def test_investigation_guidance_is_discoverable_and_readable_through_agent_tools(project, monkeypatch):
+    net, agent = project
+    monkeypatch.setenv("DECOMP_REA", "off")
+    result = json.loads(tools.call(net, agent, "test", "discover_assistance",
+                                   {"query": "investigate stalled matches and conflicting evidence"}))
+    assert "investigation" in {s["id"] for s in result["skills"] if s["source"] == "bundled guide"}
+    content = tools.call(net, agent, "test", "read_skill", {"skill": "investigation"})
+    assert content == tools.call(net, agent, "test", "guide", {"topic": "investigation"})
+
+
 def test_user_shared_skills_and_notes_are_discovered_within_the_reference_boundary(project, tmp_path):
     net, agent = project
     root = tmp_path / "skills"

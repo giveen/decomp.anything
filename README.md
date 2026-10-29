@@ -176,7 +176,7 @@ claude mcp add decomp -- decomp mcp
 
 | Agent | Install it as a package instead |
 | :-- | :-- |
-| **Claude Code** | `/plugin marketplace add giveen/decomp.anything`, then `/plugin install decomp-anything@decomp-anything` (adds a "decompile" skill) |
+| **Claude Code** | `/plugin marketplace add giveen/decomp.anything`, then `/plugin install decomp-anything@decomp-anything` (adds "decompile" and "investigate" skills) |
 | **Codex, Antigravity CLI, opencode** | `decomp connect codex`, `decomp connect antigravity`, `decomp connect opencode` |
 
 ## How matching works
@@ -587,6 +587,9 @@ projects folder (`~/Decomp`).
 | **Local-first** | No account, no telemetry, no server dependency. |
 
 ## Development
+
+Human and agent-authored PRs are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for focused validation and
+review expectations; [AGENTS.md](AGENTS.md) routes agents to the relevant repository or target workflow.
 
 ```bash
 uv sync

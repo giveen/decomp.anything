@@ -17,7 +17,8 @@ open a child yourself: read the claimed entry within its limits.
    `read_artifact_entry` hint. The `survey` item gets the target overview, memory map and pseudocode for a few
    starting functions (entry points, then the largest). A native task whose brief names addresses gets those
    functions decompiled in one batch, so you can start from code instead of searching for it.
-2. Read the dossier before calling more tools. It often answers the question on its own.
+2. Read the dossier before calling more tools. It often answers the question on its own. If explanations conflict
+   or the next useful probe is unclear, consult `guide("investigation")`.
 3. Ask `discover_assistance(query, function)` which skills and tools answer your remaining question. Read relevant
    skills with `read_skill(id)`, use the live input schemas and session availability, then go deeper with
    `rea_tool(tool, arguments)`. The examples below are hints; the connected server's schemas are authoritative:

@@ -13,7 +13,8 @@ def main() -> None:
     checkout = Path(__file__).resolve().parents[2]
     if Path(str(package)).is_relative_to(checkout / "src"):
         raise RuntimeError("package smoke test imported the checkout instead of the installed wheel")
-    for name in ("toolchains.toml", "app/static/index.html", "app/static/app.css", "app/guide/analysis.md"):
+    for name in ("toolchains.toml", "app/static/index.html", "app/static/app.css", "app/guide/analysis.md",
+                 "app/guide/investigation.md"):
         if not package.joinpath(name).read_bytes():
             raise RuntimeError(f"missing or empty package resource: {name}")
     scripts = {ep.name for ep in metadata.distribution("decompnet").entry_points if ep.group == "console_scripts"}
