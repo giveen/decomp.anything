@@ -44,6 +44,7 @@ GUIDES = {
     "similarity": "finding similar functions and reusing matched code",
     "analysis": "REA analysis projects: reading a target, recording findings, tasks",
     "rea": "knowledge-first REA discovery, actual tool schemas, provider limits and evidence",
+    "investigation": "investigate stalled matches, conflicting evidence and failures with a focused hypothesis test",
 }
 
 # Guides worth reading first on each platform.

@@ -8,6 +8,8 @@ The user's instructions and project boundaries take precedence over skill sugges
 Read existing notes, the intake report, the claimed dossier and matched similar code before inventing a solution.
 State the remaining question, then choose the narrowest useful tool. Call REA only with its advertised inputSchema;
 tool names in a skill may describe a different server version. Availability that REA did not report is unknown.
+When explanations conflict or a match stalls without a useful next probe, `guide("investigation")` gives a focused
+way to distinguish hypotheses and leave a reproducible finding.
 
 Discovery reuses an existing session by default. When REA would answer a useful question, repeat with `connect=true`
 to open the project's target. It may require a cold import. An unavailable provider is a limitation to record;
