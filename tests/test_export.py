@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from elftools.elf.elffile import ELFFile
 
 from decompnet import toolchains
@@ -38,7 +39,7 @@ def _ready(platform: str) -> bool:
             and shutil.which("ld.lld") is not None)
 
 
-def _decompile(tmp: Path, platform: str):
+def _decompile(tmp: Path, platform: str, *, bundle_mode: str = ""):
     game, elf, _, build = DEMOS[platform]
     if not elf.exists() or not game.exists():
         subprocess.run([sys.executable, str(build)], check=True)
@@ -69,8 +70,13 @@ def _decompile(tmp: Path, platform: str):
                 net.rename_symbol(agent, slug, current, name)
                 table = net.symbols(pid)
     source = (GAME / "game.c").read_text()
+    bundle = "typedef s32 ExportValue;\n" + "\n".join(csource.get(source, n) for n in FUNCTIONS[:3])
+    bundle = bundle.replace("s32 abs_s32(", "ExportValue abs_s32(")
+    if bundle_mode == "macro":
+        bundle = "#define MATCHED_FUNCTION(name) s32 name\n" + bundle.replace("s32 clamp_s32(", "MATCHED_FUNCTION(clamp_s32)(")
     for name in FUNCTIONS:
-        assert net.attempt(agent, name, csource.get(source, name), slug)["matched"], name
+        submitted = bundle if bundle_mode and name in FUNCTIONS[:3] else csource.get(source, name)
+        assert net.attempt(agent, name, submitted, slug)["matched"], name
     return net, slug
 
 
@@ -115,3 +121,64 @@ def test_check_records_a_function_written_outside(tmp_path):
     (tree / "src" / "main" / "lerp.c").write_text('#include "common.h"\n\n' + csource.get((GAME / "game.c").read_text(), "lerp"))
     assert py("check", "lerp").returncode == 0
     assert "identical" in py().stdout
+
+
+def test_export_isolates_functions_from_a_shared_submission(tmp_path):
+    if not _ready("n64"):
+        pytest.skip("needs the n64 toolchain and binutils-mips")
+    net, slug = _decompile(tmp_path, "n64", bundle_mode="shared")
+    saved = [r["matched_source"] for r in net.store.all(
+        "SELECT matched_source FROM functions WHERE project_id=? AND name IN (?,?,?)",
+        net.project_row(slug)["id"], *FUNCTIONS[:3])]
+    assert len(saved) == 3 and len(set(saved)) == 1
+    out = net.export_rom(slug, log=lambda *_: None)
+    assert out["identical"], out["log"]
+    assert out["matched"] == len(FUNCTIONS) and not out["fallback"]
+    tree = Path(out["path"])
+    for name in FUNCTIONS[:3]:
+        exported = (tree / "src" / "main" / f"{name}.c").read_text()
+        assert csource.get(exported, name) is not None
+        assert all(csource.get(exported, other) is None for other in FUNCTIONS[:3] if other != name)
+    # Removing the neighbors must retain the shared typedef needed by abs_s32.
+    assert "ExportValue abs_s32(" in (tree / "src/main/abs_s32.c").read_text()
+    for generated in ("asm", "assets", "build"):
+        shutil.rmtree(tree / generated)
+    rebuilt = subprocess.run([sys.executable, "build.py"], cwd=tree, capture_output=True, text=True)
+    assert rebuilt.returncode == 0 and "identical" in rebuilt.stdout, rebuilt.stdout + rebuilt.stderr
+    assert [r["matched_source"] for r in net.store.all(
+        "SELECT matched_source FROM functions WHERE project_id=? AND name IN (?,?,?)",
+        net.project_row(slug)["id"], *FUNCTIONS[:3])] == saved
+
+
+def test_export_keeps_assembly_when_a_matched_function_crosses_a_splat_data_boundary(tmp_path):
+    if not _ready("n64"):
+        pytest.skip("needs the n64 toolchain and binutils-mips")
+    net, slug = _decompile(tmp_path, "n64")
+    proj = net.project_row(slug)
+    fn = net.store.one("SELECT * FROM functions WHERE project_id=? AND name='game_tick'", proj["id"])
+    config = next(Path(proj["root"]).glob("*.yaml"))
+    data = yaml.safe_load(config.read_text())
+    # Reproduce an inferred text/data boundary that leaves the final delay slot in a data block.
+    for segment in data["segments"]:
+        if isinstance(segment, dict) and segment.get("type") == "code" and segment.get("name") == "main":
+            for sub in segment["subsegments"]:
+                if isinstance(sub, list) and len(sub) > 1 and sub[1] == "data":
+                    sub[0] = fn["rom_offset"] + fn["size"] - 4
+    config.write_text(yaml.safe_dump(data, sort_keys=False))
+    out = net.export_rom(slug, log=lambda *_: None)
+    assert out["identical"], out["log"]
+    assert ("game_tick", "its code overlaps the next splat block") in out["fallback"]
+    assert not (Path(out["path"]) / "src/main/game_tick.c").exists()
+    saved = net.store.one("SELECT status,matched_source FROM functions WHERE id=?", fn["id"])
+    assert saved["status"] == "matched" and saved["matched_source"] == fn["matched_source"]
+
+
+def test_export_keeps_assembly_when_bundle_definitions_cannot_be_isolated(tmp_path):
+    if not _ready("n64"):
+        pytest.skip("needs the n64 toolchain and binutils-mips")
+    net, slug = _decompile(tmp_path, "n64", bundle_mode="macro")
+    out = net.export_rom(slug, log=lambda *_: None)
+    assert out["identical"], out["log"]
+    assert {name for name, _ in out["fallback"]} == set(FUNCTIONS[:3])
+    assert all("cannot isolate" in reason for _, reason in out["fallback"])
+    assert out["matched"] == len(FUNCTIONS) - 3
