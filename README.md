@@ -533,9 +533,12 @@ classes whose mangled names you need.
 as C, the rest as assembly, a linker script and `build.py`) and proves it rebuilds the target byte for byte.
 GameCube and Wii projects are dtk-template; DS projects are ds-decomp. Both rebuild on every build, and GameCube/Wii
 files link as they finish. For Windows and Linux programs, *Export IDE project* writes a normal **CMake** tree:
-one source per matched function, `include/context.h`, `compile_commands.json` for clangd/IDEs, and `judge.py`,
+verified C/C++ sources, `include/context.h`, `compile_commands.json` for clangd/IDEs, and `judge.py`,
 which compiles a function with the project's compiler and verifies it against the original bytes. Open it in VS
-Code, CLion, Visual Studio or your editor; full PE/ELF linking stays in your normal toolchain. Code and data stay
+Code, CLion, Visual Studio or your editor; full PE/ELF linking stays in your normal toolchain. Functions matched
+from the same shared submission use one source file. Export rechecks matches and resolves overlapping C submissions
+when it can verify the isolated functions. Unresolved definition conflicts stop export with an explanation and
+preserve the existing export. Code and data stay
 out of git: they're regenerated from your own copy.
 
 **Proprietary compilers** (IDO, CodeWarrior, CodeWarrior for DS) are only installed after you accept that. Heavy

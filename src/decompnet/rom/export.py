@@ -19,15 +19,14 @@ import shutil
 import subprocess
 import sys
 from bisect import bisect_right
-from itertools import pairwise
 from pathlib import Path
 
 import yaml
 
 from ..elfobj import list_functions
-from ..forks import csource
 from ..limits import capped
 from . import match
+from .export_sources import isolated_source
 from .symbols import AUTO_NAME
 
 AS_FLAGS = {
@@ -90,27 +89,6 @@ def _segments(config: dict) -> list[dict]:
             seg = {"start": seg[0], "type": seg[1], "name": seg[2] if len(seg) > 2 else f"{seg[0]:X}"}
         out.append(dict(seg) | {"start": start, "end": end})
     return out
-
-
-def _isolated_source(source: str, name: str, functions: list[str]) -> str | None:
-    """Keep the selected definition and shared declarations; never guess at overlapping definitions."""
-    target = csource.find(source, name)
-    if target is None:
-        return None
-    spans = []
-    for other in functions:
-        if other == name:
-            continue
-        span = csource.find(source, other)
-        if span is None or (span[0] < target[1] and target[0] < span[1]):
-            return None
-        spans.append(span)
-    spans.sort()
-    if any(left[1] > right[0] for left, right in pairwise(spans)):
-        return None
-    for start, end in reversed(spans):
-        source = source[:start] + "\n" + source[end:]
-    return source
 
 
 def export_rom(net, slug: str, out: Path, log=print) -> dict:
@@ -193,7 +171,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
             continue
         definitions = list_functions(compiled.obj)
         if set(definitions) != {row["name"]}:
-            source = _isolated_source(source, row["name"], definitions)
+            source = isolated_source(source, row["name"], definitions)
             if source is not None:
                 compiled = net._compile(proj, hdr, source)
             if source is None or not compiled.ok or set(list_functions(compiled.obj)) != {row["name"]}:
