@@ -185,7 +185,7 @@ LINUX_NOTE = """
 """
 
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
-BATCH_INSNS = 48
+BATCH_INSNS = 64
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
                       "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"],
                       "windows": ["mingw-x86_64", "mingw-x86", "mingwxx-x86_64", "mingwxx-x86",
@@ -3300,16 +3300,24 @@ class RomNetwork(Network):
             lines += [facts, ""]
         lines += ["### Where it lives",
                  f"address 0x{fn['vram']:08X}, ROM offset 0x{fn['rom_offset']:X}, segment {fn['unit']}"]
+        prev = {r["name"]: r for r in self.store.all("SELECT name, kind, size, preview FROM symbols WHERE project_id=?", proj["id"])}
         calls = sorted(x["calls"].get(fn["vram"], ()))
         callers = sorted(x["called_by"].get(fn["vram"], ()))
         if calls:
-            lines.append("calls: " + ", ".join(syms.label(a) for a in calls[:30]))
+            call_labels = []
+            for a in calls[:30]:
+                cname, _ = syms.name_at(a)
+                sr = prev.get(cname)
+                lbl = syms.label(a)
+                if sr and sr["preview"] and sr["kind"] in ("fn", "func"):
+                    lbl = f"{lbl} /* {sr['preview']} */"
+                call_labels.append(lbl)
+            lines.append("calls: " + ", ".join(call_labels))
         if callers:
             lines.append("called by: " + ", ".join(syms.label(a) for a in callers[:30]))
         used = sorted(x["uses"].get(fn["vram"], ()))
         if used:
             lines += ["", "### Data it uses (declare what you need as extern in your source, or in context.h)"]
-            prev = {r["name"]: r for r in self.store.all("SELECT name, kind, size, preview FROM symbols WHERE project_id=?", proj["id"])}
             for a in used[:40]:
                 name, _off = syms.name_at(a)
                 r = prev.get(name)
@@ -3350,8 +3358,15 @@ class RomNetwork(Network):
             key = (r["vram"], r["size"])
             live.add(key)
             if key not in cache:
-                cache[key] = (similarity.thumb_mnemonics(r["target"], r["vram"] or 0) if proj["arch"] == "arm" else
-                              similarity.mips_mnemonics(r["target"], bool(proj["big_endian"]), r["vram"] or 0))
+                arch = proj["arch"]
+                if arch == "arm":
+                    cache[key] = similarity.thumb_mnemonics(r["target"], r["vram"] or 0)
+                elif arch == "ppc":
+                    cache[key] = similarity.ppc_mnemonics(r["target"], bool(proj["big_endian"]), r["vram"] or 0)
+                elif arch in ("x86", "x86_64"):
+                    cache[key] = similarity.x86_mnemonics(r["target"], arch == "x86_64", r["vram"] or 0)
+                else:
+                    cache[key] = similarity.mips_mnemonics(r["target"], bool(proj["big_endian"]), r["vram"] or 0)
         for key in set(cache) - live:
             del cache[key]
         return cache
@@ -4818,8 +4833,10 @@ class RomNetwork(Network):
                 tc = self.cfg(proj)["compiler"]["toolchain"]
                 if not seeds.M2C_TARGETS.get(tc):
                     raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
-                ids = [r["id"] for r in self.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' "
-                                                       "ORDER BY n_insns, vram", proj["id"])]
+                ids = [r["id"] for r in self.store.all(
+                    "SELECT id FROM functions WHERE project_id=? AND status='open' AND boost >= 0 "
+                    "ORDER BY (boost > 0) DESC, boost DESC, n_insns ASC, vram ASC", proj["id"]
+                )]
                 try_one = self._autopilot_one
             no_drafts = ""
         except NetworkError as e:
@@ -4972,6 +4989,9 @@ class RomNetwork(Network):
                                             ctx["header"], data_asm, valid=True)
             if not draft:
                 why = f"{fn['name']}: m2c made no draft"
+            elif "M2C_ERROR" in draft or draft.count("goto ") > 10:
+                outcome = "far"
+                why = f"{fn['name']}: draft has errors/excessive gotos"
             else:
                 source = f"/* machine draft (m2c), tried by autopilot */\n{seeds.M2C_MACROS}\n{draft}\n"
                 result = self._compile(proj, ctx["header"], source)

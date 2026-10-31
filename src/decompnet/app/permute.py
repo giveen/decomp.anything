@@ -12,7 +12,9 @@ byte for byte, like everything else.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import os
 import random
 import threading
 import time
@@ -136,23 +138,32 @@ class Permuter:
             best_src = cur_src = fn["best_source"]
             best = cur = fn["best_score"]
             deadline = time.monotonic() + SECONDS
-            while time.monotonic() < deadline and best > 0 and not st.stop.is_set():
-                cand = mutate(cur_src if rng.random() < 0.85 else best_src, rng)
-                if cand is None:
-                    continue
-                st.variants += 1
-                score = self._score(agent, proj, fn, cand, best, fork)
-                if score is None:
-                    continue
-                if score < best:
-                    best, best_src = score, cand
-                    st.improved += 1
-                    if score == 0:
-                        st.matched += 1
-                        log.info("permuter: %s matched", fn["name"])
-                        break
-                if score <= cur or rng.random() < 0.02:  # mostly downhill, now and then sideways off a plateau
-                    cur, cur_src = score, cand
+            batch_size = min(8, max(2, (os.cpu_count() or 4) - 2))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as pool:
+                while time.monotonic() < deadline and best > 0 and not st.stop.is_set():
+                    cands = []
+                    for _ in range(batch_size):
+                        cand = mutate(cur_src if rng.random() < 0.85 else best_src, rng)
+                        if cand is not None and cand != cur_src:
+                            cands.append(cand)
+                    if not cands:
+                        continue
+                    st.variants += len(cands)
+
+                    futures = [pool.submit(self._score, agent, proj, fn, c, best, fork) for c in cands]
+                    for cand_src, f in zip(cands, futures, strict=False):
+                        score = f.result()
+                        if score is None:
+                            continue
+                        if score < best:
+                            best, best_src = score, cand_src
+                            st.improved += 1
+                            if score == 0:
+                                st.matched += 1
+                                log.info("permuter: %s matched", fn["name"])
+                                return
+                        if score <= cur or rng.random() < 0.02:  # mostly downhill, now and then sideways off a plateau
+                            cur, cur_src = score, cand_src
         finally:
             self._let_go(agent, fn)
 

@@ -24,7 +24,10 @@ from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc
 from .project import compiler_config
 
-TYPES_32 = ["int", "unsigned", "unsigned int", "long", "unsigned long", "s32", "u32", "uInt", "uLong"]
+TYPES_32 = [
+    "int", "unsigned", "unsigned int", "long", "unsigned long", "s32", "u32", "uInt", "uLong",
+    "short", "unsigned short", "s16", "u16", "s8", "u8", "float",
+]
 CASTS = ["(int)", "(unsigned)", "(s32)", "(u32)", "(uInt)", "(uLong)", "(short)", "(unsigned short)"]
 _DECL = re.compile(r"^(\s+)(register\s+)?((?:unsigned\s+|signed\s+)?\w+)(\s*\**\s*)(\w+)(\s*(?:=[^;]*)?;)\s*$")
 _STMT = re.compile(r"^\s+[^\s{}#][^{}]*;\s*$")
@@ -130,7 +133,95 @@ def _add_cast(lines, rng):
     return lines
 
 
-MUTATIONS = [_swap_statements, _shuffle_declarations, _retype_local, _toggle_register, _rewrite, _rewrite, _add_cast]
+_IF_ELSE = re.compile(
+    r"^(\s*)if\s*\(([^)]+)\)\s*(?:\{\s*)?(\w+)\s*=\s*([^;{}]+);(?:\s*\})?\s*else\s*(?:\{\s*)?\3\s*=\s*([^;{}]+);(?:\s*\})?\s*$"
+)
+_TERNARY = re.compile(r"^(\s*)(\w+)\s*=\s*\(([^?]+)\)\s*\?\s*([^:]+)\s*:\s*([^;]+);\s*$")
+
+
+def _mutate_ifelse_to_ternary(lines, rng):
+    lo, hi = _body_bounds(lines)
+    options = []
+    for i in range(lo, hi):
+        if _IF_ELSE.match(lines[i]) or _TERNARY.match(lines[i]):
+            options.append(i)
+    if not options:
+        return None
+    i = rng.choice(options)
+    line = lines[i]
+    m_if = _IF_ELSE.match(line)
+    if m_if:
+        ind, cond, var, a, b = m_if.groups()
+        lines[i] = f"{ind}{var} = ({cond}) ? ({a.strip()}) : ({b.strip()});"
+        return lines
+    m_ter = _TERNARY.match(line)
+    if m_ter:
+        ind, var, cond, a, b = m_ter.groups()
+        lines[i] = f"{ind}if ({cond.strip()}) {var} = {a.strip()}; else {var} = {b.strip()};"
+        return lines
+    return None
+
+
+_WHILE_LOOP = re.compile(r"^(\s*)while\s*\(([^)]+)\)\s*\{$")
+
+
+def _mutate_while_and_dowhile(lines, rng):
+    lo, hi = _body_bounds(lines)
+    options = [i for i in range(lo, hi) if _WHILE_LOOP.match(lines[i])]
+    if not options:
+        return None
+    i = rng.choice(options)
+    ind, cond = _WHILE_LOOP.match(lines[i]).groups()
+    lines[i] = f"{ind}if ({cond}) do {{"
+    # find matching brace
+    depth, j = 1, i + 1
+    while j < hi and depth > 0:
+        if "{" in lines[j]:
+            depth += lines[j].count("{")
+        if "}" in lines[j]:
+            depth -= lines[j].count("}")
+        j += 1
+    if j - 1 < hi and depth == 0:
+        lines[j - 1] = lines[j - 1].rstrip() + f" while ({cond});"
+        return lines
+    return None
+
+
+_ARR_INDEX = re.compile(r"\b(\w+)\[([^\]]+)\]")
+_DEREF_PTR = re.compile(r"\*\(\s*(\w+)\s*\+\s*(\([^)]+\)|[^)]+)\)")
+
+
+def _mutate_array_vs_pointer(lines, rng):
+    lo, hi = _body_bounds(lines)
+    options = []
+    for i in range(lo, hi):
+        if _ARR_INDEX.search(lines[i]) or _DEREF_PTR.search(lines[i]):
+            options.append(i)
+    if not options:
+        return None
+    i = rng.choice(options)
+    line = lines[i]
+    if _ARR_INDEX.search(line):
+        lines[i] = _ARR_INDEX.sub(r"*(\1 + \2)", line, count=1)
+        return lines
+    if _DEREF_PTR.search(line):
+        def _repl(m: re.Match) -> str:
+            ptr = m.group(1)
+            off = m.group(2).strip()
+            if off.startswith("(") and off.endswith(")"):
+                off = off[1:-1].strip()
+            return f"{ptr}[{off}]"
+
+        lines[i] = _DEREF_PTR.sub(_repl, line, count=1)
+        return lines
+    return None
+
+
+MUTATIONS = [
+    _swap_statements, _shuffle_declarations, _retype_local, _toggle_register,
+    _rewrite, _rewrite, _add_cast, _mutate_ifelse_to_ternary, _mutate_while_and_dowhile,
+    _mutate_array_vs_pointer,
+]
 
 
 def mutate(source: str, rng: random.Random) -> str | None:

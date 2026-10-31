@@ -34,6 +34,24 @@ def thumb_mnemonics(code: bytes, vram: int = 0) -> list[str]:
     return [ins.mnemonic for ins in md.disasm(code, vram)]
 
 
+def ppc_mnemonics(code: bytes, big_endian: bool = True, vram: int = 0) -> list[str]:
+    import capstone
+
+    mode = capstone.CS_MODE_32 | (capstone.CS_MODE_BIG_ENDIAN if big_endian else capstone.CS_MODE_LITTLE_ENDIAN)
+    md = capstone.Cs(capstone.CS_ARCH_PPC, mode)
+    md.skipdata = True
+    return [ins.mnemonic for ins in md.disasm(code, vram)]
+
+
+def x86_mnemonics(code: bytes, is_64: bool = False, vram: int = 0) -> list[str]:
+    import capstone
+
+    mode = capstone.CS_MODE_64 if is_64 else capstone.CS_MODE_32
+    md = capstone.Cs(capstone.CS_ARCH_X86, mode)
+    md.skipdata = True
+    return [ins.mnemonic for ins in md.disasm(code, vram)]
+
+
 def mnemonics(lines: list[str]) -> list[str]:
     """Mnemonics from formatted instructions ("lwz r3, 0x10(r31)" -> "lwz")."""
     return [ln.split(None, 1)[0].lower() for ln in lines if ln.strip()]
@@ -50,6 +68,8 @@ def score(a: list[str], b: list[str]) -> float:
     """0..1, 1 = the same instruction sequence."""
     if not a or not b:
         return 0.0
+    if a == b:
+        return 1.0
     return SequenceMatcher(None, a[:MAX_OPS], b[:MAX_OPS], autojunk=False).ratio()
 
 
@@ -66,7 +86,7 @@ def rank(target: list[str], candidates: dict[str, list[str]], top: int = 5, floo
         if c >= floor:
             rough.append((c, name))
     rough.sort(reverse=True)
-    exact = [(name, score(target, candidates[name])) for _, name in rough[:150]]
+    exact = [(name, score(target, candidates[name])) for _, name in rough[:40]]
     exact = [(n, s) for n, s in exact if s >= floor]
     exact.sort(key=lambda x: -x[1])
     return exact[:top]
