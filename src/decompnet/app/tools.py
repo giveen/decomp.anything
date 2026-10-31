@@ -265,9 +265,17 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
     for name in names:
         fn = net._function(name, slug)
         if fn["attempts"] >= 2 and not assistance.reviewed(net, proj, fn):
+            meta = json.loads(fn["meta"] or "{}")
+            review = meta.get("assistance") or {}
+            has_disc = (review.get("fingerprint") == assistance.fingerprint(net, proj) and
+                        review.get("function_digest") == assistance.function_digest(fn))
+            if has_disc:
+                return (f"Knowledge review needed for {name} before more compile trials. "
+                        f"Assistance was discovered: record what you learned using "
+                        f"record_assistance(function='{name}', summary='<what you checked>') to proceed.")
             return (f"Knowledge review needed for {name} before more compile trials. "
-                    "Call discover_assistance(query=<remaining question>, function=<name>), read relevant skills or "
-                    "inspect evidence, then record_assistance(function, summary).")
+                    f"Call discover_assistance(query=<remaining question>, function='{name}'), read relevant skills or "
+                    f"inspect evidence, then record_assistance(function='{name}', summary='...').")
     if len(names) <= 1:
         return net.compile_and_diff(agent, names[0] if names else function, source, slug)
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)

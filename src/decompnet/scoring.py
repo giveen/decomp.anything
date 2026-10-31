@@ -61,6 +61,9 @@ def percent_text(p: float | None) -> str:
 
 
 def disassemble(fn: FunctionObj) -> list[Insn]:
+    cached = getattr(fn, "_decomp_insns", None)
+    if cached is not None:
+        return cached
     arch, mode = _CS[(fn.arch, fn.big_endian)]
     md = capstone.Cs(arch, mode)
     md.detail = True
@@ -83,6 +86,7 @@ def disassemble(fn: FunctionObj) -> list[Insn]:
         elif ins.id and ins.group(capstone.CS_GRP_JUMP) and _NUM.match(ops.strip()):
             ops = f".L{int(ops, 16):x}"  # intra-function branch: keep it position-relative
         out.append(Insn(ins.address, ins.mnemonic, ops, f"{ins.mnemonic} {ops}".strip()))
+    fn._decomp_insns = out
     return out
 
 
@@ -241,10 +245,14 @@ def compact_asm(text: str) -> str:
 
 
 def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:
-    t_ins, c_ins = disassemble(target), disassemble(candidate)
-    max_score = max(1, len(t_ins)) * PENALTY_INSERTION
     bytes_match = target.fingerprint() == candidate.fingerprint()
+    t_ins = disassemble(target)
+    max_score = max(1, len(t_ins)) * PENALTY_INSERTION
+    if bytes_match:
+        rows = [(" ", ins.text, ins.text) for ins in t_ins]
+        return DiffResult(score=0, max_score=max_score, rows=rows, bytes_match=True)
 
+    c_ins = disassemble(candidate)
     sm = difflib.SequenceMatcher(a=[i.mnemonic for i in t_ins], b=[i.mnemonic for i in c_ins], autojunk=False)
     rows: list[tuple[str, str, str]] = []
     score = 0

@@ -427,10 +427,16 @@ class Network:
             return {"text": "❌ No match. This is a hash-only project, so the coordinator can only say match / no match. "
                             f"For a scored diff, run `decompnet local diff <your-object.o> {fn['name']} <your.c>` "
                             "against your own lawful copy.", "score": None, "matched": False}
-        d = scoring.diff(self._target_obj(fn, proj), cand)
+        target_obj = self._target_obj(fn, proj)
+        d = scoring.diff(target_obj, cand)
         if verdict is not None:
             d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
         matched_now = d.bytes_match and not scratch
+
+        prev_attempt = self.store.one(
+            "SELECT score, source FROM attempts WHERE function_id=? AND agent_id=? ORDER BY id DESC LIMIT 1",
+            fn["id"], agent.id,
+        )
         self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now)
 
         if scratch:
@@ -441,13 +447,55 @@ class Network:
                     "score": 0, "matched": True}
         else:
             best = self.store.one("SELECT best_score FROM functions WHERE id=?", fn["id"])["best_score"]
-            head = (f"score {d.score} ({scoring.percent_text(d.percent)} match) — best so far {best}. "
-                    f"Target {len([r for r in d.rows if r[1]])} insns, yours {len([r for r in d.rows if r[2]])}.")
+            delta_str = ""
+            if prev_attempt and prev_attempt["score"] is not None and d.score is not None:
+                diff_pts = prev_attempt["score"] - d.score
+                if diff_pts > 0:
+                    delta_str = f" (improved by +{diff_pts} pts vs previous attempt {prev_attempt['score']})"
+                elif diff_pts < 0:
+                    delta_str = f" (regressed by {diff_pts} pts vs previous attempt {prev_attempt['score']})"
+                else:
+                    delta_str = f" (same score as previous attempt {prev_attempt['score']})"
+            dup_warn = "\n⚠️ Identical source to your previous attempt. No changes were made." if (
+                prev_attempt and prev_attempt["source"] == source
+            ) else ""
+            head = (f"score {d.score}{delta_str} ({scoring.percent_text(d.percent)} match) — best so far {best}. "
+                    f"Target {len([r for r in d.rows if r[1]])} insns, yours {len([r for r in d.rows if r[2]])}."
+                    f"{dup_warn}")
+
+            stack_hints = []
+            for m, t_str, c_str in d.rows:
+                if m == "s":
+                    t_nums = [int(n, 0) for n in re.findall(r"-?0x[0-9a-f]+|-?\d+", t_str, re.IGNORECASE)]
+                    c_nums = [int(n, 0) for n in re.findall(r"-?0x[0-9a-f]+|-?\d+", c_str, re.IGNORECASE)]
+                    if t_nums and c_nums and len(t_nums) == len(c_nums):
+                        delta = c_nums[0] - t_nums[0]
+                        if delta != 0 and abs(delta) % 4 == 0:
+                            stack_hints.append(f"stack offset difference (candidate is {delta:+d} bytes vs target)")
+                            break
+            if stack_hints:
+                head += f"\n💡 Stack hint: {stack_hints[0]} (check local variable types or stack frame allocation)."
+
             if d.rows and all(m == " " for m, _, _ in d.rows):
-                head += ("\nNOT A MATCH YET: every instruction reads the same, but the bytes differ"
+                t_norm = target_obj.normalized()
+                c_norm = cand.normalized()
+                diff_detail = ""
+                for byte_idx in range(min(len(t_norm), len(c_norm))):
+                    if t_norm[byte_idx] != c_norm[byte_idx]:
+                        diff_detail = (f" (first byte mismatch at offset +0x{byte_idx:x}: "
+                                       f"target 0x{t_norm[byte_idx]:02x} vs yours 0x{c_norm[byte_idx]:02x})")
+                        break
+                if not diff_detail and len(t_norm) != len(c_norm):
+                    diff_detail = f" (length mismatch: target {len(t_norm)} bytes vs yours {len(c_norm)} bytes)"
+                head += (f"\nNOT A MATCH YET: every instruction reads the same, but the bytes differ{diff_detail}"
                          + (" because of the linking notes at the end: fix those." if problems else
                             ": an encoding the listing doesn't show (branch form, an immediate, a relocation)."))
         warn = f"\ncompiler output:\n{result.log.strip()}" if result.log.strip() else ""
+        if result.log.strip():
+            warn_lines = [ln.strip() for ln in result.log.strip().splitlines()
+                          if re.search(r"\bwarning\b|\binlined\b|\bincompatible pointer\b", ln, re.IGNORECASE)]
+            if warn_lines and len(result.log.strip().splitlines()) > len(warn_lines):
+                warn = "\ncompiler warnings:\n" + "\n".join(f"- {w}" for w in warn_lines[:5]) + warn
         if problems:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
         return {"text": f"{head}\n{d.render()}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}

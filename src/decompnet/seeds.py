@@ -74,7 +74,14 @@ def gnu_asm(fn: FunctionObj) -> str:
 
 def _context_for_m2c(header: str) -> str:
     # m2c parses the context with pycparser and does not run a preprocessor.
-    return "\n".join(line for line in header.splitlines() if not line.lstrip().startswith("#"))
+    lines = [line for line in header.splitlines() if not line.lstrip().startswith("#")]
+    text = "\n".join(lines)
+    # Strip GCC attributes, inline asm, keywords and enum forward declarations unsupported by pycparser
+    text = re.sub(r"__attribute__\s*\(\(\s*.*?\s*\)\)", "", text, flags=re.DOTALL)
+    text = re.sub(r"\b(__extension__|__restrict__|__restrict|__inline__|__inline)\b", "", text)
+    text = re.sub(r"\b(__asm__|__asm|asm)\s*\([^)]*\)", "", text)
+    text = re.sub(r"\benum\s+\w+\s*;", "", text)
+    return text
 
 
 def generate(fn: FunctionObj, toolchain_id: str | None, context_header: str = "", timeout: float = 20) -> str | None:

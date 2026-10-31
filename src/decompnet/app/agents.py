@@ -1103,7 +1103,12 @@ def fit(messages: list[dict], budget: int, *, trim_latest_tools: bool = False) -
             text = m.get("content")
             if m.get("role") in kinds and isinstance(text, str) and len(text) > 300:
                 before = _tokens(m)
-                m["content"] = text[:240] + "\n[... trimmed to save context: call the tool again if you need this]"
+                lines = text.splitlines()
+                prefix = lines[0] if lines else text[:240]
+                if (len(lines) > 1 and len(prefix) + len(lines[1]) + 1 <= 240
+                        and not lines[1].strip().startswith(("|", "TARGET", "markers:"))):
+                    prefix = prefix + "\n" + lines[1]
+                m["content"] = prefix[:240] + "\n[... trimmed to save context: call the tool again if you need this]"
                 total -= before - _tokens(m)
     if trim_latest_tools and total > budget:
         for message in messages[2:]:

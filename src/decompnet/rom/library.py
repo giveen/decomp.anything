@@ -7,6 +7,8 @@ auto-generated names (sub_...) are never classified on their own.
 
 from __future__ import annotations
 
+import re
+
 from .symbols import AUTO_NAME
 
 CRT = {
@@ -37,13 +39,57 @@ LIBC = {
     "toupper", "tolower", "isalpha", "isdigit", "isspace", "isalnum", "isupper", "islower",
 }
 
+# Standard Nintendo 64 SDK (Libultra) functions and math/matrix utilities
+LIBULTRA = {
+    "osCreateThread", "osStartThread", "osStopThread", "osSetThreadPri", "osGetThreadPri",
+    "osCreateMesgQueue", "osSendMesg", "osRecvMesg", "osSetEventMesg", "osViGetCurrentFramebuffer",
+    "osViSetMode", "osViBlack", "osViSwapBuffer", "osAiSetFrequency", "osAiGetLength",
+    "osDpSetNextBuffer", "osSpTaskLoad", "osSpTaskStartGo", "osContInit", "osContStartReadData",
+    "osContGetReadData", "osEepromRead", "osEepromWrite", "osPfsInit", "bzero", "bcopy", "bcmp",
+    "guMtxIdent", "guMtxIdentF", "guPerspective", "guPerspectiveF", "guLookAt", "guLookAtF",
+    "guRotate", "guRotateF", "guScale", "guScaleF", "guTranslate", "guTranslateF",
+    "__osSetSR", "__osGetSR", "__osSetFpcCsr", "__osGetFpcCsr", "__osSiRawReadIo", "__osSiRawWriteIo",
+    "__osSpRawReadIo", "__osSpRawWriteIo",
+}
+
+# PlayStation 1 Psy-Q / SDK functions
+PSYQ = {
+    "DrawSync", "PutDrawEnv", "PutDispEnv", "SetDefDrawEnv", "SetDefDispEnv", "ClearImage",
+    "LoadImage", "StoreImage", "MoveImage", "CdRead", "CdSync", "CdInit", "CdControl",
+    "SpuInit", "SpuSetKey", "SpuSetVoiceAttr", "PadInit", "PadRead", "GsInit", "GsSortObject4",
+    "SetGeomOffset", "SetGeomScreen", "RotMatrix", "TransMatrix", "ScaleMatrix", "VectorNormal",
+    "SquareRoot0", "Square0", "DeliverEvent", "OpenEvent", "EnableEvent", "TestEvent",
+    "EnterCriticalSection", "ExitCriticalSection", "ChangeClearPAD",
+}
+
+# Game Boy Advance AGB Lib and BIOS / Sound driver functions
+AGBLIB = {
+    "AgbSysCall", "CpuSet", "CpuFastSet", "Div", "DivArm", "Sqrt", "ArcTan", "ArcTan2",
+    "MidiKey2Freq", "BgCnt", "DmaCopy", "SoundBiasSet", "SoundBiasReset", "RegisterRamReset",
+    "Halt", "Stop", "IntrWait", "VBlankIntrWait", "SoftReset", "m4aSoundInit", "m4aSoundMain",
+    "m4aSongNumStart", "m4aSongNumStop", "MPlayOpen", "MPlayStart",
+}
+
+# Compiler runtime helpers (libgcc soft-float and arithmetic)
+LIBGCC = {
+    "__divsi3", "__modsi3", "__udivsi3", "__umodsi3", "__divdi3", "__moddi3", "__udivdi3", "__umoddi3",
+    "__muldi3", "__ashldi3", "__ashrdi3", "__lshrdi3", "__floatdisf", "__floatdidf", "__fixsfdi",
+    "__fixdfdi", "__clzsi2", "__ctzsi2",
+}
+
+_SDK_PREFIX = re.compile(r"^(?:(?:os|__os|gu|al|n_al|leo|Leo|Gs|Cd|Spu|Pad|Fnt|GPU|m4a|MPlay)[A-Z]|__os_)")
+
 
 def kind(name: str) -> str | None:
-    """'CRT', 'C++ runtime', 'static library' or None. Auto names are never guessed from their shape."""
+    """'CRT', 'C++ runtime', 'static library', 'SDK library', 'compiler runtime' or None. Auto names are never guessed."""
     if not name or AUTO_NAME.match(name):
         return None
     if name in LIBC:
         return "C runtime"
+    if name in LIBGCC:
+        return "compiler runtime"
+    if name in LIBULTRA or name in PSYQ or name in AGBLIB or _SDK_PREFIX.match(name):
+        return "SDK library"
     if name in CRT or name.startswith(("__scrt_", "mainCRTStartup", "WinMainCRTStartup", "wWinMainCRTStartup",
                                         "_GLOBAL__sub_I", "__libc_csu", "_dl_relocate", "__x86.get_pc_thunk",
                                         "deregister_tm_clones", "register_tm_clones", "_pei386",
