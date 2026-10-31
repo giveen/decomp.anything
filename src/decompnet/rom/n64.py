@@ -80,7 +80,7 @@ def guess_compiler(rom: bytes, start: int = 0x1000, limit: int = 0x100000) -> st
     for (word,) in struct.iter_unpack(">I", rom[start:min(len(rom), start + limit)]):
         insn = rabbitizer.Instruction(word)
         if not insn.isImplemented():
-            break
+            continue
         if insn.uniqueId == rabbitizer.InstrId.cpu_j:
             jumps += 1
         elif insn.uniqueId == rabbitizer.InstrId.cpu_b:

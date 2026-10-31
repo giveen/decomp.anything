@@ -77,13 +77,18 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
     async def list_projects(ctx: Context) -> str:
         """The games in decomp.wtf on this computer, with progress. Open one with open_project."""
         agent = chat_agent(ctx)
-        rows = net.store.all("SELECT slug FROM projects ORDER BY id DESC")
-        out = []
-        for r in rows:
-            try:
-                out.append(line(net.overview(r["slug"])))
-            except (NetworkError, OSError, KeyError):
-                continue
+
+        def _fetch():
+            rows = net.store.all("SELECT slug FROM projects ORDER BY id DESC")
+            out = []
+            for r in rows:
+                try:
+                    out.append(line(net.overview(r["slug"])))
+                except (NetworkError, OSError, KeyError):
+                    continue
+            return out
+
+        out = await anyio.to_thread.run_sync(_fetch)
         cur = manager.project_of(agent.id) or settings.data.get("last_project")
         if not out:
             return "No projects yet. import_game(path) starts one from the user's own copy of a game."
@@ -176,12 +181,13 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         agent = chat_agent(ctx)
         slug = current(agent)
         if not kind:
-            kind = next((a["id"] for a in agents.detect() if a["installed"] and a["id"] != "api"), "")
+            detected = await anyio.to_thread.run_sync(agents.detect)
+            kind = next((a["id"] for a in detected if a["installed"] and a["id"] != "api"), "")
             if not kind:
                 raise ToolError("no agent CLI is installed for helpers (Claude Code, Codex, Antigravity CLI or opencode)")
         options = {"per_session": per_session or settings.data.get("per_session", agents.PER_SESSION)}
         try:
-            ids = manager.start(kind, slug, max(1, min(int(count), 8)), options)
+            ids = await anyio.to_thread.run_sync(lambda: manager.start(kind, slug, max(1, min(int(count), 8)), options))
         except ValueError as e:
             raise ToolError(str(e)) from None
         return (f"Started {', '.join(ids)} on {slug}. They claim functions you aren't working on; progress() and "
@@ -232,7 +238,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         agent = chat_agent(ctx)
         slug = current(agent)
         try:
-            st = net.start_autopilot(slug)
+            st = await anyio.to_thread.run_sync(lambda: net.start_autopilot(slug))
         except NetworkError as e:
             raise ToolError(str(e)) from None
         return f"Autopilot is trying {st['total']} functions' machine drafts in the background; progress() shows it."

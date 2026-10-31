@@ -304,13 +304,13 @@ class ForkEngine:
         self._unit_locks: dict[tuple[int, str], threading.RLock] = defaultdict(threading.RLock)
         self._build_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)  # one build at a time per tree
         self._git_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
-        self._mlock = threading.Lock()
+        self._mlock = threading.RLock()
         # (project id, unit) -> (sha1 of its source, base object mtime, {function: match %}): what objdiff said
         # the last time it measured the unit, so a compile doesn't need a second objdiff run to know the baseline
         self._scores: dict[tuple[int, str], tuple[str, int | None, dict]] = {}
         self._index: dict[int, dict] = {}  # project id -> {unit: {"mtime", "order", "ops"}}
         self._indexing: set[int] = set()
-        self._ilock = threading.Lock()
+        self._ilock = threading.RLock()
         self._linking: dict[str, dict] = {}  # slug -> background link run
 
     # ------------------------------------------------------------------ locks, builds, baselines
@@ -330,27 +330,34 @@ class ForkEngine:
                 stack.enter_context(self._unit_lock(proj, n))
             yield
 
+    def _build_lock(self, proj) -> threading.Lock:
+        with self._mlock:
+            return self._build_locks[proj["id"]]
+
     def _build_unit(self, proj, fp: ForkProject, unit) -> tuple[bool, str]:
         """Build one unit's object. Builds share the tree's build files (ninja's log), so they take turns."""
-        with self._build_locks[proj["id"]]:
+        with self._build_lock(proj):
             return fp.build_unit(unit)
 
     def _build_all(self, proj, fp: ForkProject, failed: list[str] | None = None) -> tuple[bool, str]:
-        with self._build_locks[proj["id"]]:
+        with self._build_lock(proj):
             return fp.build_all(failed=failed)
 
     def _keep_scores(self, proj, unit, text: str, scores: dict) -> None:
         mtime = unit.base.stat().st_mtime_ns if unit.base is not None and unit.base.exists() else None
-        self._scores[(proj["id"], unit.name)] = (hashlib.sha1(text.encode()).hexdigest(), mtime, dict(scores))
+        with self._mlock:
+            self._scores[(proj["id"], unit.name)] = (hashlib.sha1(text.encode()).hexdigest(), mtime, dict(scores))
 
     def _last_scores(self, proj, unit) -> dict | None:
-        hit = self._scores.get((proj["id"], unit.name))
+        with self._mlock:
+            hit = self._scores.get((proj["id"], unit.name))
         return hit[2] if hit else None
 
     def _baseline(self, proj, fp: ForkProject, unit, text: str) -> tuple[dict | None, bool]:
         """({function: match %} for the unit as its source file is now, whether that builds). Scores are None when
         the file doesn't build or objdiff can't measure it."""
-        hit = self._scores.get((proj["id"], unit.name))
+        with self._mlock:
+            hit = self._scores.get((proj["id"], unit.name))
         if (hit and unit.base is not None and unit.base.exists() and hit[0] == hashlib.sha1(text.encode()).hexdigest()
                 and hit[1] == unit.base.stat().st_mtime_ns):
             return hit[2], True
@@ -1179,13 +1186,14 @@ class ForkEngine:
     # ------------------------------------------------------------------ look-alike index
 
     def _index_of(self, proj, fp: ForkProject) -> dict:
-        if proj["id"] not in self._index:
-            p = fp.root / STATE / "index.json"
-            try:
-                self._index[proj["id"]] = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-            except ValueError:
-                self._index[proj["id"]] = {}
-        return self._index[proj["id"]]
+        with self._ilock:
+            if proj["id"] not in self._index:
+                p = fp.root / STATE / "index.json"
+                try:
+                    self._index[proj["id"]] = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+                except (ValueError, OSError):
+                    self._index[proj["id"]] = {}
+            return self._index[proj["id"]]
 
     def _save_index(self, proj, fp: ForkProject) -> None:
         with self._ilock:
@@ -1197,8 +1205,8 @@ class ForkEngine:
         if unit.target is None or not unit.target.exists():
             return
         entry = {"mtime": unit.target.stat().st_mtime, "order": d.order, "ops": d.ops}
-        idx = self._index_of(proj, fp)
         with self._ilock:
+            idx = self._index_of(proj, fp)
             idx[unit.name] = entry
 
     def _unit_index(self, proj, fp: ForkProject, unit, save: bool = True) -> dict | None:
@@ -1224,9 +1232,10 @@ class ForkEngine:
     def start_indexing(self, slug: str) -> None:
         """Index every unit in the background so find_similar covers the whole project."""
         proj, fp, cfg = self.get(slug)
-        if proj["id"] in self._indexing or not cfg.get("ready"):
-            return
-        self._indexing.add(proj["id"])
+        with self._ilock:
+            if proj["id"] in self._indexing or not cfg.get("ready"):
+                return
+            self._indexing.add(proj["id"])
 
         def run():
             try:
@@ -1238,7 +1247,8 @@ class ForkEngine:
                         self._save_index(proj, fp)
                 self._save_index(proj, fp)
             finally:
-                self._indexing.discard(proj["id"])
+                with self._ilock:
+                    self._indexing.discard(proj["id"])
         threading.Thread(target=run, daemon=True, name=f"index-{slug}").start()
 
     def similar(self, proj, fp: ForkProject, fn, top: int = 5) -> list[tuple[dict, float]]:

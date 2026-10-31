@@ -105,7 +105,16 @@ class Jobs:
         self.log_path = log_path
         self.logger = file_log(log_path) if log_path else logging.getLogger("decomp.anything")
 
+    def _prune(self) -> None:
+        now = time.time()
+        for jid, job in list(self.jobs.items()):
+            ttl = 300 if job.get("kind") == "rea" else 600
+            if job.get("state") in ("done", "error") and now - job.get("t", 0) > ttl:
+                self.jobs.pop(jid, None)
+                self.done.pop(jid, None)
+
     def start(self, kind: str, fn) -> str:
+        self._prune()
         jid = uuid.uuid4().hex[:12]
         event = threading.Event()  # async watchers wait on this instead of polling the dict every 0.5s
         job = {"id": jid, "kind": kind, "state": "running", "log": [], "result": None, "error": None, "t": time.time()}
@@ -142,6 +151,7 @@ class Jobs:
 class Settings:
     def __init__(self, path: Path):
         self.path = path
+        self._lock = threading.Lock()
         try:
             self.data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -151,14 +161,18 @@ class Settings:
             self.data["endpoints"] = [agents.endpoint_entry(old | {"id": "e1"})] if old.get("base_url") or old.get("provider") else []
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-        with contextlib.suppress(OSError):
-            os.chmod(self.path, 0o600)
+        with self._lock:
+            tmp = self.path.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
+            tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+            with contextlib.suppress(OSError):
+                os.chmod(tmp, 0o600)
+            tmp.replace(self.path)
 
     # -- API endpoints: OpenAI-compatible servers for the built-in agent, each with its own address, model and key
 
     def endpoints(self) -> list[dict]:
-        return [e for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id")]
+        with self._lock:
+            return [dict(e) for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id")]
 
     def endpoint(self, eid: str) -> dict | None:
         return next((e for e in self.endpoints() if e["id"] == eid), None)
@@ -174,32 +188,35 @@ class Settings:
                 except ValueError:
                     raise ValueError("the context size is a number of tokens, like 16384" if k == "context_tokens"
                                      else "the session limit is a number, like 1") from None
-        current = self.endpoint(str(data.get("id") or ""))
-        if current is None:  # ids are never reused: a session resumed later can't end up on another machine
-            ids = {e["id"] for e in self.endpoints()}
-            n = max(int(self.data.get("endpoint_seq") or 0), len(ids)) + 1
-            while f"e{n}" in ids:
-                n += 1
-            self.data["endpoint_seq"] = n
-            current = {"id": f"e{n}"}
-            self.data.setdefault("endpoints", []).append(current)
-        for k in ("name", "provider", "base_url", "model"):
-            if k in data:
-                current[k] = str(data[k] or "").strip()
-        for k, n in numbers.items():
-            if n:
-                current[k] = max(2048, n) if k == "context_tokens" else max(1, min(n, 32))
-            else:
-                current.pop(k, None)
-        if data.get("api_key") and "•" not in str(data["api_key"]):
-            current["api_key"] = str(data["api_key"]).strip()
-        if data.get("clear_key"):
-            current.pop("api_key", None)
-        current.update(agents.endpoint_entry(current))
-        return current
+        with self._lock:
+            eid = str(data.get("id") or "")
+            current = next((e for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id") == eid), None)
+            if current is None:  # ids are never reused: a session resumed later can't end up on another machine
+                ids = {e["id"] for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id")}
+                n = max(int(self.data.get("endpoint_seq") or 0), len(ids)) + 1
+                while f"e{n}" in ids:
+                    n += 1
+                self.data["endpoint_seq"] = n
+                current = {"id": f"e{n}"}
+                self.data.setdefault("endpoints", []).append(current)
+            for k in ("name", "provider", "base_url", "model"):
+                if k in data:
+                    current[k] = str(data[k] or "").strip()
+            for k, n in numbers.items():
+                if n:
+                    current[k] = max(2048, n) if k == "context_tokens" else max(1, min(n, 32))
+                else:
+                    current.pop(k, None)
+            if data.get("api_key") and "•" not in str(data["api_key"]):
+                current["api_key"] = str(data["api_key"]).strip()
+            if data.get("clear_key"):
+                current.pop("api_key", None)
+            current.update(agents.endpoint_entry(current))
+            return dict(current)
 
     def remove_endpoint(self, eid: str) -> None:
-        self.data["endpoints"] = [e for e in self.endpoints() if e["id"] != eid]
+        with self._lock:
+            self.data["endpoints"] = [e for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id") != eid]
 
     def public(self) -> dict:
         def masked(e: dict) -> dict:

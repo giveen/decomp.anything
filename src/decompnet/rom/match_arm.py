@@ -187,7 +187,7 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
         if not _defined(s) or (s["st_info"]["type"] != "STT_SECTION" and symbols.resolve(sname) is not None):
             base = symbols.resolve(sname)
             return (None if base is None else (base + value) & 0xFFFFFFFF), None
-        in_sec = value + (0 if s["st_info"]["type"] == "STT_SECTION" else s["st_value"])
+        in_sec = (value + (0 if s["st_info"]["type"] == "STT_SECTION" else s["st_value"])) & 0xFFFFFFFF
         if s["st_shndx"] == fn_shndx:
             return (target.vram + (in_sec & ~1) - fn_start) & 0xFFFFFFFF, None
         return None, (s["st_shndx"], in_sec)
@@ -204,7 +204,7 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
         for at, rtype, s in relocs_in(sec_idx):
             if rtype != R_ARM_ABS32 or not off <= at <= off + length - 4:
                 continue
-            _, key = pointee(s, int.from_bytes(data[at:at + 4], "little"))
+            _, key = pointee(s, int.from_bytes(data[at:at + 4], "little", signed=True))
             if key is None or key in own or (word := read(addr + at - off, 4)) is None:
                 continue
             own[key] = int.from_bytes(word, "little")
@@ -227,7 +227,7 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
             at -= off
             if rtype != R_ARM_ABS32 or not 0 <= at <= length - 4:
                 continue
-            dest, key = pointee(s, int.from_bytes(mine[at:at + 4], "little"))
+            dest, key = pointee(s, int.from_bytes(mine[at:at + 4], "little", signed=True))
             if key is not None:
                 dest = own.get(key)
             if dest is None:

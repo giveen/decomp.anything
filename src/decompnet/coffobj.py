@@ -85,7 +85,7 @@ def _cstr(raw: bytes) -> str:
 
 
 def _string(data: bytes, offset: int) -> str:
-    return _cstr(data[offset:offset + 256]) if 0 < offset < len(data) else ""
+    return _cstr(data[offset:]) if 0 < offset < len(data) else ""
 
 
 def _symbols(data: bytes, ptr: int, count: int) -> list[_Symbol]:

@@ -281,6 +281,7 @@ class RomNetwork(Network):
         self._remote_ids: dict[str, int] = {}
         self._ops: dict[int, dict] = {}  # project id -> look-alike index
         self._diffs: dict[tuple, dict] = {}  # (function, source, context, compiler) -> diff for the GUI
+        self._diffs_lock = threading.Lock()
         self.autopilots: dict[str, dict] = {}  # slug -> progress of trying every function's machine draft
         from .forkengine import ForkEngine  # forks build on this class's claims, attempts and live view
         from .permute import Permuter
@@ -2064,21 +2065,22 @@ class RomNetwork(Network):
             return FunctionObj(fn["name"], "thumb", False, fn["target"], [])
         return match.canonical_target(self._rom_target(fn), self.symbols(proj["id"]))
 
-    def _evaluate(self, fn, proj, obj: bytes):
+    def _evaluate(self, fn, proj, obj: bytes, symbols=None):
         if not self.is_rom(proj):
-            return super()._evaluate(fn, proj, obj)
+            return super()._evaluate(fn, proj, obj, symbols=symbols)
+        syms = symbols if symbols is not None else self.symbols(proj["id"])
         if self.cfg(proj).get("platform") in X86_PLATFORMS:
             from ..rom import match_x86
 
-            res = match_x86.link(obj, fn["name"], self._x86_target(fn, proj), self.symbols(proj["id"]))
+            res = match_x86.link(obj, fn["name"], self._x86_target(fn, proj), syms)
             return res.candidate, res.exact if res.candidate is not None else None, res.problems
         if self.cfg(proj).get("platform") == "gba":
             from ..rom import match_arm
 
             res = match_arm.link(obj, fn["name"], match_arm.ArmTarget(fn["name"], fn["vram"], fn["target"]),
-                                 self.symbols(proj["id"]), self.reader(proj))
+                                 syms, self.reader(proj))
             return res.candidate, res.exact if res.candidate is not None else None, res.problems
-        res = match.link(obj, fn["name"], self._rom_target(fn), self.symbols(proj["id"]), self.reader(proj))
+        res = match.link(obj, fn["name"], self._rom_target(fn), syms, self.reader(proj))
         return res.candidate, res.exact if res.candidate is not None else None, res.problems
 
     def _twin_lines(self, proj, fn) -> list[str]:
@@ -3777,11 +3779,7 @@ class RomNetwork(Network):
         def header_for(fn):
             return changed.get(self._effective_unit(fn, units),
                                current_ctx[self._effective_unit(fn, units)]["header"])
-        self._sym_override[proj["id"]] = trial
-        try:
-            broken = self.regression_test(proj, None, sources=rewritten, only=renamed_rows, header_for=header_for)
-        finally:
-            self._sym_override.pop(proj["id"], None)
+        broken = self.regression_test(proj, None, sources=rewritten, only=renamed_rows, header_for=header_for, symbols=trial)
         if broken:
             listing = "\n".join(f"- {n}: {why}" for n, why in broken[:10])
             return f"❌ REJECTED: renaming breaks {len(broken)} matched function(s).\n{listing}"
@@ -4994,8 +4992,9 @@ class RomNetwork(Network):
             return {"kind": None, "rows": None}
         ctx = self._context(proj["id"], fn["unit"])
         key = (fn["id"], hashlib.sha1(source.encode()).hexdigest(), ctx["version"], proj["config"])
-        if key in self._diffs:
-            return self._diffs[key] | {"kind": kind}
+        with self._diffs_lock:
+            if key in self._diffs:
+                return self._diffs[key] | {"kind": kind}
         result = self._compile(proj, ctx["header"], source)
         if not result.ok:
             out = {"rows": None, "error": result.log.strip()[-3000:] or "it didn't compile", "source": source}
@@ -5010,9 +5009,11 @@ class RomNetwork(Network):
                 out = {"rows": [list(r) for r in d.rows], "score": d.score,
                        "percent": 100.0 if d.bytes_match else min(99.9, int(d.percent * 10) / 10),
                        "problems": problems, "source": source}
-        if len(self._diffs) > 128:
-            self._diffs.pop(next(iter(self._diffs)))
-        self._diffs[key] = out
+        with self._diffs_lock:
+            if len(self._diffs) > 128:
+                with contextlib.suppress(RuntimeError, StopIteration):
+                    self._diffs.pop(next(iter(self._diffs)), None)
+            self._diffs[key] = out
         return out | {"kind": kind}
 
     def function_detail(self, slug: str, name: str) -> dict:
