@@ -170,12 +170,17 @@ def trim_code(code: bytes, arch: str) -> bytes:
 
     Decoding rather than looking at the tail matters: a displacement can end in 0x00, and a nop can be
     part of the code. Cut after a terminator only when everything after it is padding."""
+    pad_start = len(code)
+    while pad_start > 0 and code[pad_start - 1] in _PAD:
+        pad_start -= 1
+    if pad_start == len(code):
+        return code
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64 if arch == "x86_64" else capstone.CS_MODE_32)
     for ins in md.disasm(code, 0):
         # From here on there is nothing but alignment/padding bytes: the function ended before them.
         # Checking the whole suffix, not just the bytes right after a terminator, keeps an early `ret`
         # whose following block is reachable by a jump.
-        if ins.address and all(b in _PAD for b in code[ins.address:]):
+        if ins.address and ins.address >= pad_start:
             return code[:ins.address]
     return code
 

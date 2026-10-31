@@ -61,8 +61,18 @@ def source_path(map_path: str, source_root: str, source: str) -> str:
 
 # ------------------------------------------------------------------ reading an app folder or .asar
 
+_ASAR_CACHE: dict[tuple[str, int, int], dict[str, dict]] = {}
+
+
 def _asar_index(path: Path) -> dict[str, dict]:
     """The files in one .asar: logical path -> {offset, size, executable}. Offsets are relative to the data."""
+    try:
+        st = path.stat()
+        key = (str(path.resolve()), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key and key in _ASAR_CACHE:
+        return _ASAR_CACHE[key]
     try:
         with open(path, "rb") as f:
             first = f.read(8)
@@ -110,6 +120,10 @@ def _asar_index(path: Path) -> dict[str, dict]:
                               "executable": bool(info.get("executable"))}
 
     walk(header, "", 0)
+    if key:
+        if len(_ASAR_CACHE) > 128:
+            _ASAR_CACHE.clear()
+        _ASAR_CACHE[key] = files
     return files
 
 

@@ -689,7 +689,30 @@ function rcCfg(box, d, asm) {
   const g = rcSvg(box, width + 40, height + 40, `${blocks.length} blocks${(d.basic_blocks || []).length > 600 ? " (first 600)" : ""} · wheel to zoom, drag to pan, click a block`,
     [e0.x + W / 2 + 20, e0.y + 20]);
   const edges = rcEl(g, "g", { transform: "translate(20 20)" }), nodes = rcEl(g, "g", { transform: "translate(20 20)" });
-  const insns = (b) => asm.filter((l) => { const v = rcNum((/^\s*(0x[0-9a-f]+)/i.exec(l) || [])[1]); return v >= rcNum(b.start) && v < rcNum(b.end); }).length;
+  const asmAddrs = [];
+  for (const l of (asm || [])) {
+    const m = /^\s*(0x[0-9a-f]+)/i.exec(l);
+    if (m) {
+      const v = rcNum(m[1]);
+      if (!Number.isNaN(v)) asmAddrs.push(v);
+    }
+  }
+  asmAddrs.sort((x, y) => x - y);
+  const insns = (b) => {
+    const s = rcNum(b.start), e = rcNum(b.end);
+    let lo = 0, hi = asmAddrs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (asmAddrs[mid] < s) lo = mid + 1; else hi = mid;
+    }
+    const startIdx = lo;
+    hi = asmAddrs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (asmAddrs[mid] < e) lo = mid + 1; else hi = mid;
+    }
+    return lo - startIdx;
+  };
   for (const b of blocks) {
     const a = rcNorm(b.start), p = pos.get(a);
     for (const s of (b.successors || []).map(rcNorm)) {

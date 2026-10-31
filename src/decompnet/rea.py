@@ -304,7 +304,17 @@ class Client:
 _clients: dict[str, Client] = {}
 _opened: dict[str, str] = {}
 _cache: dict[tuple[str, int], str] = {}
-_lock = threading.Lock()
+_binary_locks: dict[str, threading.Lock] = {}
+_binary_locks_lock = threading.Lock()
+
+
+def _binary_lock(key: str) -> threading.Lock:
+    with _binary_locks_lock:
+        lock = _binary_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _binary_locks[key] = lock
+        return lock
 
 
 def _client(binary: Path) -> Client:
@@ -328,15 +338,16 @@ def draft(binary: Path, fn, timeout: float = 60) -> str | None:
     for long: a cold Ghidra import takes minutes, and agents can call inspect_binary themselves."""
     if os.environ.get("DECOMP_REA_DRAFTS", "").lower() not in ("1", "on", "yes", "true"):
         return None  # a cold Ghidra import takes minutes; agents ask for a dossier with inspect_binary instead
-    key = (str(Path(binary).resolve()), int(fn["vram"]))
+    bpath = Path(binary).resolve()
+    key = (str(bpath), int(fn["vram"]))
     if key in _cache:
         return _cache[key]
     if command() is None:
         return None
     try:
-        with _lock:
-            text = _client(Path(binary)).call("procedure_pseudo_code", {"procedure": _procedure(fn)},
-                                              timeout=timeout)
+        with _binary_lock(str(bpath)):
+            text = _client(bpath).call("procedure_pseudo_code", {"procedure": _procedure(fn)},
+                                      timeout=timeout)
     except (ReaError, OSError):
         return None
     if not isinstance(text, str) or not text.strip():
@@ -351,8 +362,9 @@ def inspect(binary: Path, fn, symbols, what: str = "", timeout: float = 900) -> 
     """A function dossier from REA for the inspect_binary tool: pseudocode, signature, callers, references."""
     what = (what or "all").lower()
     parts: list[str] = []
-    with _lock:
-        client = _client(Path(binary))
+    bpath = Path(binary).resolve()
+    with _binary_lock(str(bpath)):
+        client = _client(bpath)
         proc = _procedure(fn)
         if what in ("all", "info"):
             dossier = client.call("analyze_function", {"procedure": proc}, timeout=timeout)
@@ -396,8 +408,9 @@ def _parse_addr(addr) -> int | None:
 
 def search(binary: Path, query: str, symbols, timeout: float = 900) -> str:
     """Names and strings in the binary, through REA: the fastest way to find what a game calls."""
-    with _lock:
-        client = _client(Path(binary))
+    bpath = Path(binary).resolve()
+    with _binary_lock(str(bpath)):
+        client = _client(bpath)
         rows = []
         try:
             found = client.call("search_strings", {"pattern": query}, timeout=timeout)
@@ -483,7 +496,7 @@ def agent_client(target: dict, provider: str = "", *, native: bool = False, conn
         key = str(Path(target["path"]).resolve())
         client = _clients.get(key)
         if connect:
-            with _lock:
+            with _binary_lock(key):
                 return _client(Path(key))
     else:
         client = _analysis_clients.get(_target_key(target, provider))
@@ -569,11 +582,12 @@ def trace_feature(target: dict, provider: str, seed: dict, direction: str = "bot
 
 
 def close_all() -> None:
-    with _lock:
+    with _binary_locks_lock:
         for client in _clients.values():
             client.close()
         _clients.clear()
         _opened.clear()
+        _binary_locks.clear()
     with _analysis_lock:
         for client in _analysis_clients.values():
             client.close()

@@ -477,11 +477,12 @@ def decode_source(data: bytes | None) -> str | None:
     return text if text.strip() else None
 
 
-def read_entry_bytes(path: str | Path, name: str, max_bytes: int = MAX_SOURCE_BYTES) -> bytes | None:
+def read_entry_bytes(path: str | Path, name: str, max_bytes: int = MAX_SOURCE_BYTES,
+                     archive: zipfile.ZipFile | tarfile.TarFile | None = None) -> bytes | None:
     """One regular entry read whole, up to max_bytes; None when it is a directory, encrypted, too large or unreadable."""
     try:
-        if zipfile.is_zipfile(path):
-            with zipfile.ZipFile(path) as archive:
+        if archive is not None:
+            if isinstance(archive, zipfile.ZipFile):
                 info = archive.getinfo(name)
                 if info.is_dir() or info.flag_bits & 0x1 or info.file_size > max_bytes:
                     return None
@@ -490,12 +491,31 @@ def read_entry_bytes(path: str | Path, name: str, max_bytes: int = MAX_SOURCE_BY
                 with archive.open(info) as handle:
                     data = handle.read(max_bytes + 1)
                 return data if len(data) <= max_bytes else None
-        if tarfile.is_tarfile(path):
-            with tarfile.open(path) as archive:
+            elif isinstance(archive, tarfile.TarFile):
                 member = archive.getmember(name)
                 if not member.isfile() or member.size > max_bytes:
                     return None
                 handle = archive.extractfile(member)
+                if handle is None:
+                    return None
+                data = handle.read(max_bytes + 1)
+                return data if len(data) <= max_bytes else None
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as arc:
+                info = arc.getinfo(name)
+                if info.is_dir() or info.flag_bits & 0x1 or info.file_size > max_bytes:
+                    return None
+                if info.compress_size > 0 and info.file_size > info.compress_size * MAX_COMPRESSION_RATIO:
+                    return None
+                with arc.open(info) as handle:
+                    data = handle.read(max_bytes + 1)
+                return data if len(data) <= max_bytes else None
+        if tarfile.is_tarfile(path):
+            with tarfile.open(path) as arc:
+                member = arc.getmember(name)
+                if not member.isfile() or member.size > max_bytes:
+                    return None
+                handle = arc.extractfile(member)
                 if handle is None:
                     return None
                 data = handle.read(max_bytes + 1)

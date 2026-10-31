@@ -25,6 +25,7 @@ import re
 import secrets
 import shutil
 import struct
+import tarfile
 import threading
 import time
 import zipfile
@@ -272,7 +273,9 @@ class RomNetwork(Network):
         # drawer's button while the import's background job runs) waits for that one instead of decompiling again
         self._analysis_prefill_running: dict[tuple, threading.Event] = {}
         self._analysis_prefill_lock = threading.Lock()
-        self._seed_lock = threading.Lock()
+        self._seed_locks: dict[int, threading.Lock] = {}
+        self._seed_locks_lock = threading.Lock()
+        self._last_expire_time: float = 0.0
         # ponytail: one archive extraction/import at a time. It is user-triggered and rare; this closes the
         # same-entry race between two tabs without a per-entry lock map.
         self._extract_lock = threading.Lock()
@@ -576,33 +579,46 @@ class RomNetwork(Network):
         kept: list[dict] = []
         sources: list[dict] = []
         budget = analysis.MAX_RECOVERED_BYTES
-        for item in entries:
-            path = str(item.get("path") or "")
-            if item.get("encrypted"):  # locked entry: it stays a work item, its code can't be recovered here
-                kept.append(item)
-                continue
-            language, compiled = analysis.source_language(path), analysis.compiled_language(path)
-            if language:
-                if int(item.get("size") or 0) > min(budget, analysis.MAX_SOURCE_BYTES):
-                    kept.append(item)  # too large to recover here: it stays a work item in the archive
+        archive = None
+        try:
+            if zipfile.is_zipfile(target_path):
+                archive = zipfile.ZipFile(target_path)
+            elif tarfile.is_tarfile(target_path):
+                archive = tarfile.open(target_path)  # noqa: SIM115
+        except (OSError, tarfile.TarError, zipfile.BadZipFile):
+            archive = None
+
+        try:
+            for item in entries:
+                path = str(item.get("path") or "")
+                if item.get("encrypted"):  # locked entry: it stays a work item, its code can't be recovered here
+                    kept.append(item)
                     continue
-                text = analysis.decode_source(analysis.read_entry_bytes(target_path, path))
-                if text is not None and len(text.encode("utf-8")) <= budget:
-                    budget -= len(text.encode("utf-8"))
-                    sources.append({**item, "kind": "recovered-source", "code": text, "origin": "archive",
-                                    "module_kind": language, "entry_type": "source",
-                                    "entry_format": language, "map": f"archive entry {path}"})
-                elif text is not None or item.get("tool"):
-                    kept.append(item)  # over the budget, or a program this app can open as its own target
-                else:  # not readable as text: the source has to be reconstructed
-                    sources.append({**item, "kind": "reconstruction", "origin": "archive", "module_kind": language,
-                                    "entry_type": "source", "entry_format": language})
-                continue
-            if compiled:
-                sources.append({**item, "kind": "reconstruction", "origin": "archive", "module_kind": compiled,
-                                "entry_type": "compiled", "entry_format": compiled})
-                continue
-            kept.append(item)
+                language, compiled = analysis.source_language(path), analysis.compiled_language(path)
+                if language:
+                    if int(item.get("size") or 0) > min(budget, analysis.MAX_SOURCE_BYTES):
+                        kept.append(item)  # too large to recover here: it stays a work item in the archive
+                        continue
+                    text = analysis.decode_source(analysis.read_entry_bytes(target_path, path, archive=archive))
+                    if text is not None and len(text.encode("utf-8")) <= budget:
+                        budget -= len(text.encode("utf-8"))
+                        sources.append({**item, "kind": "recovered-source", "code": text, "origin": "archive",
+                                        "module_kind": language, "entry_type": "source",
+                                        "entry_format": language, "map": f"archive entry {path}"})
+                    elif text is not None or item.get("tool"):
+                        kept.append(item)  # over the budget, or a program this app can open as its own target
+                    else:  # not readable as text: the source has to be reconstructed
+                        sources.append({**item, "kind": "reconstruction", "origin": "archive", "module_kind": language,
+                                        "entry_type": "source", "entry_format": language})
+                    continue
+                if compiled:
+                    sources.append({**item, "kind": "reconstruction", "origin": "archive", "module_kind": compiled,
+                                    "entry_type": "compiled", "entry_format": compiled})
+                    continue
+                kept.append(item)
+        finally:
+            if archive is not None:
+                archive.close()
         if sources:
             done = sum(1 for source in sources if source["kind"] == "recovered-source")
             log(f"{done} source file(s) recovered from the archive, {len(sources) - done} to reconstruct")
@@ -3186,6 +3202,14 @@ class RomNetwork(Network):
                 db.execute("UPDATE functions SET seed=? WHERE id=?", (text, fn["id"]))
         return text
 
+    def _fn_seed_lock(self, fn_id: int) -> threading.Lock:
+        with self._seed_locks_lock:
+            lock = self._seed_locks.get(fn_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._seed_locks[fn_id] = lock
+            return lock
+
     def _seed_for(self, fn, proj) -> str | None:
         """m2c draft, made the first time someone opens the function (imports stay fast)."""
         if self.cfg(proj).get("platform") in X86_PLATFORMS:
@@ -3230,7 +3254,7 @@ class RomNetwork(Network):
             return self.forks.brief(fn, agent, header)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         if self.is_rom(proj) and fn["status"] != "matched" and not fn["best_source"] and fn["seed"] is None:
-            with self._seed_lock:
+            with self._fn_seed_lock(fn["id"]):
                 self._seed_for(self._function(fn["name"], proj["slug"]), proj)
             fn = self._function(fn["name"], proj["slug"])
         text = super()._brief(fn, agent, header)
@@ -3652,24 +3676,26 @@ class RomNetwork(Network):
                                "followed branches)")
         agent, _ = self.local_agent("boundaries")
         merged = 0
-        while merged < 4096:
-            rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='open' "
-                                  "ORDER BY unit, vram", proj["id"])
-            pair = None
-            for i in range(len(rows) - 1):
-                prev, frag = rows[i], rows[i + 1]
-                if prev["unit"] != frag["unit"] or (prev["vram"] or 0) + (prev["size"] or 0) != frag["vram"]:
-                    continue
-                if not AUTO_NAME.match(frag["name"]):  # a real symbol is not a fragment
-                    continue
-                last = self._last_mnemonic(proj, prev)
-                if last and last not in pe.TERMINATORS and not last.startswith("j"):
-                    pair = (prev, frag)
-                    break
-            if pair is None:
-                break
-            self._merge_rows(agent, proj, *pair)
-            merged += 1
+        rows = [dict(r) for r in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='open' "
+                                                "ORDER BY unit, vram", proj["id"])]
+        i = 0
+        while i < len(rows) - 1 and merged < 4096:
+            prev, frag = rows[i], rows[i + 1]
+            if prev["unit"] != frag["unit"] or (prev["vram"] or 0) + (prev["size"] or 0) != frag["vram"]:
+                i += 1
+                continue
+            if not AUTO_NAME.match(frag["name"]):  # a real symbol is not a fragment
+                i += 1
+                continue
+            last = self._last_mnemonic(proj, prev)
+            if last and last not in pe.TERMINATORS and not last.startswith("j"):
+                self._merge_rows(agent, proj, prev, frag)
+                merged += 1
+                new_target = bytes(prev["target"]) + bytes(frag["target"])
+                rows[i] = dict(prev) | {"target": new_target, "size": len(new_target)}
+                rows.pop(i + 1)
+            else:
+                i += 1
         open_ = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'",
                                proj["id"])["n"]
         return {"merged": merged, "open": open_}
@@ -5049,7 +5075,7 @@ class RomNetwork(Network):
         x = self.xrefs(proj)
         syms = self.symbols(proj["id"])
         if not (fn["matched_source"] or fn["best_source"] or latest) and fn["seed"] is None:
-            with self._seed_lock:
+            with self._fn_seed_lock(fn["id"]):
                 self._seed_for(fn, proj)
             fn = self._function(fn["name"], slug)
         return {
@@ -5109,8 +5135,11 @@ class RomNetwork(Network):
 
     def live(self, slug: str, since_event: int = 0, since_attempt: int = 0) -> dict:
         proj = self._project(slug)
-        with self.store.tx() as db:
-            self._expire_claims(db)
+        now = time.monotonic()
+        if now - self._last_expire_time >= 15.0:
+            self._last_expire_time = now
+            with self.store.tx() as db:
+                self._expire_claims(db)
         events = self.store.all(
             "SELECT e.id, e.kind, e.detail, e.created_at, a.name AS agent FROM events e LEFT JOIN agents a "
             "ON a.id=e.agent_id WHERE e.project_id=? AND e.id>? ORDER BY e.id DESC LIMIT 60", proj["id"], since_event)

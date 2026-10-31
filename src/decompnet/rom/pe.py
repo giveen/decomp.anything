@@ -561,6 +561,7 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
 
     roots = dict(starts)
     stops = set(roots)
+    sec_roots = {id(sec): sorted(r for r in roots if section_of(r) is sec) for sec in exec_sections}
     priority = lambda a: (0 if a in pdata_ends else 1 if named.get(a) or a == entry else 2)  # noqa: E731
     found: list[tuple[int, int, bool]] = []
     for start in sorted(roots, key=lambda a: (priority(a), a)):
@@ -575,8 +576,9 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
             end, exact = start + exact_sizes[start], True
         elif sec.raw_size > WALK_LIMIT:
             # Too much code to walk: fall back to the next known start (the old, coarse boundary).
-            nxt = min((r for r in roots if r > start and section_of(r) is sec), default=sec_end)
-            end = nxt
+            sr = sec_roots.get(id(sec), [])
+            idx = bisect.bisect_right(sr, start)
+            end = sr[idx] if idx < len(sr) else sec_end
         else:
             end = _walk(sec.data(data), image_base + sec.va, start, stops, md)
         # A cold block laid out after another function must not swallow it: stop at the next range
@@ -609,10 +611,11 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
                 start = at
                 if (start - base) % 16 and start != base and body[start - base - 1] not in PADDING:
                     break  # mid-padding junk, not an aligned function after fill
-                end = _walk(body, base, start, stops | {start}, md)
-                if end <= start:
-                    break
                 stops.add(start)
+                end = _walk(body, base, start, stops, md)
+                if end <= start:
+                    stops.remove(start)
+                    break
                 add_range(start, end)
                 found.append((start, end, False))
                 gap_lo = end
