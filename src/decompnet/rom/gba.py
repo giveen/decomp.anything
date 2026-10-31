@@ -71,11 +71,12 @@ def find_functions(rom_path: Path, workdir: Path, rounds: int = 4, log=lambda *_
     t0 = time.time()
     asm, found = _luvdis(rom_path, workdir, None)
     log(f"luvdis followed the code from the start: {len(found)} functions ({time.time() - t0:.0f}s)")
+    literals = gba_candidates.literal_words(rom)
     for k in range(rounds):
         if time.time() - t0 > budget:
             log("stopping the search for more here: it has run half an hour (agents can split what's left)")
             break
-        extra = [a for a in gba_candidates.candidates(rom, found) if a not in found]
+        extra = [a for a in gba_candidates.candidates(rom, found, literals=literals) if a not in found]
         if not extra:
             break
         log(f"round {k + 2}: {len(extra)} more function starts in code nothing calls directly")

@@ -2301,14 +2301,23 @@ function reading(c) {
 function renderNow(claims) {
   const box = $("now");
   claims = claims.filter((c) => c.agent !== AUTO);
-  if (!claims.length) { box.innerHTML = ""; return; }
-  box.innerHTML = claims.map((c) => {
+  if (!claims.length) {
+    if (box.innerHTML !== "") {
+      box._lastHtml = "";
+      box.innerHTML = "";
+    }
+    return;
+  }
+  const html = claims.map((c) => {
     const sc = S.scores.get(c.name) || [];
     const p = pctOf(c.best_score, c.n_insns);
     const [sym, unit] = c.name.split(/@(.*)/s);  // a fork's symbol@file: the symbol first, the file after it
     return `<div class="job" data-fn="${esc(c.name)}"><div class="job-top"><span class="job-name" title="${esc(c.name)}">${esc(sym)}${unit ? `<small>@${esc(unit)}</small>` : ""}</span><span class="job-who" title="${esc(c.agent)}">${esc(c.agent)}</span></div>
       ${spark(sc)}<div class="job-foot"><span>${c.n_insns} insns · ${c.attempts} tries</span><b>${p == null ? reading(c) : pctText(p)}</b></div></div>`;
   }).join("");
+  if (box._lastHtml === html) return;
+  box._lastHtml = html;
+  box.innerHTML = html;
   box.querySelectorAll(".job").forEach((j) => { j.onclick = () => openFn(j.dataset.fn); });
 }
 
@@ -2320,7 +2329,11 @@ function renderSessions(sessions) {
   const board = new Map((S.stats?.agents || []).map((r) => [r.agent, r]));
   const running = sessions.filter((s) => ["starting", "working", "waiting"].includes(s.state));
   $("stopAll").hidden = running.length === 0;  // one agent needs it too, and the route stops every helper here
-  box.innerHTML = sessions.map((s) => {
+  const own = new Set(sessions.map((s) => s.agent));
+  const outside = [...new Set(S.claims.filter((c) => !own.has(c.agent) && c.agent !== AUTO).map((c) => c.agent))];
+  $("noSessions").hidden = sessions.length + outside.length > 0;
+
+  const html = sessions.map((s) => {
     const claim = S.claims.find((c) => c.agent === s.agent);
     const dot = s.state === "error" ? "err" : s.state === "working" ? "on" : s.state === "stopped" ? "" : "work";
     const live = ["starting", "working", "waiting"].includes(s.state);
@@ -2333,13 +2346,13 @@ function renderSessions(sessions) {
       <span class="facts-line">${facts.join(" · ")}</span>
       ${s.state === "error" ? `<span class="state err">${esc(s.error)}</span>` : ""}
       ${claim ? `<span class="last">on ${fnLink(claim.name)}</span>` : ""}</div>`;
-  }).join("");
-  const own = new Set(sessions.map((s) => s.agent));
-  const outside = [...new Set(S.claims.filter((c) => !own.has(c.agent) && c.agent !== AUTO).map((c) => c.agent))];
-  box.insertAdjacentHTML("beforeend", outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span></div>
-      <span class="last">on ${S.claims.filter((c) => c.agent === a).map((c) => fnLink(c.name)).join(", ")}</span></div>`).join(""));
+  }).join("") + outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span></div>
+      <span class="last">on ${S.claims.filter((c) => c.agent === a).map((c) => fnLink(c.name)).join(", ")}</span></div>`).join("");
+
+  if (box._lastHtml === html) return;
+  box._lastHtml = html;
+  box.innerHTML = html;
   box.querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
-  $("noSessions").hidden = sessions.length + outside.length > 0;
   box.querySelectorAll("[data-stop]").forEach((b) => {
     b.onclick = async () => {
       await api("/api/agents/stop", { method: "POST", body: { id: b.dataset.stop, remove: !!b.dataset.remove } }).catch((e) => toast(esc(e.message), "err"));

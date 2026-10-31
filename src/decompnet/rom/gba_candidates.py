@@ -79,7 +79,7 @@ def bodies(rom: bytes, known: list[int], literals: set[int] | None = None):
         yield start, max(end, furthest), body
 
 
-def literal_words(rom: bytes, known: list[int]) -> set[int]:
+def literal_words(rom: bytes, known: list[int] | None = None) -> set[int]:
     """ROM offsets of literal-pool words: every `ldr rX, [pc, #imm]` target in a linear Thumb sweep of the whole ROM
     (also through functions nobody found yet). Junk decoded from data only adds entries, which is the safe side."""
     md = _md()
@@ -98,10 +98,12 @@ def branch_reach(rom: bytes, known: list[int], literals: set[int] | None = None)
     return {start: end for start, end, _ in bodies(rom, known, literals)}
 
 
-def candidates(rom: bytes, known: list[int]) -> list[int]:
+def candidates(rom: bytes, known: list[int], literals: set[int] | None = None) -> list[int]:
     known_set = {a & ~1 for a in known}
-    literals = literal_words(rom, known)
-    reach = branch_reach(rom, known, literals)
+    if literals is None:
+        literals = literal_words(rom, known)
+    known_bodies = list(bodies(rom, known, literals))
+    reach = {start: end for start, end, _ in known_bodies}
     starts = sorted(reach)
 
     def inside_known(off: int) -> bool:
@@ -123,7 +125,7 @@ def candidates(rom: bytes, known: list[int]) -> list[int]:
         if ((prologue and (after_return or after_padding or prev == 0)) or after_return or after_padding) \
                 and plausible_function(rom, off):
             out.add(BASE + off)
-    for _, _, body in bodies(rom, known, literals):  # whatever known code calls is a function
+    for _, _, body in known_bodies:  # whatever known code calls is a function
         for ins in body:
             if ins.mnemonic == "bl":
                 m = re.match(r"#(0x[0-9a-f]+)", ins.op_str)

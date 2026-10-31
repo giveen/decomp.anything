@@ -8,6 +8,8 @@ undefined extern in the candidate object.
 
 from __future__ import annotations
 
+import bisect
+import contextlib
 import hashlib
 import re
 from dataclasses import dataclass, field
@@ -172,25 +174,58 @@ def _section_target(arch: str, raw: list[dict], k: int) -> int | None:
     return None
 
 
+def _get_symbols_by_section(symtab: SymbolTableSection) -> dict[int, list[tuple[int, int, int, bool, str]]]:
+    cache = getattr(symtab, "_decomp_sym_cache", None)
+    if cache is not None:
+        return cache
+
+    by_section: dict[int, list] = {}
+    for s in symtab.iter_symbols():
+        shndx = s["st_shndx"]
+        if (
+            isinstance(shndx, int)
+            and s.name
+            and s.name[0] not in ".$"
+            and s["st_info"]["type"] not in ("STT_SECTION", "STT_FILE")
+            and not s.name.endswith(".")
+            and not s.name.startswith("__gnu_compiled")
+        ):
+            by_section.setdefault(shndx, []).append(s)
+
+    cache = {}
+    for shndx, named in by_section.items():
+        starts = sorted({s["st_value"] for s in named})
+        sec_syms = []
+        for s in named:
+            lo, size = s["st_value"], s["st_size"]
+            if size == 0:
+                idx = bisect.bisect_right(starts, lo)
+                size = (starts[idx] if idx < len(starts) else (1 << 32)) - lo
+            kind = {"STT_FUNC": 2, "STT_OBJECT": 1}.get(s["st_info"]["type"], 0)
+            is_global = (s["st_info"]["bind"] == "STB_GLOBAL")
+            cname = _canonical(s.name, s["st_info"]["bind"])
+            sec_syms.append((lo, size, kind, is_global, cname))
+        cache[shndx] = sec_syms
+
+    with contextlib.suppress(AttributeError):
+        symtab._decomp_sym_cache = cache
+    return cache
+
+
 def _symbol_at(symtab: SymbolTableSection, shndx: int, offset: int) -> tuple[str, int] | None:
     """(name, offset into it) of the named symbol covering `offset` in a section, preferring exact starts,
     global symbols, and functions/objects over plain labels."""
+    by_section = _get_symbols_by_section(symtab)
+    sec_syms = by_section.get(shndx)
+    if not sec_syms:
+        return None
     best = None
-    named = [s for s in symtab.iter_symbols()
-             if s["st_shndx"] == shndx and s.name and s.name[0] not in ".$"
-             and s["st_info"]["type"] not in ("STT_SECTION", "STT_FILE")
-             and not s.name.endswith(".") and not s.name.startswith("__gnu_compiled")]  # markers like gcc2_compiled.
-    starts = sorted({s["st_value"] for s in named})
-    for s in named:
-        lo, size = s["st_value"], s["st_size"]
-        if size == 0:  # period assemblers record no sizes: the symbol runs to the next one
-            size = next((x for x in starts if x > lo), 1 << 32) - lo
+    for lo, size, kind, is_global, cname in sec_syms:
         if not (lo == offset or lo <= offset < lo + size):
             continue
-        kind = {"STT_FUNC": 2, "STT_OBJECT": 1}.get(s["st_info"]["type"], 0)
-        rank = (lo == offset, kind, s["st_info"]["bind"] == "STB_GLOBAL")
+        rank = (lo == offset, kind, is_global)
         if best is None or rank > best[0]:
-            best = (rank, _canonical(s.name, s["st_info"]["bind"]), offset - lo)
+            best = (rank, cname, offset - lo)
     return (best[1], best[2]) if best else None
 
 
