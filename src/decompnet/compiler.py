@@ -9,6 +9,7 @@ from __future__ import annotations
 import collections
 import hashlib
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -24,9 +25,50 @@ MAX_SOURCE_BYTES = 64 * 1024
 # concurrency cap, so a hostile submission can't take the host down with it.
 LIMITS = ["--as=2147483648", "--cpu=30", "--fsize=67108864"]
 _SLOTS = threading.BoundedSemaphore(max(2, (os.cpu_count() or 4) - 1))
-_COMPILE_CACHE: collections.OrderedDict[tuple, CompileResult] = collections.OrderedDict()
-_CACHE_LOCK = threading.Lock()
-_CACHE_MAX = 512
+
+_CACHE_SHARDS_N = 16
+_CACHE_SHARDS: list[collections.OrderedDict[tuple, CompileResult]] = [collections.OrderedDict() for _ in range(_CACHE_SHARDS_N)]
+_CACHE_LOCKS: list[threading.Lock] = [threading.Lock() for _ in range(_CACHE_SHARDS_N)]
+_CACHE_PER_SHARD = 64
+
+_SLOT_COUNT = max(2, (os.cpu_count() or 4) - 1)
+_SLOT_QUEUE: queue.SimpleQueue[int] = queue.SimpleQueue()
+for _i in range(_SLOT_COUNT):
+    _SLOT_QUEUE.put(_i)
+
+_WORKSPACES_ROOT: Path | None = None
+_SLOT_LAST_CTX: dict[int, str] = {}
+_SLOT_LAST_INCLUDES: dict[int, tuple[str, ...]] = {}
+
+
+def _workspace_root() -> Path:
+    global _WORKSPACES_ROOT
+    if _WORKSPACES_ROOT is None:
+        cand = (Path(f"/dev/shm/decompnet-{os.getuid()}") if Path("/dev/shm").is_dir()
+                else Path(tempfile.gettempdir()) / f"decompnet-{os.getuid()}")
+        cand.mkdir(parents=True, exist_ok=True)
+        _WORKSPACES_ROOT = cand
+    return _WORKSPACES_ROOT
+
+
+def _cache_lookup(key: tuple) -> CompileResult | None:
+    h = hash(key) % _CACHE_SHARDS_N
+    with _CACHE_LOCKS[h]:
+        shard = _CACHE_SHARDS[h]
+        if key in shard:
+            res = shard[key]
+            shard.move_to_end(key)
+            return CompileResult(res.ok, res.obj, res.log)
+    return None
+
+
+def _cache_store(key: tuple, res: CompileResult) -> None:
+    h = hash(key) % _CACHE_SHARDS_N
+    with _CACHE_LOCKS[h]:
+        shard = _CACHE_SHARDS[h]
+        shard[key] = res
+        if len(shard) > _CACHE_PER_SHARD:
+            shard.popitem(last=False)
 
 _COMMENTS_AND_STRINGS = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.DOTALL)
 _FORBIDDEN = [
@@ -140,8 +182,9 @@ def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 30
 
 
 def clear_compile_cache() -> None:
-    with _CACHE_LOCK:
-        _COMPILE_CACHE.clear()
+    for h in range(_CACHE_SHARDS_N):
+        with _CACHE_LOCKS[h]:
+            _CACHE_SHARDS[h].clear()
 
 
 def compile_source(cfg: CompilerConfig, context_header: str, source: str, trusted: bool = False) -> CompileResult:
@@ -156,22 +199,36 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         cfg.include_dirs,
         hashlib.sha256((context_header + "\0" + source).encode()).digest(),
     )
-    with _CACHE_LOCK:
-        if cache_key in _COMPILE_CACHE:
-            cached = _COMPILE_CACHE[cache_key]
-            _COMPILE_CACHE.move_to_end(cache_key)
-            return CompileResult(cached.ok, cached.obj, cached.log)
+    cached = _cache_lookup(cache_key)
+    if cached is not None:
+        return cached
 
-    with tempfile.TemporaryDirectory(prefix="decompnet-") as tmp:
-        work = Path(tmp)
+    slot_id = _SLOT_QUEUE.get()
+    try:
+        work = _workspace_root() / f"slot_{slot_id}"
+        work.mkdir(parents=True, exist_ok=True)
         inc = work / "include"
-        inc.mkdir()
-        for d in cfg.include_dirs:
-            shutil.copytree(d, inc, dirs_exist_ok=True)
-        # LF on every platform: to the old GCCs a backslash before CRLF doesn't continue a line ("stray '\' in program")
+        inc.mkdir(exist_ok=True)
+
+        if _SLOT_LAST_INCLUDES.get(slot_id) != cfg.include_dirs:
+            for old in inc.iterdir():
+                if old.is_dir():
+                    shutil.rmtree(old)
+                else:
+                    old.unlink()
+            for d in cfg.include_dirs:
+                shutil.copytree(d, inc, dirs_exist_ok=True)
+            _SLOT_LAST_INCLUDES[slot_id] = cfg.include_dirs
+
+        # LF on every platform: to old GCCs a backslash before CRLF doesn't continue a line
         (inc / "context.h").write_text(context_header, encoding="utf-8", newline="\n")
+
         (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8",
                                      newline="\n")
+
+        obj = work / "func.o"
+        if obj.exists():
+            obj.unlink()
 
         root = _root(cfg, work)
         subst = {"{src}": f"{root}/func.c", "{obj}": f"{root}/func.o", "{include}": f"{root}/include"}
@@ -190,14 +247,12 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
         log = (proc.stdout + proc.stderr).replace(root + "/", "")
-        obj = work / "func.o"
         if proc.returncode != 0 or not obj.exists():
             res = CompileResult(False, None, log[-4000:] or f"compiler exited with {proc.returncode}")
         else:
             res = CompileResult(True, obj.read_bytes(), log[-2000:])
+    finally:
+        _SLOT_QUEUE.put(slot_id)
 
-    with _CACHE_LOCK:
-        _COMPILE_CACHE[cache_key] = res
-        if len(_COMPILE_CACHE) > _CACHE_MAX:
-            _COMPILE_CACHE.popitem(last=False)
+    _cache_store(cache_key, res)
     return res
