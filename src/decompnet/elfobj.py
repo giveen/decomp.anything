@@ -85,16 +85,21 @@ class FunctionObj:
     code: bytes
     relocs: list[Reloc] = field(default_factory=list)
     format: str = ""  # "elf", "coff" or "": how PC-relative reloc addends are encoded
+    _decomp_insns: list | None = field(default=None, repr=False, compare=False)
+    _fingerprint: str | None = field(default=None, repr=False, compare=False)
 
     def normalized(self) -> bytes:
         return mask_relocs(self.code, self.relocs, self.arch, self.big_endian)
 
     def fingerprint(self) -> str:
         """Hash of masked bytes + symbolic relocs. Equal fingerprints == matching function."""
+        if self._fingerprint is not None:
+            return self._fingerprint
         h = hashlib.sha256(self.normalized())
         for r in sorted(self.relocs, key=Reloc.key):
             h.update(repr(r.key()).encode())
-        return h.hexdigest()
+        self._fingerprint = h.hexdigest()
+        return self._fingerprint
 
 
 def mask_relocs(code: bytes, relocs: list[Reloc], arch: str, big_endian: bool) -> bytes:

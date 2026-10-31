@@ -6,6 +6,8 @@ every match is produced here, on the coordinator, with the project's pinned tool
 
 from __future__ import annotations
 
+import collections
+import hashlib
 import os
 import re
 import shutil
@@ -22,6 +24,9 @@ MAX_SOURCE_BYTES = 64 * 1024
 # concurrency cap, so a hostile submission can't take the host down with it.
 LIMITS = ["--as=2147483648", "--cpu=30", "--fsize=67108864"]
 _SLOTS = threading.BoundedSemaphore(max(2, (os.cpu_count() or 4) - 1))
+_COMPILE_CACHE: collections.OrderedDict[tuple, CompileResult] = collections.OrderedDict()
+_CACHE_LOCK = threading.Lock()
+_CACHE_MAX = 512
 
 _COMMENTS_AND_STRINGS = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.DOTALL)
 _FORBIDDEN = [
@@ -134,12 +139,28 @@ def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 30
                  **({} if outputs is None else {"inputs": inputs, "outputs": outputs}))
 
 
+def clear_compile_cache() -> None:
+    with _CACHE_LOCK:
+        _COMPILE_CACHE.clear()
+
+
 def compile_source(cfg: CompilerConfig, context_header: str, source: str, trusted: bool = False) -> CompileResult:
     if not trusted:
         try:
             check_source(source)
         except SourceRejected as e:
             return CompileResult(False, None, f"rejected: {e}")
+
+    cache_key = (
+        tuple(cfg.cmd),
+        cfg.include_dirs,
+        hashlib.sha256((context_header + "\0" + source).encode()).digest(),
+    )
+    with _CACHE_LOCK:
+        if cache_key in _COMPILE_CACHE:
+            cached = _COMPILE_CACHE[cache_key]
+            _COMPILE_CACHE.move_to_end(cache_key)
+            return CompileResult(cached.ok, cached.obj, cached.log)
 
     with tempfile.TemporaryDirectory(prefix="decompnet-") as tmp:
         work = Path(tmp)
@@ -171,5 +192,12 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         log = (proc.stdout + proc.stderr).replace(root + "/", "")
         obj = work / "func.o"
         if proc.returncode != 0 or not obj.exists():
-            return CompileResult(False, None, log[-4000:] or f"compiler exited with {proc.returncode}")
-        return CompileResult(True, obj.read_bytes(), log[-2000:])
+            res = CompileResult(False, None, log[-4000:] or f"compiler exited with {proc.returncode}")
+        else:
+            res = CompileResult(True, obj.read_bytes(), log[-2000:])
+
+    with _CACHE_LOCK:
+        _COMPILE_CACHE[cache_key] = res
+        if len(_COMPILE_CACHE) > _CACHE_MAX:
+            _COMPILE_CACHE.popitem(last=False)
+    return res
