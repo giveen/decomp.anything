@@ -61,6 +61,7 @@ class _Section:
     data: bytes
     characteristics: int
     relocs: list[_Reloc] = field(default_factory=list)
+    comdat_selection: int = 0
 
     @property
     def code(self) -> bool:
@@ -120,7 +121,19 @@ def _read(data: bytes) -> tuple[str, list[_Section], list[_Symbol]]:
                 relocs.append(_Reloc(off, symidx, rtype))
         sections.append(_Section(name, body, chars, relocs))
         at += 40
-    return arch, sections, _symbols(data, symptr, nsyms) if symptr and nsyms else []
+    symbols = _symbols(data, symptr, nsyms) if symptr and nsyms else []
+    # PE/COFF section-definition auxiliary records store COMDAT selection at byte 14.
+    # https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#auxiliary-format-5-section-definitions
+    for symbol in symbols:
+        if not 0 < symbol.section <= len(sections):
+            continue
+        section = sections[symbol.section - 1]
+        if (section.characteristics & 0x1000 and symbol.storage == IMAGE_SYM_CLASS_STATIC and symbol.type == 0
+                and symbol.value == 0 and symbol.name == section.name):
+            at = symptr + 18 * symbol.index
+            if data[at + 17] and at + 36 <= len(data):
+                section.comdat_selection = data[at + 18 + 14]
+    return arch, sections, symbols
 
 
 def _key(name: str) -> str:

@@ -18,12 +18,15 @@ import re
 import shutil
 import subprocess
 import sys
+from bisect import bisect_right
 from pathlib import Path
 
 import yaml
 
+from ..elfobj import list_functions
 from ..limits import capped
 from . import match
+from .export_sources import isolated_source
 from .symbols import AUTO_NAME
 
 AS_FLAGS = {
@@ -142,6 +145,14 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         functions.append({"name": path.stem, "seg": path.parent.name, "vram": vram, "rom": rom_off,
                           "asm": path.relative_to(out).as_posix()})
     functions.sort(key=lambda f: f["vram"])
+    # Imported function bounds can extend into a splat data block (notably a final MIPS delay slot).
+    # The exported layout must respect the actual split until that configuration is repaired.
+    boundaries = {f["vram"] for f in functions}
+    for path in [*(out / "asm").glob("*.s"), *(out / "asm" / "data").glob("**/*.s")]:
+        _, address = _first_address(path)
+        if address is not None:
+            boundaries.add(address)
+    boundaries = sorted(boundaries)
 
     objects, private, as_fallback = [], [], []
     for f in functions:
@@ -152,14 +163,29 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
             continue
         unit = net._effective_unit(row, units)
         hdr = net._context(proj["id"], unit)["header"]
-        compiled = net._compile(proj, hdr, row["matched_source"])
+        source = row["matched_source"]
+        compiled = net._compile(proj, hdr, source)
         if not compiled.ok:
             as_fallback.append((f["name"], "doesn't compile any more"))
             f["kind"] = "asm"
             continue
+        definitions = list_functions(compiled.obj)
+        if set(definitions) != {row["name"]}:
+            source = isolated_source(source, row["name"], definitions)
+            if source is not None:
+                compiled = net._compile(proj, hdr, source)
+            if source is None or not compiled.ok or set(list_functions(compiled.obj)) != {row["name"]}:
+                as_fallback.append((f["name"], "cannot isolate its definition from a multi-function submission"))
+                f["kind"] = "asm"
+                continue
         linked = match.link(compiled.obj, row["name"], net._rom_target(row), net.symbols(proj["id"]), net.reader(proj))
         if not linked.exact:
             as_fallback.append((f["name"], "no longer matches"))
+            f["kind"] = "asm"
+            continue
+        next_block = bisect_right(boundaries, f["vram"])
+        if next_block < len(boundaries) and f["vram"] + len(linked.candidate.code) > boundaries[next_block]:
+            as_fallback.append((f["name"], "its code overlaps the next splat block"))
             f["kind"] = "asm"
             continue
         bases, ok = {}, True
@@ -176,7 +202,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         src = out / "src" / f["seg"] / f"{f['name']}.c"
         src.parent.mkdir(parents=True, exist_ok=True)
         include = "common.h" if not unit else f"common_{unit}.h"
-        src.write_text(f'#include "{include}"\n\n{row["matched_source"].strip()}\n', encoding="utf-8")
+        src.write_text(f'#include "{include}"\n\n{source.strip()}\n', encoding="utf-8")
         f["kind"] = "c"
         f["src"] = src.relative_to(out).as_posix()
         f["obj"] = f"build/src/{f['seg']}/{f['name']}.o"

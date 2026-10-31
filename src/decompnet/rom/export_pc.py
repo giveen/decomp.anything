@@ -1,6 +1,6 @@
 """Export a PC matching project as a normal IDE/CMake project plus a match judge.
 
-This deliberately does not invent a PE linker. It writes one source file per matched function, the shared
+This deliberately does not invent a PE linker. It writes verified, nonconflicting translation units, the shared
 context header, CMake project files, compile_commands.json for clangd/IDE indexing, and judge.py, which
 compiles a function with the project's compiler and compares it with the original bytes after the same
 relocation normalization the matcher uses. Unmatched functions stay in the target; use the app's match loop
@@ -13,12 +13,14 @@ import hashlib
 import json
 import re
 import shutil
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 from .. import toolchains
 from ..project import compiler_config
 from . import elfexe, pe
-from .symbols import IDENT
+from .export_sources import definitions, isolated_source
 
 PC_PLATFORMS = ("windows", "linux")
 
@@ -41,6 +43,64 @@ def _language(cfg: dict) -> tuple[str, str]:
     return ("CXX", ".cpp") if cxx else ("C", ".c")
 
 
+@dataclass
+class _Source:
+    text: str
+    rows: list
+    public: set[str]
+    functions: list[str]
+
+
+def _conflicts(sources: list[_Source]) -> dict[str, set[int]]:
+    owners = defaultdict(set)
+    for i, source in enumerate(sources):
+        for symbol in source.public:
+            owners[symbol].add(i)
+    return {symbol: ids for symbol, ids in owners.items() if len(ids) > 1}
+
+
+def _sources(net, proj, rows, context: str, language: str) -> list[_Source]:
+    """Plan and verify before replacing an existing export. Identical submissions compile once."""
+    targets = {r["name"] for r in rows}
+
+    def checked(text, members):
+        compiled = net._compile(proj, context, text)
+        if not compiled.ok:
+            raise ExportPcError(f"cannot export {members[0]['name']}: source no longer compiles\n{compiled.log[-1200:]}")
+        for row in members:
+            _, exact, problems = net._evaluate(row, proj, compiled.obj)
+            if exact is not True:
+                raise ExportPcError(f"cannot export {row['name']}: source no longer matches independently; "
+                                    + "; ".join(problems[:3]))
+        public, functions = definitions(compiled.obj, targets)
+        return _Source(text, members, public, functions)
+
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["matched_source"].strip()].append(row)
+    sources = [checked(text, members) for text, members in grouped.items()]
+    conflicts = _conflicts(sources)
+    if conflicts and language == "C":
+        affected = set().union(*conflicts.values())
+        separated = []
+        for i, source in enumerate(sources):
+            if i not in affected:
+                separated.append(source)
+                continue
+            for row in source.rows:
+                text = isolated_source(source.text, row["name"], source.functions)
+                if text is None:
+                    raise ExportPcError(f"cannot isolate {row['name']} from overlapping submissions; "
+                                        "submit independently matching functions or one consistent shared source")
+                separated.append(checked(text, [row]))
+        sources = separated
+        conflicts = _conflicts(sources)
+    if conflicts:
+        raise ExportPcError("export sources have conflicting definitions: " + ", ".join(sorted(conflicts)[:8])
+                            + ". Submit independently matching functions or one consistent shared source.")
+    return sources
+
+
 def export_pc(net, slug: str, out: Path, log=print) -> dict:
     proj = net._project(slug)
     cfg = net.cfg(proj)
@@ -57,11 +117,15 @@ def export_pc(net, slug: str, out: Path, log=print) -> dict:
     data = target.read_bytes()
     image = (elfexe if platform == "linux" else pe).read(data, target.name)
     sources = net.store.all(
-        "SELECT name, vram, rom_offset, size, matched_source FROM functions "
+        "SELECT * FROM functions "
         "WHERE project_id=? AND status='matched' AND matched_source IS NOT NULL AND matched_source!='' "
         "ORDER BY vram", proj["id"])
     if not sources:
         raise ExportPcError("no matched functions yet: match at least one function before exporting")
+
+    context = net._context(proj["id"])["header"]
+    lang, ext = _language(cfg)
+    units = _sources(net, proj, sources, context, lang)
 
     if out.exists():
         for child in out.iterdir():
@@ -70,33 +134,27 @@ def export_pc(net, slug: str, out: Path, log=print) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     (out / "src").mkdir(exist_ok=True)
     (out / "include").mkdir(exist_ok=True)
-    context = net._context(proj["id"])["header"]
     (out / "include" / "context.h").write_text(context, encoding="utf-8")
     (out / ("baserom" + _ext(platform))).write_bytes(data)
 
-    lang, ext = _language(cfg)
     funcs = []
     used: set[str] = set()
-    for row in sources:
+    for unit in units:
+        row = unit.rows[0]
         name = row["name"]
-        if not IDENT.match(name):
-            log(f"skipping {name}: not a simple C identifier")
-            continue
         stem = _safe(name)
         if stem in used:
             stem = f"{stem}_{row['vram']:08X}"
         used.add(stem)
         src = out / "src" / f"{stem}{ext}"
-        src.write_text(f'#include "context.h"\n\n{row["matched_source"].strip()}\n', encoding="utf-8")
-        funcs.append({"name": name, "source": src.relative_to(out).as_posix(), "vram": int(row["vram"]),
-                      "rom": int(row["rom_offset"]), "size": int(row["size"] or 0)})
-    if not funcs:
-        raise ExportPcError("the matched functions have names that aren't simple C identifiers to export")
+        src.write_text(f'#include "context.h"\n\n{unit.text}\n', encoding="utf-8")
+        for row in unit.rows:
+            funcs.append({"name": row["name"], "source": src.relative_to(out).as_posix(), "vram": int(row["vram"]),
+                          "rom": int(row["rom_offset"]), "size": int(row["size"] or 0)})
 
     symbols = {}
     for s in net.symbols(proj["id"]).by_name.values():
-        if IDENT.match(s.name):
-            symbols.setdefault(s.name, s.address)
+        symbols.setdefault(s.name, s.address)
     build = {
         "title": proj["name"], "platform": platform, "arch": image.arch, "language": lang,
         "image": f"baserom{_ext(platform)}", "sha1": hashlib.sha1(data).hexdigest(),
@@ -121,7 +179,11 @@ target_compile_options(decomp PRIVATE {cmake_flags})
     try:
         cc = compiler_config(out, {"compiler": cfg["compiler"]})
         commands = []
+        seen = set()
         for f in funcs:
+            if f["source"] in seen:
+                continue
+            seen.add(f["source"])
             obj = f"build/{Path(f['source']).with_suffix('.o').as_posix()}"
             args = [a.replace("{src}", f["source"]).replace("{obj}", obj).replace("{include}", "include")
                     for a in cc.cmd]
@@ -137,7 +199,7 @@ target_compile_options(decomp PRIVATE {cmake_flags})
 A normal CMake source tree for the functions that already match, with a small judge. It is meant to be
 opened in your IDE (VS Code, CLion, Visual Studio, ...), not rebuilt inside decomp.anything.
 
-- `src/` — matched functions as C/C++, one per file.
+- `src/` — verified C/C++ translation units. Functions from an identical shared submission use one file.
 - `include/context.h` — shared types, structs and prototypes.
 - `CMakeLists.txt`, `compile_commands.json` — configure it with your IDE or CMake; exact compiler flags are
   already in the project.
@@ -147,6 +209,8 @@ opened in your IDE (VS Code, CLion, Visual Studio, ...), not rebuilt inside deco
 
 This does **not** relink a PE/ELF: link the program in your normal toolchain/IDE, or keep using decomp.anything
 for the matching loop. The target's unmatched functions are still in your copy and in decomp.anything.
+Shared submissions retain their declarations and helper context. The judge verifies the functions listed in
+`build.json`; additional helpers in a shared source file are not independently certified by export.
 
 `build/` and `baserom*` are generated/private.
 """, encoding="utf-8")
