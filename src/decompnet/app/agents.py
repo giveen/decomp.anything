@@ -642,6 +642,12 @@ class Manager:
         if sid is not None:
             self.persist(self.running())
 
+    def stop_project(self, slug: str) -> None:
+        """Stop all helpers working on a specific project."""
+        for s in list(self.sessions.values()):
+            if s.slug == slug:
+                self.stop(s.id)
+
     def remove(self, sid: str) -> None:
         self.stop(sid)
         self.sessions.pop(sid, None)
@@ -757,11 +763,14 @@ class Manager:
         if not s.stop.is_set():  # finished by itself (done, budget, errors): no need to resume it
             s.stop.set()
             self.persist(self.running())
-        held = self.net.store.one("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?", agent.id)
+        held_functions = self.net.store.all(
+            "SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?", agent.id
+        )
         link = self.net.links.get(s.slug)
-        if held and link is not None:  # in a room, the host holds the real claim
-            with contextlib.suppress(Exception):
-                link.call("/collab/release", agent, function=held["name"], notes="")
+        if link is not None:
+            for held in held_functions:
+                with contextlib.suppress(Exception):
+                    link.call("/collab/release", agent, function=held["name"], notes="")
         with self.net.store.tx() as db:  # release any claim the agent still holds so others can take it
             db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
 

@@ -708,7 +708,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         raise ValueError("no supported IDE command found (VS Code, VSCodium, CLion, IntelliJ IDEA or Rider)")
 
     def p_delete(slug, request, data):
-        manager.stop()
+        manager.stop_project(slug)
         proj = net.project_row(slug)
         net.remove_project(slug)
         if data.get("files"):

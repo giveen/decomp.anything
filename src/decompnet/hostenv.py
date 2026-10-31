@@ -75,8 +75,8 @@ def windows_path(path: Path | str) -> str:
     except (OSError, subprocess.TimeoutExpired):
         pass
     p = str(path)
-    if p.startswith("/mnt/") and len(p) > 6 and p[6:7] in ("/", ""):
-        return f"{p[5].upper()}:\\" + p[7:].replace("/", "\\")
+    if p.startswith("/mnt/") and len(p) >= 6 and p[5].isalpha() and p[6:7] in ("/", ""):
+        return f"{p[5].upper()}:\\" + (p[7:].replace("/", "\\") if len(p) > 6 else "")
     return f"\\\\wsl.localhost\\{distro()}" + p.replace("/", "\\")
 
 

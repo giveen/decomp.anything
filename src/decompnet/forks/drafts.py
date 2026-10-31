@@ -95,10 +95,14 @@ def _dsd_asm(root: Path) -> Path | None:
     newest = max((p.stat().st_mtime for p in root.glob("config/**/*.txt")), default=0)
     with _DSD_LOCK:
         if not stamp.exists() or stamp.stat().st_mtime < newest:
-            subprocess.run([str(toolchains.binary("dsd")), "dis", "-c", str(configs[0].relative_to(root)), "-a",
-                            str(out)], cwd=root, capture_output=True, timeout=600)
-            out.mkdir(parents=True, exist_ok=True)
-            stamp.touch()
+            try:
+                res = subprocess.run([str(toolchains.binary("dsd")), "dis", "-c", str(configs[0].relative_to(root)), "-a",
+                                str(out)], cwd=root, capture_output=True, timeout=600)
+                if res.returncode == 0:
+                    out.mkdir(parents=True, exist_ok=True)
+                    stamp.touch()
+            except (subprocess.TimeoutExpired, OSError):
+                pass
     return out
 
 

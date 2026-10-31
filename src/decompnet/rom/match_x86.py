@@ -97,6 +97,12 @@ def _resolve(symbols: SymbolTable, name: str) -> int | None:
     return None
 
 
+def _is_local_data(name: str) -> bool:
+    return name in (".rodata", ".rdata", ".data", ".bss") or name.startswith(
+        (".rodata.", ".rdata.", ".data.", "$SG", ".LC", "__real@", "__xmm@")
+    )
+
+
 def link(obj: bytes, name: str, target: X86Target, symbols: SymbolTable) -> LinkResult:
     candidate = coff_function(obj, name) if is_coff(obj) else elf_function(obj, name)
     if candidate is None:
@@ -125,6 +131,10 @@ def link(obj: bytes, name: str, target: X86Target, symbols: SymbolTable) -> Link
         got = candidate.format == "elf" and r.type in _GOT[target.arch]
         base = _resolve(symbols, f"{r.symbol}@got") if got else _resolve(symbols, r.symbol)
         if base is None:
+            if _is_local_data(r.symbol):
+                if not same_kind:
+                    problems.append(f"`{r.symbol}` is used as a different kind of reference at byte 0x{r.offset:X}")
+                continue
             # Equal placeholder bytes do not establish where a linker will place this reference.
             problems.append(f"`{r.symbol}` is not a known symbol (byte 0x{r.offset:X})")
             continue

@@ -277,8 +277,22 @@ def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:
     score += (sum(missing.values()) - reordered) * PENALTY_DELETION
     score += (sum(extra.values()) - reordered) * PENALTY_INSERTION
     if reordered:
-        moved = missing & extra
-        rows = [("o" if m in "|<>" and ((t and moved[t]) or (c and moved[c])) else m, t, c) for m, t, c in rows]
+        rem_t = Counter(missing & extra)
+        rem_c = Counter(missing & extra)
+        new_rows = []
+        for m, t, c in rows:
+            if m in "|<>":
+                is_moved = False
+                if t and rem_t[t] > 0:
+                    rem_t[t] -= 1
+                    is_moved = True
+                if c and rem_c[c] > 0:
+                    rem_c[c] -= 1
+                    is_moved = True
+                new_rows.append(("o" if is_moved else m, t, c))
+            else:
+                new_rows.append((m, t, c))
+        rows = new_rows
 
     if score == 0 and not bytes_match:
         score = 1  # textually identical but encodings/relocs differ (e.g. branch form, addend)

@@ -335,11 +335,12 @@ def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int, abs
         e = ins.encoding
         direct = ins.group(capstone.CS_GRP_CALL) or ins.id == capstone.x86.X86_INS_JMP
         target = None
-        if direct and e.imm_size and ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
+        if direct and e.imm_size == 4 and ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
             value = ins.operands[0].imm
             field = ins.address - vram + e.imm_offset
             # A jump inside the function is resolved by the assembler: the candidate has no relocation there.
-            if not vram < value < vram + len(code):
+            is_internal_jump = (ins.id == capstone.x86.X86_INS_JMP) and (vram <= value < vram + len(code))
+            if not is_internal_jump:
                 target = (field, pc_rel, value, end)
         elif e.disp_size and ins.operands:
             mem = next((o.mem for o in ins.operands if o.type == capstone.x86.X86_OP_MEM), None)
@@ -357,8 +358,10 @@ def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int, abs
             refs.append((off, rtype, addr & 0xFFFFFFFFFFFFFFFF, fin))
         if absolute and not direct and e.imm_size == 4:
             imm = next((o.imm for o in ins.operands if o.type == capstone.x86.X86_OP_IMM), None)
-            if imm is not None and image_lo <= imm < image_hi:
-                refs.append((ins.address - vram + e.imm_offset, abs32, imm, end))
+            if imm is not None:
+                imm = imm & (0xFFFFFFFF if arch == "x86" else 0xFFFFFFFFFFFFFFFF)
+                if image_lo <= imm < image_hi:
+                    refs.append((ins.address - vram + e.imm_offset, abs32, imm, end))
         lines.append(f"/* {ins.address - vram:06X} {ins.address:08X} */  {ins.mnemonic:<8} {ins.op_str}".rstrip())
     return lines, count, refs
 
@@ -471,7 +474,8 @@ def read(data: bytes, name: str = "") -> PeImage:
     pdata = _pdata(data, sections, dirs, image_base, machine)
     fpo = _fpo(data, sections, dirs, image_base, machine) if not pdata else []
     functions, symbols, data_rows = build(data, arch, image_base, sections, symbols, pdata or fpo,
-                                          image_base + entry if entry else 0, ranges_complete=not fpo)
+                                          image_base + entry if entry else 0, ranges_complete=not fpo,
+                                          absolute=(arch == "x86"))
     compiler = "MSVC" if b"Rich" in data[:0x400] and b"rsds" not in data else "MinGW-w64" \
         if any(s.name.startswith("__mingw") or s.name == "_start" for s in symbols) else "unknown"
     comment = next((s.data(data) for s in sections if s.name == ".comment"), b"")

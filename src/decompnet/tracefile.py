@@ -60,11 +60,13 @@ def parse(text: str, source: str = "trace") -> TraceFile:
         return TraceFile(source)
     first = lines[0].lower()
     if "," in lines[0] and any(k in first for k in ("address", "pc", "ip", "function", "name", "count", "hits")):
-        return _csv(text, source)
+        return _csv("\n".join(lines), source)
     return _lines(lines, source)
 
 
 def _count(value) -> int:
+    if isinstance(value, bool):
+        return 1
     try:
         n = int(value)
         return n if n > 0 else 1
@@ -88,7 +90,7 @@ def _json(value, source: str) -> TraceFile:
     if not isinstance(value, list):
         raise ValueError("trace JSON must be a list or an object")
     for item in value:
-        if isinstance(item, int):
+        if isinstance(item, int) and not isinstance(item, bool):
             out.hits.append(TraceHit(item))
         elif isinstance(item, str):
             addr = _address(item)
@@ -153,7 +155,7 @@ def _lines(lines: list[str], source: str) -> TraceFile:
 
 
 def _address(value) -> int | None:
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         return value if value >= 0 else None
     if not isinstance(value, str):
         return None

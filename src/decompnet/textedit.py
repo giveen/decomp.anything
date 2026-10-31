@@ -44,6 +44,8 @@ def _closest(text: str, old: str) -> str:
 
 def replace_once(text: str, old: str, new: str, where: str) -> str:
     """`text` with `old` replaced by `new` (`old` must occur once; whitespace may differ)."""
+    if not old:
+        raise NetworkError("`old` must not be empty")
     count = text.count(old)
     if count == 1:
         return text.replace(old, new)

@@ -151,11 +151,12 @@ def build_objects() -> tuple[list[dict], dict[str, str]]:
     return pieces, c_objs
 
 
-def _text_size(obj: str) -> int:
+def _obj_size(obj: str, sections: str = ".text") -> int:
     from elftools.elf.elffile import ELFFile
 
+    sec_names = set(sections.split())
     with open(ROOT / obj, "rb") as f:
-        return sum(s["sh_size"] for s in ELFFile(f).iter_sections() if s.name == ".text")
+        return sum(s["sh_size"] for s in ELFFile(f).iter_sections() if s.name in sec_names and s["sh_type"] != "SHT_NOBITS")
 
 
 def _globals(obj: str) -> set[str]:
@@ -180,7 +181,7 @@ def layout(pieces: list[dict], c_objs: dict[str, str]) -> list[tuple[int, str, s
         items.append((next(f["addr"] for f in B["functions"] if f["name"] == name), obj, ".text"))
     image = (ROOT / B["image"]).read_bytes()
     pos, end, gaps = B["base"], B["base"] + len(image), []
-    for addr, obj, _ in [*sorted(items), (end, None, "")]:
+    for addr, obj, sec_names in [*sorted(items), (end, None, "")]:
         if addr > pos:
             raw = image[pos - B["base"]:addr - B["base"]]
             src = ROOT / "build" / "gaps" / f"{pos:08X}.s"
@@ -191,7 +192,7 @@ def layout(pieces: list[dict], c_objs: dict[str, str]) -> list[tuple[int, str, s
             run([arm("as"), *AS_FLAGS, "-o", gobj, src.relative_to(ROOT).as_posix()])
             gaps.append((pos, gobj, ".data"))
         if obj is not None:
-            pos = max(pos, addr + _text_size(obj))
+            pos = max(pos, addr + _obj_size(obj, sec_names))
     return sorted(items + gaps)
 
 

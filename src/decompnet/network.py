@@ -259,15 +259,20 @@ class Network:
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
-            held = db.execute("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
-                              (agent.id,)).fetchone()
-            if held is not None:
-                if function and held["id"] != self._function(function, proj["slug"] if proj else None)["id"]:
-                    raise NetworkError(f"you already hold {held['name']}; match it or release_function it first")
-                fn = held
+            held_rows = db.execute("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
+                                   (agent.id,)).fetchall()
+            target_fn = self._function(function, proj["slug"] if proj else None) if function else None
+            matching_held = next((h for h in held_rows if target_fn and h["id"] == target_fn["id"]), None)
+            if matching_held is not None:
+                fn = matching_held
+                db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
+            elif held_rows:
+                if function:
+                    raise NetworkError(f"you already hold {held_rows[0]['name']}; match it or release_function it first")
+                fn = held_rows[0]
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
             elif function:
-                fn = self._function(function, proj["slug"] if proj else None)
+                fn = target_fn
                 if fn["status"] == "matched":
                     raise NetworkError(f"{fn['name']} is already matched; use get_function to read its source")
                 if fn["status"] == "asm":
