@@ -297,14 +297,14 @@ class _Linker:
         (None, (section, offset)) for more of the candidate's own data, (None, None) when it can't be placed."""
         if s["st_shndx"] in ("SHN_UNDEF", "SHN_COMMON") or s["st_shndx"] in (0xFF03, 0xFF04):
             base = self.resolve_name(_canonical(s.name, s["st_info"]["bind"]))
-            return (None if base is None else base + value), None
-        in_sec = value if s["st_info"]["type"] == "STT_SECTION" else s["st_value"] + value
+            return (None if base is None else (base + value) & 0xFFFFFFFF), None
+        in_sec = (value if s["st_info"]["type"] == "STT_SECTION" else s["st_value"] + value) & 0xFFFFFFFF
         hit = _symbol_at(self.symtab, s["st_shndx"], in_sec)
         if hit and hit[0] == self.name:
             return self.target.vram + hit[1], None
         base = self.symbols.resolve(hit[0]) if hit else None
         if base is not None:
-            return base + hit[1], None
+            return (base + hit[1]) & 0xFFFFFFFF, None
         if s["st_shndx"] == self.fn_shndx:
             return None, None
         return None, (s["st_shndx"], in_sec)
@@ -321,7 +321,7 @@ class _Linker:
             for at, rtype, s in self._relocs_in(shndx):
                 if rtype != R_MIPS_32 or not off <= at <= off + length - 4:
                     continue
-                _, own = self._pointee(s, int.from_bytes(data[at:at + 4], self.target.order))
+                _, own = self._pointee(s, int.from_bytes(data[at:at + 4], self.target.order, signed=True))
                 if own is None or own in self.data or (rom := self.read(addr + at - off, 4)) is None:
                     continue
                 self.local_map[own] = self.data[own] = int.from_bytes(rom, self.target.order)
@@ -346,7 +346,7 @@ class _Linker:
             at -= off
             if rtype != R_MIPS_32 or not 0 <= at <= length - 4:
                 continue
-            dest, own = self._pointee(s, int.from_bytes(mine[at:at + 4], self.target.order))
+            dest, own = self._pointee(s, int.from_bytes(mine[at:at + 4], self.target.order, signed=True))
             if own is not None:
                 dest = self.local_map.get(own)
             if dest is None:

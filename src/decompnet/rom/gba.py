@@ -165,9 +165,11 @@ def split(rom_path: Path, workdir: Path, log=print) -> list[GbaFunction]:
         off = addr - BASE
         limit = (starts[k + 1] - BASE) if k + 1 < len(starts) else len(rom)
         end = min(ends.get(addr, limit), limit)
-        while end + 4 <= limit and (end in literals or (end % 4 == 2 and end + 2 in literals and
-                                                       rom[end:end + 2] in (b"\0\0", b"\xc0\x46"))):
-            end += 2 if end % 4 == 2 and end not in literals else 4  # the literal pool after the code
+        while end + 4 <= limit and (
+            (end % 4 == 0 and end in literals)
+            or (end % 4 == 2 and end + 2 in literals and rom[end:end + 2] in (b"\0\0", b"\xc0\x46"))
+        ):
+            end += 2 if end % 4 == 2 else 4  # the literal pool after the code
         text, thumb = blocks.get(addr, (f"\tthumb_func_start sub_{addr:08X}\n", True))
         code = rom[off:end]
         out.append(GbaFunction(f"sub_{addr:08X}", addr, off, code, text, max(1, len(code) // 2), thumb,

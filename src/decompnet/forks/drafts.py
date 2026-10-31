@@ -155,10 +155,13 @@ def self_contained(text: str, span: tuple[int, int], file_text: str = "") -> str
             continue
         line = re.sub(r"/\*.*\*/\s*$", "", line).strip()
         line = re.sub(r"^static\s+", "extern ", line)
-        name = re.search(r"(\w+)\s*(?:\(|\[|;)", line)
-        if name and file_text and re.search(rf"\b{re.escape(name.group(1))}\b", file_text):
+        fn_ptr = re.search(r"\(\s*\*+\s*(\w+)\s*\)", line)
+        sym = fn_ptr.group(1) if fn_ptr else (m.group(1) if (m := re.search(r"(\w+)\s*(?:\(|\[|;)", line)) else None)
+        if sym and file_text and re.search(rf"\b{re.escape(sym)}\b", file_text):
             continue
-        if "(" in line or line.startswith("extern "):
+        if fn_ptr and not line.startswith("extern "):
+            decls.append("extern " + line)
+        elif "(" in line or line.startswith("extern "):
             decls.append(line)
         else:
             decls.append("extern " + line)

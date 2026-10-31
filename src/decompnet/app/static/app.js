@@ -676,6 +676,9 @@ $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 
 
 /* ------------------------------------------------------------------ project */
 async function openProject(slug, tab = "overview", fn = "") {
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  if (S.statsTimer) { clearInterval(S.statsTimer); S.statsTimer = null; }
+  const openToken = ++S.openSeq || (S.openSeq = 1);
   show("project");
   S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = [];
   S.apFeed = null; S.stats = null; S.map = []; S.mapSig = null; geo = null;
@@ -683,8 +686,11 @@ async function openProject(slug, tab = "overview", fn = "") {
   $("intakePanel").hidden = true; $("intakeBody").textContent = ""; $("intakeSummary").textContent = "";
   try {
     if (!S.st) await loadState();
+    if (openToken !== S.openSeq) return;
     S.ov = await api(`/api/project?slug=${slug}`);
+    if (openToken !== S.openSeq) return;
   } catch (e) {
+    if (openToken !== S.openSeq) return;
     toast(esc(e.message), "err");
     location.hash = "#/";
     return;
@@ -737,10 +743,16 @@ async function openProject(slug, tab = "overview", fn = "") {
   renderIntake(slug);
   renderContents();
   await refreshMap();
+  if (openToken !== S.openSeq) return;
   await renderFeatures(true);
+  if (openToken !== S.openSeq) return;
   await renderSources(true);
+  if (openToken !== S.openSeq) return;
   await poll(true);
+  if (openToken !== S.openSeq) return;
   if (fn) openFn(fn);  // a link to one function (#/p/slug/functions/name) opens on it
+  if (S.timer) clearInterval(S.timer);
+  if (S.statsTimer) clearInterval(S.statsTimer);
   S.timer = setInterval(() => poll(false), 1000);
   S.statsTimer = setInterval(loadStats, 8000);
   loadStats();

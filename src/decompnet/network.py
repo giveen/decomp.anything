@@ -195,7 +195,7 @@ class Network:
         root = Path(proj["root"])
         return compile_source(compiler_config(root, json.loads(proj["config"])), header, source)
 
-    def _evaluate(self, fn, proj, obj: bytes) -> tuple[FunctionObj | None, bool | None, list[str]]:
+    def _evaluate(self, fn, proj, obj: bytes, symbols=None) -> tuple[FunctionObj | None, bool | None, list[str]]:
         """(candidate, verdict, problems) for a compiled object. verdict None means: decide by comparing
         fingerprints. Projects whose targets come from a ROM link the candidate instead (see app.engine)."""
         return extract_function(obj, fn["name"]), None, []
@@ -604,7 +604,7 @@ class Network:
                 if self._effective_unit(f, units) == unit]
 
     def regression_test(self, proj, header: str | None, sources: dict[int, str] | None = None,
-                        only: list | None = None, header_for=None) -> list[tuple[str, str]]:
+                        only: list | None = None, header_for=None, symbols=None) -> list[tuple[str, str]]:
         matched = only if only is not None else self.store.all(
             "SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
 
@@ -613,7 +613,7 @@ class Network:
                                 (sources or {}).get(fn["id"], fn["matched_source"]))
             if not res.ok:
                 return fn["name"], "no longer compiles: " + res.log.strip().splitlines()[0][:200] if res.log.strip() else "compile failed"
-            cand, verdict, _ = self._evaluate(fn, proj, res.obj)
+            cand, verdict, _ = self._evaluate(fn, proj, res.obj, symbols=symbols)
             if verdict is None and cand is not None:
                 want = fn["fingerprint"] if self._hash_only(fn) else self._target_obj(fn, proj).fingerprint()
                 verdict = cand.fingerprint() == want

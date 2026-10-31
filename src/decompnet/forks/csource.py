@@ -58,6 +58,9 @@ def find(text: str, name: str) -> tuple[int, int] | None:
                 j = len(clean)
                 break
             if nxt == -1 or brace < nxt:
+                if any(c in clean[j:brace] for c in "(){}="):
+                    j = len(clean)
+                    break
                 j = brace
                 break
             if any(c in clean[j:nxt] for c in "(){}="):
