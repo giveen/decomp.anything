@@ -91,7 +91,11 @@ class _Disc:
             if n == 0:  # records don't cross sector boundaries; skip the padding
                 i = (i // 2048 + 1) * 2048
                 continue
+            if n < 34 or i + n > len(raw):
+                break
             rec = raw[i:i + n]
+            if len(rec) <= 33 or 33 + rec[32] > len(rec):
+                break
             name = rec[33:33 + rec[32]].decode("ascii", "replace").split(";", 1)[0]
             if name not in ("\x00", "\x01"):
                 yield name.upper(), struct.unpack_from("<I", rec, 2)[0], struct.unpack_from("<I", rec, 10)[0], bool(rec[25] & 2)

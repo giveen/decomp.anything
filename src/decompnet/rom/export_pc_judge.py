@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -35,8 +36,12 @@ def check(name: str) -> bool:
         print(f"{name}: target function is no longer at 0x{fn['vram']:X}")
         return False
     source = (ROOT / fn["source"]).read_text(encoding="utf-8")
-    res = compile_source(compiler_config(ROOT, {"compiler": B["compiler"]}),
-                         (ROOT / "include" / "context.h").read_text(encoding="utf-8"), source)
+    m = re.match(r'\s*#include "([^"]+)"\s*\n', source)
+    header_name = m.group(1) if m else "context.h"
+    header_path = ROOT / "include" / header_name
+    header = header_path.read_text(encoding="utf-8") if header_path.exists() else ""
+    body = source[m.end():] if m else source
+    res = compile_source(compiler_config(ROOT, {"compiler": B["compiler"]}), header, body, trusted=True)
     if not res.ok:
         print(f"❌ {name}: doesn't compile\n{res.log[-1200:]}")
         return False

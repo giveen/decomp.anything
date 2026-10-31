@@ -19,9 +19,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import scoring, toolchains
+from . import coffobj, elfobj, scoring, toolchains
 from .compiler import compile_source
-from .elfobj import FunctionObj, Reloc, extract_function
+from .elfobj import FunctionObj, Reloc
 from .project import compiler_config
 
 TYPES_32 = ["int", "unsigned", "unsigned int", "long", "unsigned long", "s32", "u32", "uInt", "uLong"]
@@ -170,7 +170,13 @@ class LocalScorer:
 
     def score(self, source: str) -> int | None:
         res = compile_source(self.cc, self.context, source)
-        cand = extract_function(res.obj, self.name) if res.ok else None
+        if not res.ok:
+            return None
+        try:
+            cand = coffobj.extract_function(res.obj, self.name) if coffobj.is_coff(res.obj) else \
+                elfobj.extract_function(res.obj, self.name)
+        except Exception:  # noqa: BLE001
+            return None
         return scoring.diff(self.target, cand).score if cand else None
 
 

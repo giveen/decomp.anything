@@ -39,11 +39,16 @@ def _code_like(data: bytes, least: int = 16) -> bool:
     return sum(w == JR_RA for w in words) >= least and sum(_frame(w) for w in words) >= least
 
 
-def _walk(disc, lba: int, length: int, path: str = ""):
+def _walk(disc, lba: int, length: int, path: str = "", seen: set[int] | None = None):
+    if seen is None:
+        seen = set()
+    if lba in seen:
+        return
+    seen.add(lba)
     for name, entry_lba, size, is_dir in disc.entries(lba, length):
         if is_dir:
-            if name not in (".", ".."):
-                yield from _walk(disc, entry_lba, size, f"{path}{name}/")
+            if name not in (".", "..") and entry_lba not in seen:
+                yield from _walk(disc, entry_lba, size, f"{path}{name}/", seen)
         else:
             yield f"{path}{name}", entry_lba, size
 

@@ -42,10 +42,12 @@ class SourceRejected(ValueError):
 def check_source(source: str) -> None:
     if len(source.encode()) > MAX_SOURCE_BYTES:
         raise SourceRejected(f"source too large (max {MAX_SOURCE_BYTES} bytes)")
-    for inc in _INCLUDE.findall(source):
-        if inc.startswith("/") or ".." in inc.split("/"):
+    spliced = re.sub(r"\\\r?\n", "", source)
+    cleaned = re.sub(r'//[^\n]*|/\*.*?\*/', " ", spliced, flags=re.DOTALL)
+    for inc in _INCLUDE.findall(cleaned):
+        if inc.startswith(("/", "\\")) or ":" in inc or ".." in inc.replace("\\", "/").split("/"):
             raise SourceRejected(f"include path not allowed: {inc}")
-    code = _COMMENTS_AND_STRINGS.sub(" ", source)
+    code = _COMMENTS_AND_STRINGS.sub(" ", spliced)
     for pattern, why in _FORBIDDEN:
         if pattern.search(code):
             raise SourceRejected(why)

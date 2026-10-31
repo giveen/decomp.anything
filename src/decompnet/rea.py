@@ -206,8 +206,11 @@ class Client:
 
     def _send(self, message: dict) -> None:
         assert self.proc.stdin is not None
-        self.proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+            self.proc.stdin.flush()
+        except OSError as e:
+            raise ReaError(f"REA exited: {e}") from e
 
     def _request(self, method: str, params: dict | None = None, timeout: float | None = None) -> dict:
         with self._lock:
@@ -224,6 +227,7 @@ class Client:
                 except queue.Empty:
                     raise ReaError(f"REA did not answer {method} in {timeout or self.timeout:.0f}s") from None
                 if line is None:
+                    self._lines.put(None)
                     raise ReaError("REA exited")
                 try:
                     msg = json.loads(line)
@@ -285,6 +289,8 @@ class Client:
         except (OSError, subprocess.TimeoutExpired):
             with contextlib.suppress(OSError):
                 self.proc.kill()
+            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                self.proc.wait(timeout=5)
 
     def __enter__(self) -> Client:
         return self
@@ -379,6 +385,15 @@ def inspect(binary: Path, fn, symbols, what: str = "", timeout: float = 900) -> 
     return "\n".join(parts) or f"REA returned nothing for {what or 'this function'}."
 
 
+def _parse_addr(addr) -> int | None:
+    if addr is None:
+        return None
+    try:
+        return int(addr, 0) if isinstance(addr, str) else int(addr)
+    except (TypeError, ValueError):
+        return None
+
+
 def search(binary: Path, query: str, symbols, timeout: float = 900) -> str:
     """Names and strings in the binary, through REA: the fastest way to find what a game calls."""
     with _lock:
@@ -388,16 +403,17 @@ def search(binary: Path, query: str, symbols, timeout: float = 900) -> str:
             found = client.call("search_strings", {"pattern": query}, timeout=timeout)
             for row in (found if isinstance(found, list) else [])[:40]:
                 value = row.get("value") or row.get("text") if isinstance(row, dict) else row
-                addr = row.get("address") if isinstance(row, dict) else None
-                rows.append(f"- string {symbols.label(int(addr, 0)) if addr is not None else ''}: {str(value)[:160]}")
-        except ReaError:
+                addr = _parse_addr(row.get("address") if isinstance(row, dict) else None)
+                rows.append(f"- string {symbols.label(addr) if addr is not None else ''}: {str(value)[:160]}")
+        except (ReaError, OSError):
             pass
         try:
             found = client.call("search_procedures", {"pattern": query}, timeout=timeout)
             for row in (found if isinstance(found, list) else [])[:40]:
-                addr, value = (row.get("address"), row.get("value") or row.get("name")) if isinstance(row, dict) else (None, row)
-                rows.append(f"- procedure {symbols.label(int(addr, 0)) if addr is not None else ''}: {value}")
-        except ReaError:
+                addr_raw, value = (row.get("address"), row.get("value") or row.get("name")) if isinstance(row, dict) else (None, row)
+                addr = _parse_addr(addr_raw)
+                rows.append(f"- procedure {symbols.label(addr) if addr is not None else ''}: {value}")
+        except (ReaError, OSError):
             pass
     return "\n".join(rows) or f"REA found no string or procedure matching {query!r}."
 

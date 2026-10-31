@@ -211,8 +211,10 @@ def yaz0(data: bytes) -> bytes:
             else:
                 n += 2
             for _ in range(n):
+                if len(out) >= size:
+                    break
                 out.append(out[-dist])
-    return bytes(out)
+    return bytes(out[:size])
 
 
 def _next_marker(rom: bytes, start: int) -> int:

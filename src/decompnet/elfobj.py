@@ -49,6 +49,7 @@ _MASKS: dict[tuple[str, int], tuple[int, int, int]] = {
     ("ppc", 109): (0, 4, 0x001FFFFF),  # R_PPC_EMB_SDA21
     ("thumb", 10): (0, 4, 0x07FF07FF),  # R_ARM_THM_CALL (both halves of a Thumb bl)
     ("thumb", 2): (0, 4, 0xFFFFFFFF),  # R_ARM_ABS32 (a literal-pool word)
+    ("arm", 10): (0, 4, 0x07FF07FF),  # R_ARM_THM_CALL
     ("arm", 28): (0, 4, 0x00FFFFFF),  # R_ARM_CALL
     ("arm", 29): (0, 4, 0x00FFFFFF),  # R_ARM_JUMP24
     ("arm", 43): (0, 4, 0x000F0FFF),  # R_ARM_MOVW_ABS_NC
@@ -129,7 +130,10 @@ def _symbol_name(elf: ELFFile, symtab: SymbolTableSection, idx: int) -> tuple[st
     `.text.foo` (from -ffunction-sections) collapsed to `foo` so static callees line up."""
     sym = symtab.get_symbol(idx)
     if sym["st_info"]["type"] == "STT_SECTION":
-        sec = elf.get_section(sym["st_shndx"]).name
+        shndx = sym["st_shndx"]
+        if not isinstance(shndx, int):
+            return "", True
+        sec = elf.get_section(shndx).name
         if sec.startswith(".text."):
             return sec[len(".text.") :], True
         # .rodata.str1.1 / .rodata.cst4 etc. are all "rodata" as far as matching cares
@@ -145,11 +149,14 @@ def _section_target(arch: str, raw: list[dict], k: int) -> int | None:
     """Offset inside the referenced section that a section-relative relocation points at."""
     r = raw[k]
     if r["rela"]:
-        # absolute relocations only; PC-relative addends are biased by the instruction layout
-        return r["value"] if (arch, r["type"]) in {("x86_64", 1), ("x86_64", 10), ("x86_64", 11), ("mips", 2),
-                                                    ("mips", 4), ("mips", 5), ("mips", 6)} else None
+        if (arch, r["type"]) in {("x86_64", 1), ("x86_64", 10), ("x86_64", 11), ("mips", 2),
+                                 ("mips", 4), ("mips", 5), ("mips", 6)}:
+            return r["value"]
+        if arch == "x86_64" and r["type"] in (2, 4):  # R_X86_64_PC32, R_X86_64_PLT32
+            return r["value"] + 4
+        return None
     if arch != "mips":
-        return r["value"] if r["type"] == 2 else None
+        return r["value"] if r["type"] in (1, 2) else None
     t, v = r["type"], r["value"]
     if t == 4:  # R_MIPS_26: word index
         return v << 2
@@ -220,10 +227,13 @@ def _function_symbols(elf) -> dict[str, tuple[int, int, int]]:
         if not s.name or not isinstance(shndx, int) or s["st_info"]["type"] in ("STT_SECTION", "STT_FILE"):
             continue
         if s["st_info"]["type"] == "STT_FUNC" and s["st_size"] > 0:
-            out[s.name] = (shndx, s["st_value"], s["st_size"])
+            val = s["st_value"]
+            if elf["e_machine"] == "EM_ARM" and (val & 1):
+                val &= ~1
+            out[s.name] = (shndx, val, s["st_size"])
         elif s["st_size"] == 0 and s.name not in _MARKERS and s.name[0] not in ".$" \
                 and elf.get_section(shndx)["sh_flags"] & 0x4:  # SHF_EXECINSTR
-            loose.setdefault(shndx, []).append((s["st_value"], s.name))
+            loose.setdefault(shndx, []).append((s["st_value"] & ~1 if elf["e_machine"] == "EM_ARM" else s["st_value"], s.name))
     for shndx, syms in loose.items():
         section = elf.get_section(shndx)
         data = section.data()
@@ -256,6 +266,10 @@ def extract_function(data: bytes, name: str) -> FunctionObj | None:
     if found is None:
         return None
     symtab = elf.get_section_by_name(".symtab")
+    if arch == "arm" and symtab is not None:
+        sym = next((s for s in symtab.iter_symbols() if s.name == name), None)
+        if sym and (sym["st_value"] & 1):
+            arch = "thumb"
     shndx, start, size = found
     section = elf.get_section(shndx)
     code = section.data()[start : start + size]
@@ -289,13 +303,14 @@ def extract_function(data: bytes, name: str) -> FunctionObj | None:
             # The compiler referenced a same-file function or static by section+offset. Resolve it to the
             # named symbol at that offset, encoded the way a reference to that symbol by name would be,
             # so a function compiled on its own (which references neighbours by name) can still match.
-            addend = 0
-            sec_idx = r["symtab"].get_symbol(r["symidx"])["st_shndx"]
-            target = _section_target(arch, raw, k)
-            named = _symbol_at(symtab, sec_idx, target) if target is not None else None
-            if named:
-                sym_name, residual = named
-                addend = _encode(arch, r, residual)
+            sec_sym = r["symtab"].get_symbol(r["symidx"])
+            sec_idx = sec_sym["st_shndx"]
+            if isinstance(sec_idx, int):
+                target = _section_target(arch, raw, k)
+                named = _symbol_at(symtab, sec_idx, target) if target is not None else None
+                if named:
+                    sym_name, residual = named
+                    addend = _encode(arch, r, residual)
         relocs.append(Reloc(r["off"], r["type"], sym_name, addend))
     relocs.sort(key=lambda r: r.offset)
     return FunctionObj(name=name, arch=arch, big_endian=big_endian, code=code, relocs=relocs, format="elf")

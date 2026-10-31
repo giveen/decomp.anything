@@ -55,7 +55,9 @@ def arm_b_dest(code: bytes, at: int, pc: int) -> int | None:
 def _sym_name(elf: ELFFile, symtab, idx: int):
     sym = symtab.get_symbol(idx)
     if sym["st_info"]["type"] == "STT_SECTION":
-        return elf.get_section(sym["st_shndx"]).name, sym, True
+        shndx = sym["st_shndx"]
+        name = elf.get_section(shndx).name if isinstance(shndx, int) else ""
+        return name, sym, True
     return sym.name, sym, False
 
 

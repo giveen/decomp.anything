@@ -28,6 +28,7 @@ class Item:
     data: bytes | None  # None: .bss (only a size)
     size: int
     pointers: tuple[int, ...] = ()  # offsets of relocated words in it
+    big_endian: bool = True
 
     def key(self) -> tuple:
         if self.data is None:
@@ -82,9 +83,10 @@ def _items(path: Path) -> dict[str, list[Item]]:
                 continue
             name = s.name if s is not None else f"{sec.name}+0x{value:X}"
             ptrs = tuple(r - value for r in relocs.get(idx, []) if value <= r < value + size)
-            items.append(Item(name, None if nobits else data[value:value + size], size, ptrs))
+            big = not elf.little_endian
+            items.append(Item(name, None if nobits else data[value:value + size], size, ptrs, big))
             if not nobits and end > value + size and any(data[value + size:end]):  # bytes no symbol covers
-                items.append(Item(f"{sec.name}+0x{value + size:X}", data[value + size:end], end - value - size))
+                items.append(Item(f"{sec.name}+0x{value + size:X}", data[value + size:end], end - value - size, (), big))
         out.setdefault(sec.name, []).extend(items)
     return out
 
@@ -127,14 +129,15 @@ def show(item: Item | None) -> str:
     if item.data is None:
         return f"{item.name}: {item.size} bytes of zeros (.bss)"
     d = item.data
+    order = ">" if getattr(item, "big_endian", True) else "<"
     if item.pointers and len(d) == 4 * len(item.pointers):
         value = f"{len(item.pointers)} pointer{'s' if len(item.pointers) > 1 else ''}"
     elif len(d) == 4 and not item.pointers:
-        f = struct.unpack(">f", d)[0]
-        value = f"{f!r}f" if d != b"\0\0\0\0" and 1e-6 < abs(f) < 1e9 else f"0x{d.hex().upper()}"
+        f = struct.unpack(f"{order}f", d)[0]
+        value = f"{f!r}f" if d != b"\0\0\0\0" and 1e-6 < abs(f) < 1e9 else f"0x{int.from_bytes(d, 'big' if order == '>' else 'little'):08X}"
     elif len(d) == 8 and not item.pointers:
-        f = struct.unpack(">d", d)[0]
-        value = f"{f!r}" if 1e-9 < abs(f) < 1e15 else f"0x{d.hex().upper()}"
+        f = struct.unpack(f"{order}d", d)[0]
+        value = f"{f!r}" if 1e-9 < abs(f) < 1e15 else f"0x{int.from_bytes(d, 'big' if order == '>' else 'little'):016X}"
     elif d.rstrip(b"\0") and all(32 <= c < 127 or c in (9, 10, 13) or c >= 0x80 for c in d.rstrip(b"\0")):
         text = d.rstrip(b"\0").decode("latin-1").replace("\n", "\\n")
         value = '"' + (text if len(text) <= 40 else text[:40] + "…") + '"'

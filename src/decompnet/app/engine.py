@@ -3178,7 +3178,7 @@ class RomNetwork(Network):
             return fn["seed"]
         from .. import rea
 
-        text = rea.draft(self.workspace / self.cfg(proj)["rom"]["program"], fn)
+        text = rea.draft(Path(proj["root"]) / self.cfg(proj)["rom"]["program"], fn)
         if text:
             with self.store.tx() as db:
                 db.execute("UPDATE functions SET seed=? WHERE id=?", (text, fn["id"]))

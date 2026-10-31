@@ -15,8 +15,7 @@ import json
 import random
 from pathlib import Path
 
-from . import scoring
-from .elfobj import extract_function
+from . import coffobj, elfobj, scoring
 from .network import Agent, Network, NetworkError
 
 MAX_INCLUDE_BYTES = 256 * 1024
@@ -26,7 +25,7 @@ def next_job(net: Network, agent: Agent) -> dict | None:
     rows = net.store.all(
         """SELECT f.*, p.slug, p.config, p.root, p.arch, p.big_endian FROM functions f
            JOIN projects p ON p.id = f.project_id
-           WHERE f.status = 'open' AND f.best_score > 0 AND f.target IS NOT NULL AND f.best_source IS NOT NULL
+           WHERE f.status = 'open' AND f.best_score > 0 AND f.n_insns > 0 AND f.target IS NOT NULL AND f.best_source IS NOT NULL
              AND f.id NOT IN (SELECT function_id FROM claims)
            ORDER BY CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC LIMIT 12""")
     rows = [r for r in rows if json.loads(r["config"]).get("compiler", {}).get("toolchain")]
@@ -67,7 +66,13 @@ def submit(net: Network, agent: Agent, project: str, function: str, source: str)
     proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
     ctx = net._context(proj["id"], fn["unit"])
     res = net._compile(proj, ctx["header"], source)
-    cand = extract_function(res.obj, fn["name"]) if res.ok else None
+    cand = None
+    if res.ok:
+        try:
+            cand = coffobj.extract_function(res.obj, fn["name"]) if coffobj.is_coff(res.obj) else \
+                elfobj.extract_function(res.obj, fn["name"])
+        except Exception:  # noqa: BLE001
+            cand = None
     if cand is None:
         net._record(fn, agent, None, source, ctx["version"], via="permuter")
         return {"accepted": False, "reason": "did not compile on the coordinator"}

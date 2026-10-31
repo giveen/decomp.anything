@@ -738,14 +738,23 @@ def _dwarf_type(die, dwarf, cu, cache: dict[int, object], seen: set[int] | None 
 
 
 def _dwarf_ref(die, dwarf, cu, cache: dict[int, object]):
-    ref = _attr(die, "DW_AT_type")
-    if not isinstance(ref, int):
+    if die is None or "DW_AT_type" not in getattr(die, "attributes", {}):
         return None
-    if ref in cache:
-        return cache[ref]
+    attr = die.attributes["DW_AT_type"]
+    if attr.form in ('DW_FORM_ref1', 'DW_FORM_ref2', 'DW_FORM_ref4',
+                     'DW_FORM_ref8', 'DW_FORM_ref', 'DW_FORM_ref_udata'):
+        refaddr = getattr(cu, "cu_offset", 0) + attr.raw_value
+    elif attr.form == 'DW_FORM_ref_addr':
+        refaddr = attr.raw_value
+    else:
+        refaddr = getattr(attr, 'value', None)
+    if not isinstance(refaddr, int):
+        return None
+    if refaddr in cache:
+        return cache[refaddr]
     try:
-        found = dwarf.get_DIE_from_refaddr(ref, cu)
-        cache[ref] = found
+        found = die.get_DIE_from_attribute("DW_AT_type")
+        cache[refaddr] = found
         return found
     except Exception:  # noqa: BLE001
         return None
