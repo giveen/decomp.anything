@@ -22,30 +22,46 @@ APP_STATIC = Path(__file__).resolve().parents[1] / "src" / "decompnet" / "app" /
 @pytest.mark.skipif(NODE is None, reason="needs Node.js for the page's browser logic")
 def test_the_page_loads_boots_and_renders_from_its_own_scripts():
     assert NODE is not None
-    result = subprocess.run([NODE, str(Path(__file__).with_name("app_smoke.cjs"))],
-                            check=True, capture_output=True, text=True)
+    result = subprocess.run([NODE, str(Path(__file__).with_name("app_smoke.cjs"))], check=True, capture_output=True, text=True)
     assert "home + catalog rendered" in result.stdout
 
 
 def _smoke(static: Path) -> subprocess.CompletedProcess:
     assert NODE is not None
-    return subprocess.run([NODE, str(Path(__file__).with_name("app_smoke.cjs"))],
-                          capture_output=True, text=True, env={**os.environ, "APP_STATIC": str(static)})
+    return subprocess.run(
+        [NODE, str(Path(__file__).with_name("app_smoke.cjs"))],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "APP_STATIC": str(static)},
+    )
 
 
 def _split_page(tmp_path: Path, order: list[str]) -> Path:
-    """A copy of the page whose app.js is cut into parts, listed in index.html in `order` (which may be wrong)."""
+    """A copy of the page with its app scripts joined into one file, cut at two sections, and listed in `order`.
+
+    The page is already split into parts, so the fixture puts it back together first: that way it does not depend on how
+    many parts the real page has. `order` is what is under test, and may be wrong on purpose."""
     static = tmp_path / "static"
     shutil.copytree(APP_STATIC, static)
-    parts = tmp_path / "parts"
-    subprocess.run([sys.executable, str(TOOL), "split", str(static / "app.js"), "--at", "home", "map",
-                    "--out", str(parts)], check=True, capture_output=True, text=True)
-    for part in parts.iterdir():
+    index = (static / "index.html").read_text(encoding="utf-8")
+    parts = re.findall(r'<script\s+src="/assets/(app[a-z_]*\.js)', index)
+    assert len(parts) >= 2, "the page's app scripts should be split by now"
+    (static / "app.js").write_text("".join((static / n).read_text(encoding="utf-8") for n in parts), encoding="utf-8")
+    for name in parts:
+        if name != "app.js":  # the joined file is written over it
+            (static / name).unlink()
+    single = '<script src="/assets/app.js?v=2"></script>\n'
+    listed = "".join(f'<script src="/assets/{name}?v=2"></script>\n' for name in parts)
+    (static / "index.html").write_text(index.replace(listed, single), encoding="utf-8")
+
+    cut = tmp_path / "parts"
+    subprocess.run([sys.executable, str(TOOL), "split", str(static / "app.js"), "--at", "home", "map", "--out", str(cut)],
+                   check=True, capture_output=True, text=True)
+    for part in cut.iterdir():
         shutil.copy(part, static / part.name)
     index = (static / "index.html").read_text(encoding="utf-8")
-    tags = "".join(f'<script src="/assets/{name}?v=2"></script>\n' for name in order)
-    index = re.sub(r'<script src="/assets/app\.js[^"]*"></script>\n', tags, index)
-    (static / "index.html").write_text(index, encoding="utf-8")
+    (static / "index.html").write_text(index.replace(single, "".join(
+        f'<script src="/assets/{name}?v=2"></script>\n' for name in order)), encoding="utf-8")
     return static
 
 

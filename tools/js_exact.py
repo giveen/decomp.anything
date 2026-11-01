@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 STATIC = Path(__file__).resolve().parent.parent / "src/decompnet/app/static"
-SECTION = re.compile(r"^/\* -{10,} (.*?) \*/$")
+SECTION = re.compile(r"^/\* -{10,} (.*?)(?: \*/)?$")
 SCRIPT = re.compile(r'<script\s+src="/assets/([^"?]+)(?:\?[^"]*)?"')
 
 
@@ -45,8 +45,11 @@ def parts_from_index(index: Path) -> list[Path]:
     """The page's scripts, in the order the browser runs them (that order is what a split must preserve)."""
     names = SCRIPT.findall(index.read_text(encoding="utf-8"))
     if not names:
-        raise SystemExit(f"no <script src=\"/assets/...\"> in {index}")
-    return [index.parent / "static" / name for name in names]
+        raise SystemExit(f'no <script src="/assets/..."> in {index}')
+    def resolve(name: str) -> Path:
+        beside = index.parent / name
+        return beside if beside.is_file() else index.parent / "static" / name
+    return [resolve(name) for name in names]
 
 
 def verify(original: Path, parts: list[Path]) -> int:
@@ -65,25 +68,28 @@ def verify(original: Path, parts: list[Path]) -> int:
         print("\nidentical: the parts add up to the original, byte for byte")
         return 0
     print("\nDIFFERENT: the parts are not the original file")
-    for line in list(difflib.unified_diff(text.splitlines(), joined.splitlines(), "original", "joined", lineterm="",
-                                          n=2))[:40]:
+    for line in list(difflib.unified_diff(text.splitlines(), joined.splitlines(), "original", "joined", lineterm="", n=2))[:40]:
         print(line)
     return 1
 
 
-def split(original: Path, at: list[str], out: Path, first: str) -> int:
+def split(original: Path, at: list[str], out: Path, first: str | None = None,
+          names: list[str] | None = None) -> int:
     """Cut the original before each named section, so the concatenation is the original by construction."""
     lines = original.read_text(encoding="utf-8").splitlines(keepends=True)
     starts = {name: ln for ln, name in sections(original)}
     unknown = [name for name in at if name not in starts]
     if unknown:
         raise SystemExit(f"no such section(s): {unknown}\nknown: {[n for _, n in sections(original)]}")
+    first = first or original.name
     cuts = sorted(starts[name] for name in at)
     bounds = [0, *[c - 1 for c in cuts], len(lines)]
     out.mkdir(parents=True, exist_ok=True)
-    names = [first, *[f"{first[:-3]}_{re.sub(r'[^a-z0-9]+', '_', n)}.js"
-                      for _, n in sorted((starts[name], name) for name in at)]]
-    for path, lo, hi in zip(names, bounds[:-1], bounds[1:], strict=True):
+    written = names or [first, *[f"{first[:-3]}_{re.sub(r'[^a-z0-9]+', '_', n)}.js"
+                                 for _, n in sorted((starts[name], name) for name in at)]]
+    if len(written) != len(cuts) + 1:
+        raise SystemExit(f"--names takes {len(cuts) + 1} names (one per part), got {len(written)}")
+    for path, lo, hi in zip(written, bounds[:-1], bounds[1:], strict=True):
         (out / path).write_text("".join(lines[lo:hi]), encoding="utf-8")
         print(f"wrote {path}: lines {lo + 1}-{hi} ({hi - lo})")
     return 0
@@ -105,7 +111,8 @@ def main() -> int:
     p_split.add_argument("file", type=Path)
     p_split.add_argument("--at", nargs="+", required=True, metavar="SECTION")
     p_split.add_argument("--out", type=Path, default=STATIC)
-    p_split.add_argument("--first", default="app.js", help="name of the first part")
+    p_split.add_argument("--first", default=None, help="name of the first part (default: the original's name)")
+    p_split.add_argument("--names", nargs="+", metavar="FILE", help="name every part, in order (else derived)")
 
     args = parser.parse_args()
     if args.command == "sections":
@@ -115,7 +122,7 @@ def main() -> int:
     if args.command == "verify":
         parts = args.parts or parts_from_index(args.index)
         return verify(args.original, parts)
-    return split(args.file, args.at, args.out, args.first)
+    return split(args.file, args.at, args.out, args.first, args.names)
 
 
 if __name__ == "__main__":
