@@ -89,8 +89,9 @@ class ReaFactsMixin:
         proj = self._project(slug)
         if self.rea_file(proj) is None:
             return 0
-        rows = self.store.all("SELECT name, meta FROM functions WHERE project_id=? AND status='open' "
-                              "ORDER BY n_insns ASC, vram ASC", proj["id"])
+        rows = self.store.all(
+            "SELECT name, meta FROM functions WHERE project_id=? AND status='open' ORDER BY n_insns ASC, vram ASC", proj["id"]
+        )
         done = 0
         for row in rows:
             if isinstance(_meta(row).get("rea"), dict):
@@ -122,8 +123,10 @@ class ReaFactsMixin:
         proposals = (self.cfg(proj) or {}).get("rea", {}).get("names") or {}
         if not proposals:
             return "REA hasn't resolved any names for this project yet: run Re-check first."
-        rows = {int(r["vram"]): r["name"] for r in self.store.all(
-            "SELECT name, vram FROM functions WHERE project_id=? AND vram IS NOT NULL", proj["id"])}
+        rows = {
+            int(r["vram"]): r["name"]
+            for r in self.store.all("SELECT name, vram FROM functions WHERE project_id=? AND vram IS NOT NULL", proj["id"])
+        }
         renamed, skipped = 0, []
         for hex_address, new in sorted(proposals.items(), key=lambda kv: int(kv[0], 16)):
             try:
@@ -178,9 +181,12 @@ class ReaFactsMixin:
             return []
         syms = self.symbols(proj["id"])
         used = sorted((self.xrefs(proj).get("uses") or {}).get(fn["vram"]) or ())
-        named = {r["name"]: r for r in self.store.all(
-            "SELECT name, kind, preview FROM symbols WHERE project_id=? AND kind IN ('string', 'data', 'jtbl', 'bss')",
-            proj["id"])}
+        named = {
+            r["name"]: r
+            for r in self.store.all(
+                "SELECT name, kind, preview FROM symbols WHERE project_id=? AND kind IN ('string', 'data', 'jtbl', 'bss')", proj["id"]
+            )
+        }
         out: list[str] = []
         for address in used[:40]:
             label = syms.label(address)

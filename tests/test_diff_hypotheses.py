@@ -62,6 +62,7 @@ def test_length_deltas_say_extra_or_missing_work():
 
 
 def test_the_most_actionable_come_first():
-    out = scoring.hypotheses(result((">", "", "nop"), ("r", "mov eax, ecx", "mov eax, edx"),
-                                    ("s", "mov eax, [rbp-8]", "mov eax, [rbp-16]")))
+    out = scoring.hypotheses(
+        result((">", "", "nop"), ("r", "mov eax, ecx", "mov eax, edx"), ("s", "mov eax, [rbp-8]", "mov eax, [rbp-16]"))
+    )
     assert out[0].startswith("1 instruction(s) differ only by a stack offset")

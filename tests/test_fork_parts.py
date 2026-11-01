@@ -45,11 +45,14 @@ def test_every_self_attribute_a_part_uses_is_defined():
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         defined.add(target.id)
-                    elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) \
-                            and target.value.id == "self":
+                    elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
                         defined.add(target.attr)
-            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Attribute) \
-                    and isinstance(node.target.value, ast.Name) and node.target.value.id == "self":
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Attribute)
+                and isinstance(node.target.value, ast.Name)
+                and node.target.value.id == "self"
+            ):
                 defined.add(node.target.attr)
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":

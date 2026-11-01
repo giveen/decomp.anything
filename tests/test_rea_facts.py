@@ -24,17 +24,30 @@ def pc(tmp_path, monkeypatch, fake):  # noqa: F811
     root = tmp_path / "project"
     root.mkdir()
     (root / "demo.bin").write_bytes(b"\x7fELF" + b"\0" * 60)
-    cfg = {"kind": "rom", "platform": "linux", "arch": "x86_64", "provider": "",
-           "rom": {"title": "demo", "program": "demo.bin", "file": "demo.bin"}}
+    cfg = {
+        "kind": "rom",
+        "platform": "linux",
+        "arch": "x86_64",
+        "provider": "",
+        "rom": {"title": "demo", "program": "demo.bin", "file": "demo.bin"},
+    }
     with net.store.tx() as db:
-        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
-                         ("demo", "demo", "a PC program", "x86_64", 0, str(root), json.dumps(cfg))).lastrowid
-        db.execute("INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
-                   (pid, "FUN_00101000", 64, 12, ".text", 0x1000, json.dumps({"symbol": "FUN_00101000"}), "open"))
-        db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
-                   (pid, "FUN_00101000", 0x1000, 64, "func", None))  # what an import writes for every function
-        db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
-                   "VALUES(?,?,?,?,?,?,?)", (pid, 1, "/* context.h */", None, "basic types", 0.0, ""))
+        pid = db.execute(
+            "INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+            ("demo", "demo", "a PC program", "x86_64", 0, str(root), json.dumps(cfg)),
+        ).lastrowid
+        db.execute(
+            "INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
+            (pid, "FUN_00101000", 64, 12, ".text", 0x1000, json.dumps({"symbol": "FUN_00101000"}), "open"),
+        )
+        db.execute(
+            "INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
+            (pid, "FUN_00101000", 0x1000, 64, "func", None),
+        )  # what an import writes for every function
+        db.execute(
+            "INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) VALUES(?,?,?,?,?,?,?)",
+            (pid, 1, "/* context.h */", None, "basic types", 0.0, ""),
+        )
     net.project_row = net.project_row  # (the row is read from the store like any project)
     agent = net.local_agent("tester")[0]
     return net, agent, "demo", "FUN_00101000", pid
@@ -84,16 +97,18 @@ def test_search_finds_what_rea_named(pc):
 def test_a_real_name_wins_over_what_rea_proposed(pc):
     net, _agent, slug, _name, pid = pc
     with net.store.tx() as db:  # the project's own name, and a REA proposal for the same address
-        db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
-                   (pid, "save_game", 0x2000, 32, "func", None))
+        db.execute(
+            "INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
+            (pid, "save_game", 0x2000, 32, "func", None),
+        )
         row = db.execute("SELECT config FROM projects WHERE id=?", (pid,)).fetchone()
         cfg = json.loads(row["config"])
         cfg["rea"] = {"names": {"0x2000": "FUN_00200000", "0x3000": "load_game"}}
         db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), pid))
     proj = net.project_row(slug)
-    assert net.rea_name(proj, 0x2000) == "save_game"   # the project decided
-    assert net.rea_name(proj, 0x3000) == "load_game"   # only REA has a name for it
-    assert net.rea_name(proj, 0x4000) == ""            # nobody knows it
+    assert net.rea_name(proj, 0x2000) == "save_game"  # the project decided
+    assert net.rea_name(proj, 0x3000) == "load_game"  # only REA has a name for it
+    assert net.rea_name(proj, 0x4000) == ""  # nobody knows it
 
 
 def test_adopt_rea_names_renames_only_automatic_names(pc):
