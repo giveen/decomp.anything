@@ -10,12 +10,13 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from functools import cache
 from importlib import resources
+from typing import cast
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .. import __version__
+from .. import __version__, scoring
 from ..network import Agent, NetworkError
 from . import references
 from .engine import RomNetwork
@@ -277,7 +278,8 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
                     f"Call discover_assistance(query=<remaining question>, function='{name}'), read relevant skills or "
                     f"inspect evidence, then record_assistance(function='{name}', summary='...').")
     if len(names) <= 1:
-        return net.compile_and_diff(agent, names[0] if names else function, source, slug)
+        one = names[0] if names else function
+        return _rea_hints(net, slug, one, source, net.compile_and_diff(agent, one, source, slug))
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
 
 
@@ -325,6 +327,9 @@ HANDLERS: dict[str, Callable[..., str]] = {
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
     "search_facts": lambda net, agent, slug, query, limit=40: net.search_facts(slug, query, limit),
+    "type_hint": lambda net, agent, slug, function: _type_hint(net, slug, function),
+    "why_mismatch": lambda net, agent, slug, function: _why_mismatch(net, slug, function),
+    "adopt_rea_names": lambda net, agent, slug: net.adopt_rea_names(agent, slug),
     "list_subsystems": lambda net, agent, slug, limit=12: net.subsystem_text(slug, limit),
     "add_note": lambda net, agent, slug, text, function="": net.add_note(agent, slug, text, function or None),
     "search_notes": lambda net, agent, slug, query: net.search_notes(slug, query),
@@ -347,13 +352,13 @@ HANDLERS: dict[str, Callable[..., str]] = {
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "retire_function",
             "import_debug_info", "export_debug_info", "compare_version", "write_source", "rea_tool",
-            "inspect_binary", "search_binary"}
+            "inspect_binary", "search_binary", "type_hint", "adopt_rea_names", "why_mismatch"}
 FORK_ONLY = {"edit_file", "file_status", "split_file"}
 ANALYSIS_ONLY = {"complete_function", "read_artifact_entry"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
                   "rea_tool", "read_artifact_entry", "write_source", "inspect_binary", "search_binary", "read_data",
                   "list_functions", "add_note", "search_notes", "guide", "read_file", "search_code", "search_facts",
-                  "discover_assistance", "read_skill", "record_assistance"}
+                  "discover_assistance", "read_skill", "record_assistance", "type_hint"}
 
 
 def _hot_text(rows) -> str:
@@ -375,6 +380,79 @@ def tool_names(fork: bool = False, analysis: bool = False) -> list[str]:
         return [n for n in HANDLERS if n in ANALYSIS_TOOLS]
     skip = (ROM_ONLY if fork else FORK_ONLY) | ANALYSIS_ONLY
     return [n for n in HANDLERS if n not in skip]
+
+
+def _type_hint(net: RomNetwork, slug: str, function: str) -> str:
+    """REA's reading of a function - signature, convention, callees, the strings it names - for a prototype."""
+    facts = net.rea_facts(slug, function)
+    stored = json.loads(net._function(function, slug)["meta"] or "{}").get("rea") or {}
+    if isinstance(stored, dict) and stored.get("error"):
+        return f"REA couldn't read {function}: {stored['error']}"
+    if not facts:
+        return (f"REA has nothing for {function}: it isn't set up for this project, or it hasn't analysed this address. "
+                "inspect_binary(function) asks it for a full dossier.")
+    lines = [f"REA's reading of {function} (Ghidra; inference, not proof):"]
+    for label, key in (("signature", "signature"), ("calling convention", "calling_convention")):
+        if facts.get(key):
+            lines.append(f"- {label}: `{facts[key]}`")
+    for label, key in (("calls", "callees"), ("named in it", "strings"), ("called from", "callers")):
+        if facts.get(key):
+            lines.append(f"- {label}: " + ", ".join(str(x) for x in facts[key][:12]))
+    lines += ["", "Inference over a decompiler's output: write the code, then let the judge decide."]
+    return "\n".join(lines)
+
+
+def _why_mismatch(net: RomNetwork, slug: str, function: str) -> str:
+    """Why the latest attempt of a function isn't a match yet, in C terms, plus what REA says it should be."""
+    fn = net._function(function, slug)
+    try:
+        facts = json.loads(fn["meta"] or "{}").get("rea") or {}
+    except ValueError:
+        facts = {}
+    diff = net.function_diff(slug, function, "latest")
+    lines = [f"Why `{fn['name']}` doesn't match yet:"]
+    if diff.get("error"):
+        return "\n".join([*lines, f"- it doesn't compile: {str(diff['error'])[:400]}"])
+    rows = diff.get("rows")
+    if not rows:
+        return "\n".join([*lines, "- no attempt has been compiled for this function yet: compile_and_diff first."])
+    if isinstance(facts, dict) and facts.get("signature"):
+        lines.append(f"- REA's signature: `{facts['signature']}`")
+    hints = scoring.hypotheses(scoring.DiffResult(0, 1, [tuple(r) for r in rows], False))
+    lines += [f"- {hint}" for hint in hints] or ["- the rows point at no single cause: read the diff on the page"]
+    if diff.get("percent") is not None:
+        lines.append(f"- {diff['percent']}% match at score {diff.get('score')}")
+    if isinstance(facts, dict):
+        source = str(diff.get("source") or "")
+        missing = [c for c in facts.get("callees") or [] if str(c).split("::")[-1].split("(")[0] not in source]
+        if missing:
+            lines.append("- REA says it calls " + ", ".join(str(c) for c in missing[:6]) + ", which this attempt doesn't")
+    lines += ["", "Fix one thing at a time: the rows a diff shows first are the ones that changed first."]
+    return "\n".join(lines)
+
+
+def _rea_hints(net: RomNetwork, slug: str, function: str, source: str, text: str) -> str:
+    """After a miss: what REA says about the function that the agent's source doesn't account for."""
+    try:
+        fn = net._function(function, slug)
+    except NetworkError:
+        return text
+    try:
+        facts = json.loads(fn["meta"] or "{}").get("rea")
+    except ValueError:
+        return text
+    if not isinstance(facts, dict):
+        return text
+    hints: list[str] = []
+    if facts.get("signature"):
+        hints.append(f"REA's signature: `{facts['signature']}`")
+    missing = [c for c in facts.get("callees") or [] if c and str(c).split("::")[-1].split("(")[0] not in source]
+    if missing:
+        hints.append("REA says it calls " + ", ".join(str(c) for c in missing[:6]) + " and your code doesn't mention them")
+    named = [s for s in facts.get("strings") or [] if s and str(s) not in source]
+    if named:
+        hints.append("REA names " + ", ".join(str(s) for s in named[:5]) + " in this function")
+    return text + ("\n\n" + "\n".join(f"· {h}" for h in hints) if hints else "")
 
 
 def _named(net: RomNetwork, agent: Agent, slug: str, args: dict) -> dict:
@@ -428,6 +506,26 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         Pass the claimed function and the question you need answered. connect=true can start its REA session;
         otherwise use existing sessions only. refresh=true reloads the live catalog and availability."""
         return await run(ctx, "discover_assistance", query=query, function=function, connect=connect, refresh=refresh)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def type_hint(ctx: Context, function: str) -> str:
+        """REA's reading of one function: signature, calling convention, what it calls, the strings and globals it
+        names. One Ghidra call the first time (kept on the function after that). Use it before writing a prototype
+        by hand: a wrong arg count or return type is the usual reason a near miss stays a miss."""
+        return await run(ctx, "type_hint", function=function)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def why_mismatch(ctx: Context, function: str) -> str:
+        """Why the latest attempt on a function isn't a match yet, in C terms: a struct size, a wrong constant, a
+        temporary the original kept in a local, statement order, an inlined call. Reads the diff that already exists
+        (no compile); pair it with type_hint for the signature."""
+        return await run(ctx, "why_mismatch", function=function)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def adopt_rea_names(ctx: Context) -> str:  # renamed below
+        """Name the functions that only have an automatic name (sub_/FUN_/fn_) with the name REA resolved.
+        Explicit names are never touched, and each rename is committed on its own."""
+        return await run(ctx, "adopt_rea_names")
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def read_skill(ctx: Context, skill: str) -> str:
@@ -710,7 +808,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 @cache
 def _tool_specs() -> tuple[dict, ...]:
     # Use the public MCP schema API in a separate thread, also when the caller already has an event loop.
-    server = build_mcp(None, lambda ctx: None)
+    # Schemas only: no tool is ever called here, so there is no engine and no agent to hand a call to.
+    server = build_mcp(cast("RomNetwork", None), lambda ctx: (cast("Agent", None), ""))
     with ThreadPoolExecutor(max_workers=1) as executor:
         specs = executor.submit(anyio.run, server.list_tools).result()
     return tuple({"type": "function", "function": {"name": t.name, "description": t.description or "",

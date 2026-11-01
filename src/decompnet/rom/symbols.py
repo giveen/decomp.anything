@@ -15,6 +15,10 @@ from dataclasses import dataclass
 # Automatic names spell their address: splat/spimdisasm (func_, D_...), luvdis and pret (sub_, gUnknown_), IDA style.
 AUTO_NAME = re.compile(r"^(?:func|D|B|jtbl|L|RO|STR|FLT|DBL|bss|data|sub|gUnknown|unk|off|dword|word|byte|loc)_([0-9A-Fa-f]{8})$")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
+# A bare address, as a user or an agent writes one: eight hex digits, with or without 0x (read_data, split_function).
+ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
+# An automatic name anywhere in a line of code, for renaming the names a twin refers to (engine.rename_tokens).
+AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 
 
 @dataclass
@@ -43,10 +47,12 @@ class SymbolTable:
         # name and a linker alias (__data_start__), and all of them have to resolve.
         self.by_name[sym.name] = sym
         old = self.by_addr.get(sym.address)
+
         # One address, several names: keep the most useful as the display name (g_counter over the linker's
         # __data_start__, a function over an alias) while every alias still resolves.
         def rank(s):
             return (not s.name.startswith("__"), s.kind == "func", len(s.name))
+
         if old is None or rank(sym) > rank(old):
             self.by_addr[sym.address] = sym
         if reindex:

@@ -124,8 +124,8 @@ def connect(kind: str) -> str:
     if kind == "opencode":
         path = _opencode_config()
         try:
-            cfg = (json.loads(path.read_text(encoding="utf-8")) if path.exists()
-                   else {"$schema": "https://opencode.ai/config.json"})
+            cfg: dict = (json.loads(path.read_text(encoding="utf-8")) if path.exists()
+                         else {"$schema": "https://opencode.ai/config.json"})
         except ValueError:
             raise ValueError(f"{path} isn't plain JSON (comments?); add this yourself: {shown(kind)}") from None
         entry = {"type": "local", "command": bridge_command(), "environment": {"DECOMP_AGENT_NAME": LABEL[kind]}}
@@ -138,6 +138,8 @@ def connect(kind: str) -> str:
         path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         return f"added decomp.wtf to {path}"
     cmd = commands(kind)
+    if cmd is None:  # registered through a config file, not a command (opencode, handled above)
+        raise ValueError(f"{KINDS[kind].name} is registered by editing its config: {shown(kind)}")
     if kind != "antigravity" and status(kind):  # replace an older registration (agy's `mcp add` updates in place)
         _run([cmd[0], "mcp", "remove", *(["-s", "user"] if kind == "claude" else []), NAME], 30)
     res = _run(cmd, 60)

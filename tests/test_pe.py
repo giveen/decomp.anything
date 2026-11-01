@@ -100,11 +100,14 @@ def test_import_and_match_through_the_engine(built):
     assert "bytes differ" in text or "different" in text
 
 
-def test_autopilot_says_x86_has_no_drafts(built):
-    """m2c has no x86 target: autopilot still tries identical code, but it must say so rather than count every
-    function as a draft it tried (and never made) as progress."""
+def test_autopilot_says_x86_has_no_drafts_without_rea(built, monkeypatch):
+    """x86 drafts come from REA (m2c can't read x86). Without REA the autopilot still tries identical code, but it must
+    say why it made no drafts rather than count every function as one it tried."""
     import time
 
+    from decompnet.app import reafacts
+
+    monkeypatch.setattr(reafacts.rea, "command", lambda: None)  # REA not set up on this machine
     exe, _obj = built
     net = RomNetwork(exe.parent / "auto.db", exe.parent)
     slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)

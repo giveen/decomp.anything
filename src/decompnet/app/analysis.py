@@ -736,3 +736,64 @@ def safe_name(name: str, address: int | None = None) -> str:
     if not name:
         name = f"sub_{address:X}" if address is not None else "task"
     return name[:80]
+
+
+# Link-generated code: a PLT slot, a compiler's registration thunk, a C runtime entry point. It is not code anyone
+# wrote, so it is never a work item.
+_STUB_NAME = re.compile(r"^(?:_init|_fini|_start|deregister_tm_clones|register_tm_clones|frame_dummy|"
+                        r"__do_global\w*|_ITM_\w*|__libc_csu_\w*|thunk_\w*|__x86\.get_pc_thunk\.\w+)$")
+_STUB_SEGMENT = ("plt", "init", "fini", "got", "dynamic")
+
+
+def inventory(segments: list[dict], procedures: list[dict], strings: list[tuple[str, int]],
+              taken_ranges: list[tuple[int, int]], taken_strings: set[int]) -> dict:
+    """What REA found, in the project's own address space: memory regions, functions the split missed, new strings.
+
+    REA opens a file at its own image base (a Linux ELF comes back from 0x100000 up), so everything is rebased by the
+    lowest segment start before it is compared with a project's addresses. Link-generated code (PLT slots, _init and
+    friends) is counted but never offered as a work item, and neither is anything an existing function already covers."""
+    starts = [number(seg.get("start")) for seg in segments or ()]
+    base = min((x for x in starts if x is not None), default=0)
+    rebased = [{**seg, "start": number(seg.get("start")), "end": number(seg.get("end"))} for seg in segments or ()]
+
+    def in_segment(address: int, names: tuple[str, ...]) -> bool:
+        name = segment_at(address, rebased).lower()
+        return any(part in name for part in names)
+
+    def stub(address: int, name: str) -> bool:
+        # "<EXTERNAL>::printf" is REA's name for an import slot: a jump through the PLT, not code anyone wrote
+        return bool(name.startswith("<EXTERNAL>") or _STUB_NAME.match(name) or in_segment(address, _STUB_SEGMENT))
+
+    ranges = [(lo, lo + max(size, 1)) for lo, size in taken_ranges]
+
+    def covered(address: int) -> bool:
+        return any(lo <= address < hi for lo, hi in ranges)
+
+    items, stubs, covered_count = [], 0, 0
+    for item in procedures:
+        address = item["address"] - base
+        if address < 0:
+            continue
+        if covered(address):
+            covered_count += 1
+            continue
+        if stub(address + base, str(item.get("name") or "")) or in_segment(address + base, _STUB_SEGMENT):
+            stubs += 1
+            continue
+        items.append({"name": item["name"], "vram": address, "size": item.get("size") or 0,
+                      "unit": segment_at(address + base, rebased)})
+
+    new_strings = []
+    for text, address in strings:
+        rel = address - base  # the project's addresses are the rebased ones, so compare rebased to rebased
+        if rel < 0 or rel in taken_strings:
+            continue
+        new_strings.append({"text": text, "address": rel})
+
+    return {"base": base, "segments": [{"name": str(seg.get("name") or ""), "start": (seg["start"] or 0) - base,
+                                        "end": (seg["end"] or 0) - base, "readable": bool(seg.get("readable", True)),
+                                        "writable": bool(seg.get("writable")), "executable": bool(seg.get("executable"))}
+                                       for seg in rebased if seg["start"] is not None and seg["end"] is not None],
+            "functions": items, "strings": new_strings,
+            "counts": {"procedures": len(procedures), "covered": covered_count, "stubs": stubs,
+                       "functions": len(items), "strings": len(new_strings)}}

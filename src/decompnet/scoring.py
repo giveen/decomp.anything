@@ -307,3 +307,76 @@ def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:
     if bytes_match:
         score = 0
     return DiffResult(score=score, max_score=max_score, rows=rows, bytes_match=bytes_match)
+
+# ------------------------------------------------------------------ what a miss probably means
+
+_WIDTHS = ("byte", "word", "dword", "qword")
+
+
+def _shape_hint(target: str, candidate: str) -> str:
+    """A C-level guess from one row where the instruction itself differs: width, address-vs-value, calls, floats."""
+    t_mnem, _, t_rest = target.partition(" ")
+    c_mnem, _, c_rest = candidate.partition(" ")
+    t_lo, c_lo = t_mnem.lower(), c_mnem.lower()
+    t_w = next((w for w in _WIDTHS if w in t_rest.lower()), "")
+    c_w = next((w for w in _WIDTHS if w in c_rest.lower()), "")
+    if t_w and c_w and t_w != c_w:
+        return f"operand width: the original uses {t_w}, yours {c_w} - a field or local's type is the wrong size"
+    if t_lo.startswith(("movz", "movs")):
+        return "the original zero/sign-extends a narrow load (char/short) where yours loads wider"
+    if t_lo == "lea" and c_lo in ("add", "mov", "imul"):
+        return "the original builds an address with lea; yours computes a value - write it as an array/struct access"
+    if t_lo in ("imul", "shl") and c_lo == "add":
+        return "the original scales by a constant (array stride or sizeof); yours adds - the index scaling differs"
+    if t_lo == "call" and c_lo != "call":
+        return "the original calls a function here; yours inlined it or dropped the call"
+    if c_lo == "call" and t_lo != "call":
+        return "your code calls something the original inlined: inline it (or give it the same static/inline shape)"
+    if t_lo == "test" and c_lo == "cmp":
+        return "a null/zero test: write `if (!x)` / `if (x)` rather than comparing against a literal"
+    if t_lo == "cmov" or c_lo == "cmov":
+        return "conditional move vs branch: write it as a ternary (`a ? b : c`) or as an if to match the original"
+    if ("ss" in t_lo or "sd" in t_lo) != ("ss" in c_lo or "sd" in c_lo):
+        return "float vs integer register: one side treats this value as a float"
+    if t_lo.startswith(("fld", "fst")) or c_lo.startswith(("fld", "fst")):
+        return "x87 vs SSE maths: the float ABI or compiler flags differ"
+    if t_lo in ("and", "or", "xor") and c_lo in ("shl", "shr", "sar", "andn"):
+        return "bitfield access: the mask/shift order differs from the original"
+    return ""
+
+
+def hypotheses(result: DiffResult) -> list[str]:
+    """What a miss probably means, in C terms, most actionable first: a struct size, a constant, a temporary.
+
+    Built from the diff's own markers (s=stack offset, i=operand, r=regalloc, o=reordered, |=different instruction,
+    </> = missing/extra), so it costs nothing extra: the same rows the agent already sees, read for what they imply."""
+    counts = Counter(marker for marker, _, _ in result.rows)
+    out: list[str] = []
+    if counts["s"]:
+        out.append(f"{counts['s']} instruction(s) differ only by a stack offset: a local or struct field is a different "
+                   "size or in a different order (check the struct's field types and padding before the logic)")
+    if counts["i"]:
+        sample = next((t for marker, t, _ in result.rows if marker == "i"), "")
+        out.append(f"{counts['i']} instruction(s) keep the opcode but change a constant/offset"
+                   + (f" (e.g. `{sample[:60]}`)" if sample else "")
+                   + ": an enum value, a field index or a size is wrong")
+    if counts["|"]:
+        rows = [(t, c) for marker, t, c in result.rows if marker == "|"]
+        hint = next((h for h in (_shape_hint(t, c) for t, c in rows[:6]) if h), "")
+        out.append(f"{len(rows)} instruction(s) compile differently" + (f": {hint}" if hint
+                   else f" (e.g. `{rows[0][0][:48]}` vs `{rows[0][1][:48]}`)"))
+    if counts["r"]:
+        out.append(f"{counts['r']} instruction(s) differ only in which register holds the value: the original kept it "
+                   "in a local (or reused one) where you made a new temporary - try assigning the intermediate to a "
+                   "local, or drop one")
+    if counts["o"]:
+        out.append(f"{counts['o']} row(s) are the same instructions in another order: the original evaluated them in a "
+                   "different sequence (swap the two statements, or split the expression)")
+    missing, extra = counts["<"], counts[">"]
+    if extra > missing + 2:
+        out.append(f"yours is {extra - missing} instruction(s) longer: something the original did once is done twice, "
+                   "or it inlined a callee you call")
+    elif missing > extra + 2:
+        out.append(f"yours is {missing - extra} instruction(s) shorter: work the original does is missing "
+                   "(a call, a side effect, or a value it recomputes)")
+    return out[:5]

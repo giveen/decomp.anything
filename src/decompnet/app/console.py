@@ -131,7 +131,10 @@ class Console:
             spec = next((t for t in self.tools() if t["name"] == tool), None)
             if spec is None:
                 raise ConsoleError(f"REA has no tool named {tool!r}")
-            return spec["risky"], self.connection["id"]
+            connection = self.connection
+            if connection is None:
+                raise ConsoleError("REA isn't connected yet: open it in the RE console first")
+            return spec["risky"], connection["id"]
 
     def call(self, tool: str, arguments: dict | None = None, log=None, *, connection_id: str | None = None) -> dict:
         start = time.time()
@@ -141,7 +144,10 @@ class Console:
                                                    or not self.connection or connection_id != self.connection["id"]):
                     raise ConsoleError("REA reconnected before this tool ran; check the refreshed tool and retry")
                 client = self._client()
-                ident = self.connection["id"]
+                connection = self.connection
+                if connection is None:
+                    raise ConsoleError("REA isn't connected yet: open it in the RE console first")
+                ident = connection["id"]
                 record = client.call(tool, arguments or {}, any_tool=True, envelope=True)
             except rea.ReaError as e:
                 raise ConsoleError(str(e)) from e

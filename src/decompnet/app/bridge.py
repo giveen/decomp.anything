@@ -23,6 +23,9 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import cast
+
+from mcp_types import CallToolResult, ListToolsResult
 
 from .. import __version__
 from .cli import _alive, home_dir, replace_older
@@ -55,11 +58,13 @@ def ensure_app(home: Path) -> dict:
         return info
     internal.mkdir(parents=True, exist_ok=True)
     _log("starting decomp.wtf in the background")
-    kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS} \
-        if sys.platform == "win32" else {"start_new_session": True}
+    args = [sys.executable, "-m", "decompnet.app.cli", "--no-browser"]
     with open(internal / "app.log", "ab") as out:
-        subprocess.Popen([sys.executable, "-m", "decompnet.app.cli", "--no-browser"], stdin=subprocess.DEVNULL,
-                         stdout=out, stderr=out, **kwargs)
+        if sys.platform == "win32":  # its own process group and no console window
+            subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out, stderr=out, close_fds=True,
+                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
+        else:  # outlives the agent that started it
+            subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
     for _ in range(300):
         time.sleep(0.2)
         if (info := _running(state)):
@@ -158,11 +163,13 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
         async with changed:
             await changed.wait_for(lambda: conn["remote"] is not None)
 
-        async def list_tools(ctx, params):
-            return await remote_call(lambda r: r.list_tools(cursor=params.cursor if params else None))
+        async def list_tools(ctx, params) -> ListToolsResult:
+            found = await remote_call(lambda r: r.list_tools(cursor=params.cursor if params else None))
+            return cast(ListToolsResult, found)
 
-        async def call_tool(ctx, params):
-            return await remote_call(lambda r: r.call_tool(params.name, params.arguments or {}))
+        async def call_tool(ctx, params) -> CallToolResult:
+            found = await remote_call(lambda r: r.call_tool(params.name, params.arguments or {}))
+            return cast(CallToolResult, found)
 
         server = Server("decomp", version=__version__, title="decomp.wtf",
                         instructions=("" if helper else CHAT_INSTRUCTIONS + "\n") + (conn["remote"].instructions or ""),

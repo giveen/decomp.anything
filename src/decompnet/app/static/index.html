@@ -6,8 +6,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>decomp.anything</title>
 <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/assets/app.css?v=2">
-<link rel="stylesheet" href="/assets/console.css?v=2">
+<link rel="stylesheet" href="/assets/app.css?v=5">
+<link rel="stylesheet" href="/assets/console.css?v=5">
 </head>
 <body>
 <div class="app" id="app">
@@ -297,6 +297,10 @@
       <section class="panel">
         <header class="panel-head"><h2 id="recentTitle">Recent matches</h2><a class="link small" id="recentAll" data-goto="functions" data-filter="matched">All matched</a></header>
         <ol class="mini-list" id="recentMatches"></ol>
+      </section>
+      <section class="panel" id="reaCard" hidden>
+        <header class="panel-head"><h2>Memory &amp; REA</h2><span class="muted small" id="reaSub"></span></header>
+        <div id="reaBody"></div>
       </section>
       <section class="panel">
         <header class="panel-head"><h2 id="boardTitle">Who matched what</h2><a class="link small" data-goto="agents">Agents</a></header>
@@ -635,7 +639,19 @@
 
 <div class="conn" id="connBanner" role="status" aria-live="polite" hidden></div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/assets/app.js?v=2"></script>
-<script src="/assets/console.js?v=2"></script>
+<script src="/assets/app.js?v=5"></script>
+<script src="/assets/app_home.js?v=5"></script>
+<script src="/assets/app_project.js?v=5"></script>
+<script src="/assets/app_features.js?v=5"></script>
+<script src="/assets/app_sources.js?v=5"></script>
+<script src="/assets/app_team.js?v=5"></script>
+<script src="/assets/app_catalog.js?v=5"></script>
+<script src="/assets/app_map.js?v=5"></script>
+<script src="/assets/app_live.js?v=5"></script>
+<script src="/assets/app_feeds.js?v=5"></script>
+<script src="/assets/app_inspector.js?v=5"></script>
+<script src="/assets/app_functions.js?v=5"></script>
+<script src="/assets/app_settings.js?v=5"></script>
+<script src="/assets/console.js?v=5"></script>
 </body>
 </html>

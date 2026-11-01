@@ -1,13 +1,12 @@
-"""Running the user's AI agents on a ROM project.
+"""The agents decomp.wtf runs: their sessions, and the manager that keeps them going.
 
-CLI agents (Claude Code, Codex, Antigravity CLI, opencode) run headless in a private working folder, connected
-to this app's MCP endpoint and allowed to use only its tools. Each session works through a few functions
-and exits; the runner starts a fresh one until the user stops it or nothing is left. Models reached with
-an API key (DeepSeek, OpenRouter, a local Ollama, any OpenAI-compatible endpoint) run in a small built-in
-tool loop instead. Everything the agents print is parsed into a readable live feed.
+An agent is a subprocess (a CLI like Claude Code) or an HTTP conversation (an OpenAI-compatible endpoint), started for one
+project with decomp.anything's MCP server attached, so everything it does shows up in the app as it happens. The manager
+owns their lifetime: starting them with the right prompt, restarting them when they exit, budgeting them, reading what
+they print, and remembering them across a restart.
 
-The prompt goes in on stdin, never on the command line: no length limit (Windows caps a command line at 32,767
-characters, and the prompt with its guides and the user's instructions can be long) and nothing in it is parsed.
+What the CLIs are and how they print live beside this module (agenttools, agentparse). The names the rest of the app asks
+for are re-exported here, so `agents.<name>` keeps meaning what it did before the split.
 """
 
 from __future__ import annotations
@@ -17,9 +16,7 @@ import contextlib
 import json
 import os
 import re
-import shutil
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -29,489 +26,71 @@ import httpx
 
 from ..network import NetworkError
 from . import tools
+from .agentparse import _args_brief, clean_stderr, parse_line
+from .agenttools import (
+    _SIGNED_OUT,
+    _THROTTLED,
+    AGY_ALLOW,
+    ALIASES,
+    API_PRESETS,
+    CLAUDE_MODELS,
+    KINDS,
+    PER_SESSION,
+    WIN,
+    Fatal,
+    Kind,
+    _codex_config,
+    _config_model,
+    _which,
+    agy_settings,
+    argv,
+    detect,
+    endpoint_entry,
+    is_local,
+    kind_id,
+    major,
+    models,
+    no_credit,
+    search_path,
+    signin,
+    version,
+)
 from .engine import RomNetwork
 
-WIN = sys.platform == "win32"
+__all__ = [
+    "AGY_ALLOW",
+    "ALIASES",
+    "API_PRESETS",
+    "CLAUDE_MODELS",
+    "KINDS",
+    "PER_SESSION",
+    "Fatal",
+    "Kind",
+    "Manager",
+    "Session",
+    "agy_settings",
+    "api_tool_schemas",
+    "argv",
+    "clean_stderr",
+    "context_window",
+    "detect",
+    "endpoint_entry",
+    "fit",
+    "is_local",
+    "kind_id",
+    "major",
+    "models",
+    "no_credit",
+    "parse_line",
+    "search_path",
+    "signin",
+    "version",
+]
+
+
+# Windows only: the agent gets its own process group, so Ctrl-C in the app doesn't reach it.
+CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
-
-class Fatal(RuntimeError):
-    """A helper can't work until the user changes something (shown as the helper's error, not retried)."""
-
-
-@dataclass
-class Kind:
-    id: str
-    name: str
-    command: str  # executable, "" for the built-in agent
-    vendor: str
-    install: dict[str, str]  # os -> command
-    signin: str
-    docs: str
-
-
-KINDS = {
-    "claude": Kind("claude", "Claude Code", "claude", "Anthropic",
-                   {"unix": "curl -fsSL https://claude.ai/install.sh | bash",
-                    "windows": "irm https://claude.ai/install.ps1 | iex"},
-                   "Open a terminal, run `claude` and sign in with /login.", "https://docs.claude.com/en/docs/claude-code"),
-    "codex": Kind("codex", "Codex CLI", "codex", "OpenAI",
-                  {"unix": "npm install -g @openai/codex", "windows": "npm install -g @openai/codex"},
-                  "Run `codex login` once in a terminal.", "https://github.com/openai/codex"),
-    "antigravity": Kind("antigravity", "Antigravity CLI", "agy", "Google",
-                        {"unix": "curl -fsSL https://antigravity.google/cli/install.sh | bash",
-                         "windows": "irm https://antigravity.google/cli/install.ps1 | iex"},
-                        "Open a terminal and run `agy` once to sign in.", "https://antigravity.google/docs/cli"),
-    "opencode": Kind("opencode", "opencode", "opencode", "any provider (DeepSeek, Qwen, Kimi, ...)",
-                     {"unix": "curl -fsSL https://opencode.ai/install | bash", "windows": "npm install -g opencode-ai"},
-                     "Run `opencode auth login` once to add a provider (DeepSeek, OpenRouter, ...).", "https://opencode.ai"),
-    "api": Kind("api", "API key", "", "DeepSeek, OpenRouter, Ollama, any OpenAI-compatible API", {}, "",
-                "https://api-docs.deepseek.com"),
-}
-
-API_PRESETS = {
-    "deepseek": {"name": "DeepSeek", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat", "key": True},
-    "openrouter": {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-chat", "key": True},
-    "ollama": {"name": "Ollama (local)", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen3-coder", "key": False},
-    "lmstudio": {"name": "LM Studio (local)", "base_url": "http://127.0.0.1:1234/v1", "model": "local-model", "key": False},
-    "llamacpp": {"name": "llama.cpp (local)", "base_url": "http://127.0.0.1:8080/v1", "model": "local", "key": False},
-    "openai": {"name": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "gpt-5", "key": True},
-    "custom": {"name": "Custom", "base_url": "", "model": "", "key": True},
-}
-# Google retired Gemini CLI on 2026-06-18; Antigravity CLI (`agy`) replaced it. Helpers and launcher choices saved
-# by older versions as "gemini" carry on as Antigravity.
-ALIASES = {"gemini": "antigravity", "agy": "antigravity"}
-
-# decomp.anything's tools are loaded up front in Antigravity (tools.ALWAYS_LOAD) and need no permission. Should a helper
-# reach one through agy's generic MCP dispatcher instead, a headless run can't ask, and agy quietly refuses it:
-# this rule in the user's agy settings allows decomp.anything's tools (and nothing else).
-AGY_ALLOW = "mcp(decomp/*)"
-
-# Functions per helper session: a fresh session starts with a small, clean context (each function's assembly,
-# drafts and diffs would otherwise ride along into the next one): cheaper per call, and the model stays sharp.
-PER_SESSION = 2
-
-
-def kind_id(kind: str) -> str:
-    return ALIASES.get(kind, kind)
-
-
-def agy_settings() -> Path:
-    return Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
-
-
-def endpoint_entry(e: dict) -> dict:
-    """A saved API endpoint, with what's left out filled in from its provider (a name: the provider's, or for a
-    custom server the address's host, so sessions say which machine they run on)."""
-    provider = e.get("provider") if e.get("provider") in API_PRESETS else "custom"
-    preset = API_PRESETS[provider]
-    base = (e.get("base_url") or preset["base_url"]).strip()
-    host = re.sub(r"^\w+://", "", base).split("/", 1)[0]
-    moved = provider == "custom" or base.rstrip("/") != preset["base_url"].rstrip("/")  # Ollama on another box...
-    out = {"id": str(e.get("id") or ""), "provider": provider, "base_url": base,
-           "model": (e.get("model") or preset["model"]).strip(),
-           "name": (e.get("name") or "").strip() or (host if moved and host else preset["name"]) or "API"}
-    for k in ("api_key", "context_tokens", "max_sessions"):
-        if e.get(k):
-            out[k] = e[k]
-    return out
-
-
-def is_local(base: str, resolve: bool = True) -> bool:
-    """An address on this computer or the local network (a llama.cpp box, Ollama on another machine): a private,
-    loopback, link-local or Tailscale address, a name without dots or under .local/.lan/.internal/.home.arpa, or
-    (`resolve`) a name that resolves to such addresses only."""
-    import ipaddress
-    import socket
-
-    host = re.sub(r"^\w+://", "", base.strip()).split("/", 1)[0].rsplit("@", 1)[-1]
-    host = host[1:].split("]", 1)[0] if host.startswith("[") else host.split(":", 1)[0] if host.count(":") == 1 else host
-    if not host:
-        return False
-
-    def private(ip: str) -> bool:
-        try:
-            a = ipaddress.ip_address(ip)
-        except ValueError:
-            return False
-        tailscale = a.version == 4 and a in ipaddress.ip_network("100.64.0.0/10")
-        return a.is_private or a.is_loopback or a.is_link_local or tailscale or a.is_unspecified
-
-    if private(host):
-        return True
-    if "." not in host or re.search(r"\.(local|lan|home|internal|localdomain|home\.arpa)$", host, re.IGNORECASE) \
-            or host.lower() == "localhost":
-        return True
-    if not resolve or re.fullmatch(r"[\d.]+|[0-9a-fA-F:]+", host):
-        return False
-    try:
-        addrs = {i[4][0] for i in socket.getaddrinfo(host, None)}
-    except (OSError, UnicodeError):
-        return False
-    return bool(addrs) and all(private(a) for a in addrs)
-
-
-# what an agent CLI says when nobody signed in to it (Claude Code: "Not logged in · Please run /login")
-_SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenticated|please (?:log|sign) ?in|"
-                         r"auth(?:entication)? method", re.IGNORECASE)
-# what a model's provider says when the account has no credit left (DeepSeek: "Insufficient Balance", OpenAI:
-# "insufficient_quota", Anthropic: "credit balance is too low"): trying again can't help until it's topped up
-_NO_CREDIT = re.compile(r"insufficient[ _](?:balance|credits?|funds|quota)|exceeded your current quota|"
-                        r"credit balance is too low|payment required|out of credits?", re.IGNORECASE)
-# and when it's asked too much at once (HTTP 429): it works again in a while
-_THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency limit|\b429\b|overloaded", re.IGNORECASE)
-
-
-def no_credit(said: str) -> str | None:
-    """The helper's error when its model's provider says the account is out of credit, else None."""
-    if not (m := _NO_CREDIT.search(said)):
-        return None
-    return (f"the model's provider says the account is out of credit (\u201c{m.group(0)}\u201d): top it up, then "
-            "start the agents again")
-
-
-_versions: dict[str, tuple[float, str | None]] = {}
-_models: dict[str, tuple[float, list[dict]]] = {}
-
-# Claude Code's aliases always point at Anthropic's latest model of each kind.
-CLAUDE_MODELS = [("fable", "Fable", "Anthropic's most capable model"), ("opus", "Opus", "very capable"),
-                 ("sonnet", "Sonnet", "fast and capable, cheaper"), ("haiku", "Haiku", "fastest, cheapest")]
-
-
-def _codex_config() -> dict:
-    """The user's Codex settings (~/.codex/config.toml, or $CODEX_HOME's)."""
-    import tomllib
-
-    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    try:
-        return tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-
-def _config_model(kind: str) -> str | None:
-    """The model the user set as default in the agent's own settings, if any."""
-    home = Path.home()
-    try:
-        if kind == "claude":
-            return json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8")).get("model") or None
-        if kind == "codex":
-            return _codex_config().get("model") or None
-        if kind == "antigravity":
-            return json.loads(agy_settings().read_text(encoding="utf-8")).get("model") or None
-        if kind == "opencode":
-            base = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
-            return json.loads((base / "opencode" / "opencode.json").read_text(encoding="utf-8")).get("model") or None
-    except (OSError, ValueError, AttributeError):
-        return None
-    return None
-
-
-def models(kind: str, path: str | None) -> list[dict]:
-    """Models to offer for this agent: [{"id", "name", "note"}]. Claude Code's aliases; opencode's and Antigravity's
-    own lists (what the user's sign-in offers); for Codex the user's default plus any model name they type."""
-    if kind == "claude":
-        return [{"id": i, "name": n, "note": note} for i, n, note in CLAUDE_MODELS]
-    if kind not in ("opencode", "antigravity") or not path:
-        return []
-    cached = _models.get(kind)
-    if cached and time.time() - cached[0] < 600:
-        return cached[1]
-    try:
-        res = subprocess.run(argv([path, "models"]), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                             stdin=subprocess.DEVNULL, timeout=30)
-        lines = [line.strip() for line in res.stdout.splitlines()]
-    except (OSError, subprocess.TimeoutExpired):
-        lines = []
-    if kind == "opencode":
-        rows = [r for r in lines if re.fullmatch(r"[\w.-]+/[\w.:/-]+", r)]
-        out = [{"id": r, "name": r.split("/", 1)[1], "note": r.split("/", 1)[0]} for r in rows[:200]]
-    else:  # agy: "<slug>\t<name>" per model
-        rows = [r.split("\t", 1) for r in lines if re.fullmatch(r"[\w.:-]+\t.+", r)]
-        out = [{"id": slug, "name": name.strip(), "note": slug.split("-", 1)[0]} for slug, name in rows[:200]]
-    _models[kind] = (time.time(), out)
-    return out
-
-
-def search_path() -> str | None:
-    """Where to look for agents and npm (None: this process's PATH). On Windows also the PATH set for the user right
-    now, read from the registry: an agent or Node.js installed while the app runs is found without restarting it."""
-    if not WIN:
-        return None
-    import winreg
-
-    dirs = os.environ.get("PATH", "").split(os.pathsep)
-    for root, key in ((winreg.HKEY_CURRENT_USER, "Environment"),
-                      (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
-        try:
-            with winreg.OpenKey(root, key) as k:
-                dirs += [os.path.expandvars(d) for d in str(winreg.QueryValueEx(k, "Path")[0]).split(";")]
-        except OSError:
-            pass
-    return os.pathsep.join(dict.fromkeys(d for d in dirs if d))
-
-
-def _which(cmd: str) -> str | None:
-    found = shutil.which(cmd, path=search_path())
-    if found:
-        return found
-    home = Path.home()
-    dirs = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin", home / ".npm-global" / "bin"]
-    if WIN and os.environ.get("APPDATA"):
-        dirs.append(Path(os.environ["APPDATA"]) / "npm")  # npm's global installs on Windows
-    if WIN and os.environ.get("LOCALAPPDATA"):
-        dirs.append(Path(os.environ["LOCALAPPDATA"]) / "agy" / "bin")  # where Antigravity's installer puts agy
-    # on Windows the file without an extension next to npm's foo.cmd is a shell script Windows can't run
-    names = (f"{cmd}.exe", f"{cmd}.cmd") if WIN else (cmd, f"{cmd}.cmd", f"{cmd}.exe")
-    for d in dirs:
-        for name in names:
-            if (d / name).exists():
-                return str(d / name)
-    return None
-
-
-# npm's Windows launcher (cmd-shim) ends with: "%_prog%" [node options] "%dp0%\node_modules\...\cli.js" %*
-_NPM_SHIM = re.compile(r'"%_prog%"\s+(?P<opts>[^"\r\n]*?)\s*"%~?dp0%?\\(?P<script>[^"\r\n]+)"\s+%\*', re.IGNORECASE)
-
-
-def argv(cmd: list[str]) -> list[str]:
-    """The command to start, as Windows needs it. npm installs agents there as .cmd scripts, which run through cmd.exe:
-    it cuts an argument at its first line break (a prompt loses everything after its first line, and the flags after
-    it with it) and treats & | < > in it as commands. Start node with the agent's script instead, as the .cmd would."""
-    if not WIN or Path(cmd[0]).suffix.lower() not in (".cmd", ".bat"):
-        return cmd
-    shim = Path(cmd[0])
-    try:
-        m = _NPM_SHIM.search(shim.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        m = None
-    if not m:
-        return cmd
-    script = shim.parent / m["script"]
-    node = shim.parent / "node.exe"
-    node = str(node) if node.exists() else shutil.which("node", path=search_path())
-    if not node or not script.exists():
-        return cmd
-    return [node, *m["opts"].split(), str(script), *cmd[1:]]
-
-
-def signin(k: Kind) -> str:
-    """How to sign in to an agent, said for where decomp.anything runs (WSL/Docker: in decomp.anything's own terminal)."""
-    from .. import hostenv
-
-    if not k.signin or hostenv.runtime() == "native":
-        return k.signin
-    text = k.signin.removeprefix("Open a terminal, ").removeprefix("Open a terminal and ")
-    return f"{hostenv.terminal_hint()}, then: {text[0].lower()}{text[1:]}"
-
-
-def version(kind: str, path: str) -> str | None:
-    """What the agent's `--version` says (cached for 5 minutes), or None."""
-    cached = _versions.get(kind)
-    if cached is None or time.time() - cached[0] > 300:
-        try:
-            res = subprocess.run(argv([path, "--version"]), capture_output=True, text=True, encoding="utf-8",
-                                 errors="replace", timeout=15)
-            said = (res.stdout or res.stderr).strip()
-            _versions[kind] = (time.time(), said.splitlines()[0][:60] if said else None)
-        except (OSError, subprocess.TimeoutExpired):
-            _versions[kind] = (time.time(), None)
-    return _versions[kind][1]
-
-
-def major(said: str | None) -> int:
-    """The major version in what `--version` said ("opencode v2.0.32" -> 2), 0 when there's none."""
-    m = re.search(r"(\d+)\.\d+", said or "")
-    return int(m.group(1)) if m else 0
-
-
-def detect() -> list[dict]:
-    out = []
-    for k in KINDS.values():
-        row = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": signin(k), "docs": k.docs,
-               "install": k.install.get("windows" if WIN else "unix", "")}
-        if not k.command:
-            row.update(installed=True, version=None, path=None)
-        else:
-            path = _which(k.command)
-            row.update(installed=path is not None, path=path, version=version(k.id, path) if path else None)
-            if path:
-                row.update(models=models(k.id, path), default_model=_config_model(k.id))
-        if row["install"].startswith("npm ") and not row["installed"] and not shutil.which("npm", path=search_path()):
-            row["needs"] = "Node.js (https://nodejs.org) for npm"
-        elif k.id == "claude" and WIN and not shutil.which("git", path=search_path()):
-            row["needs"] = "Git for Windows (https://git-scm.com/downloads/win): Claude Code needs its Git Bash"
-        out.append(row)
-    return out
-
-
-# ---------------------------------------------------------------------------------- output parsing
-
-def _tool_name(name: str) -> str:
-    for prefix in ("mcp__decomp__", "mcp_decomp_", "decomp_agent.", "decomp_agent__", "decomp__", "decomp_", "decomp."):
-        if name.startswith(prefix):
-            return name[len(prefix):]
-    return name
-
-
-def _args_brief(args) -> str:
-    if not isinstance(args, dict):
-        return ""
-    parts = []
-    for k, v in args.items():
-        if k == "source":
-            parts.append(f"{len(str(v).splitlines())} lines of C")
-        elif isinstance(v, str):
-            parts.append(v if len(v) < 40 else v[:37] + "…")
-        elif v not in (None, "", {}):
-            parts.append(str(v))
-    return ", ".join(parts)
-
-
-def _error_text(err) -> str:
-    """The message in an agent's error object, whatever its shape (opencode nests it under data)."""
-    if isinstance(err, dict):
-        data = err.get("data") if isinstance(err.get("data"), dict) else {}
-        msg = err.get("message") or data.get("message") or ""
-        name = err.get("name") or err.get("type") or ""
-        if msg and name and name not in ("UnknownError", "Error") and name not in msg:
-            return f"{name}: {msg}"
-        return str(msg or name or json.dumps(err)[:300])
-    return str(err or "")
-
-
-def _parse_agy(obj: dict, state: dict) -> list[tuple[str, str]]:
-    """Antigravity CLI's stream-json: step_update events (text arrives in deltas, gathered per step) and a result."""
-    out: list[tuple[str, str]] = []
-    ev = obj.get("event")
-    if ev == "step_update" and isinstance(obj.get("step_update"), dict):
-        st = obj["step_update"]
-        step, kind = st.get("step_index"), st.get("step_type")
-        if kind in ("agent_response", "thinking", "planner_response"):
-            texts = state.setdefault("agy_text", {})
-            texts[step] = texts.get(step, "") + str(st.get("text_delta") or "")
-            if st.get("state") == "DONE" and texts.get(step, "").strip():
-                out.append(("think" if kind == "thinking" else "text", texts.pop(step).strip()))
-        elif kind == "tool" and st.get("state") == "ACTIVE" and step not in state.setdefault("agy_tools", set()):
-            state["agy_tools"].add(step)
-            info = st.get("tool_info") if isinstance(st.get("tool_info"), dict) else {}
-            name, params = info.get("name") or st.get("tool_name") or "", info.get("parameters")
-            if name == "call_mcp_tool" and isinstance(params, dict):  # agy reaches MCP tools through one dispatcher
-                name, params = params.get("ToolName") or name, params.get("Arguments")
-            out.append(("tool", f"{_tool_name(name)}({_args_brief(params)})"))
-    elif ev == "result" and isinstance(obj.get("result"), dict):
-        res = obj["result"]
-        usage = res.get("usage") if isinstance(res.get("usage"), dict) else {}
-        if usage.get("total_tokens"):
-            out.append(("usage", json.dumps({"tokens": usage["total_tokens"]})))
-        denied = [d for d in res.get("denied_actions") or [] if isinstance(d, dict)]
-        if any(d.get("action") == "mcp" for d in denied):
-            out.append(("error", f"Antigravity refused decomp.anything's tools: a background run can't ask you for permission. "
-                                 f"Allow them once: add \"{AGY_ALLOW}\" to \"permissions\": {{\"allow\": [...]}} in "
-                                 f"{agy_settings()} (only decomp.anything's tools; shell, files and the web keep asking)."))
-        if res.get("status") not in (None, "SUCCESS"):
-            out.append(("error", str(res.get("error") or f"session ended: {res.get('status')}")[:400]))
-        else:
-            turns = res.get("num_turns")
-            out.append(("info", "session finished" + (f" ({turns} turns)" if turns else "")))
-    elif ev == "error":
-        out.append(("error", _error_text(obj.get("error") or obj.get("message"))[:400]))
-    return out
-
-
-def clean_stderr(kind: str, line: str) -> str:
-    """One line of an agent's stderr as worth showing, or "" for noise."""
-    line = line.strip()
-    if kind == "opencode" and "level=" in line:  # opencode --print-logs: keep the error itself, drop stack noise
-        # (the error is error="..." before OpenCode 2, cause="..." from 2 on, its stack trace escaped inside it)
-        m = re.search(r'\b(?:error|cause)="((?:[^"\\]|\\.)*)"', line)
-        return m.group(1).replace('\\"', '"').split("\\n")[0] if m and "level=ERROR" in line else ""
-    if kind == "opencode" and line.startswith("at "):  # a stack frame of a crash: its message came lines before
-        return ""
-    if line.startswith("AGY_ERROR:"):  # agy: a structured error line
-        try:
-            return _error_text(json.loads(line.split(":", 1)[1]))[:300]
-        except ValueError:
-            return line
-    return line
-
-
-def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[str, str]]:
-    """(type, text) items for the live feed from one line of agent output: text, think, tool, info, error, usage.
-    `state` carries what spans lines (Antigravity streams text in pieces) for one session."""
-    line = line.strip()
-    if not line:
-        return []
-    try:
-        obj = json.loads(line)
-    except ValueError:
-        return [("info", line[:400])]
-    if not isinstance(obj, dict):
-        return []
-    if "event" in obj and "type" not in obj:  # Antigravity CLI
-        return [(k, v) for k, v in _parse_agy(obj, {} if state is None else state) if v]
-    t = obj.get("type")
-    out: list[tuple[str, str]] = []
-    if t == "assistant" and isinstance(obj.get("message"), dict):  # Claude Code
-        for c in obj["message"].get("content", []):
-            if c.get("type") == "text" and c.get("text", "").strip():
-                out.append(("text", c["text"].strip()))
-            elif c.get("type") == "thinking" and c.get("thinking", "").strip():
-                out.append(("think", c["thinking"].strip()))
-            elif c.get("type") == "tool_use" and c.get("name") != "ToolSearch":  # ToolSearch: Claude Code loading tools
-                out.append(("tool", f"{_tool_name(c.get('name', ''))}({_args_brief(c.get('input'))})"))
-    elif t == "result":  # Claude Code end of session
-        if obj.get("is_error") or obj.get("status") == "error":
-            out.append(("error", str(obj.get("result") or obj.get("error") or "session failed")[:400]))
-        else:
-            cost = obj.get("total_cost_usd")
-            turns = obj.get("num_turns")
-            bits = [f"{turns} turns" if turns else "", f"${cost:.2f}" if isinstance(cost, (int, float)) else ""]
-            out.append(("info", "session finished" + (f" ({', '.join(b for b in bits if b)})" if any(bits) else "")))
-            if isinstance(cost, (int, float)):
-                out.append(("usage", json.dumps({"usd": cost})))
-            stats = obj.get("stats") if isinstance(obj.get("stats"), dict) else {}
-            if stats.get("total_tokens"):
-                out.append(("usage", json.dumps({"tokens": stats["total_tokens"]})))
-    elif t in ("item.started", "item.completed") and isinstance(obj.get("item"), dict):  # Codex
-        item = obj["item"]
-        it = item.get("type") or item.get("item_type")
-        if it == "agent_message" and t == "item.completed":
-            out.append(("text", str(item.get("text", "")).strip()))
-        elif it == "reasoning" and t == "item.completed" and item.get("text"):
-            out.append(("think", str(item["text"]).strip()))
-        elif it == "mcp_tool_call" and t == "item.started":
-            out.append(("tool", f"{_tool_name(item.get('tool', ''))}({_args_brief(item.get('arguments'))})"))
-        elif it == "command_execution" and t == "item.started":
-            out.append(("tool", f"shell: {str(item.get('command', ''))[:80]}"))
-        elif it == "error":
-            out.append(("error", str(item.get("message", ""))[:400]))
-    elif t == "turn.completed":
-        out.append(("info", "turn finished"))
-        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
-        tokens = sum(v for k, v in usage.items() if k in ("input_tokens", "output_tokens") and isinstance(v, int))
-        if tokens:
-            out.append(("usage", json.dumps({"tokens": tokens})))
-    elif t in ("error", "turn.failed"):  # Codex; opencode: {"error": {"name", "data": {"message"}}}
-        text = _error_text(obj.get("error") or obj.get("message"))
-        if not text.startswith("Unexpected server error"):  # opencode's placeholder: its log line says what failed
-            out.append(("error", text[:400]))
-    elif t == "tool_use":  # opencode
-        part = obj.get("part") if isinstance(obj.get("part"), dict) else obj
-        name = part.get("tool_name") or part.get("tool") or part.get("name") or ""
-        args = part.get("parameters") or (part.get("state") or {}).get("input") or part.get("input")
-        out.append(("tool", f"{_tool_name(name)}({_args_brief(args)})"))
-    elif t == "text" and isinstance(obj.get("part"), dict):  # opencode
-        text = obj["part"].get("text", "").strip()
-        if text:
-            out.append(("text", text))
-    elif t in ("step_finish", "step-finish") and isinstance(obj.get("part"), dict):  # opencode: cost per step
-        part = obj["part"]
-        if isinstance(part.get("cost"), (int, float)) and part["cost"]:
-            out.append(("usage", json.dumps({"usd": part["cost"]})))
-    return [(k, v) for k, v in out if v]
-
-
-# ---------------------------------------------------------------------------------- sessions
 
 @dataclass
 class Session:
@@ -540,10 +119,21 @@ class Session:
         self.feed.append({"seq": self.seq, "t": time.time(), "type": kind, "text": text[:4000]})
 
     def snapshot(self, since: int = 0) -> dict:
-        return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name,
-                "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
-                "model": self.options.get("model") or "", "usd": round(self.usd, 4), "tokens": self.tokens,
-                "feed": [f for f in self.feed if f["seq"] > since]}
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "label": self.label,
+            "slug": self.slug,
+            "agent": self.agent_name,
+            "state": self.state,
+            "runs": self.runs,
+            "error": self.error,
+            "started_at": self.started_at,
+            "model": self.options.get("model") or "",
+            "usd": round(self.usd, 4),
+            "tokens": self.tokens,
+            "feed": [f for f in self.feed if f["seq"] > since],
+        }
 
 
 class Manager:
@@ -576,8 +166,14 @@ class Manager:
                     sid = f"{kind}-{n}"
                 if kind == "api":  # numbered per endpoint: "gpu-box #2" says which machine it runs on
                     name = options.get("provider_name") or "API"
-                    k = 1 + max((int(s.label.rsplit(" #", 1)[1]) for s in self.sessions.values() if s.kind == "api"
-                                 and s.label.rsplit(" #", 1)[0] == name and s.label.rsplit(" #", 1)[-1].isdigit()), default=0)
+                    k = 1 + max(
+                        (
+                            int(s.label.rsplit(" #", 1)[1])
+                            for s in self.sessions.values()
+                            if s.kind == "api" and s.label.rsplit(" #", 1)[0] == name and s.label.rsplit(" #", 1)[-1].isdigit()
+                        ),
+                        default=0,
+                    )
                     label = f"{name} #{k}"
                 else:
                     label = f"{KINDS[kind].name} #{n}"
@@ -624,8 +220,11 @@ class Manager:
 
     def running(self) -> list[dict]:
         """The helpers that should keep working: resumed by the server after the app restarts."""
-        return [{"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k != "api_key"}}
-                for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()]
+        return [
+            {"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k != "api_key"}}
+            for s in self.sessions.values()
+            if s.state in ("starting", "working", "waiting") and not s.stop.is_set()
+        ]
 
     def stop(self, sid: str | None = None) -> None:
         """Stop one helper (for good) or all of them (the app is quitting: they resume next time)."""
@@ -665,13 +264,15 @@ class Manager:
         """Compiles + claims + notes by this agent: a session that adds none of these made no progress."""
         row = self.net.store.one(
             "SELECT (SELECT COUNT(*) FROM attempts WHERE agent_id=?) + (SELECT COUNT(*) FROM events WHERE agent_id=?) AS n",
-            agent_id, agent_id)
-        return row["n"]
+            agent_id,
+            agent_id,
+        )
+        return int(row["n"]) if row else 0
 
     def _left(self, slug: str) -> int:
         proj = self.net.project_row(slug)
         row = self.net.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'", proj["id"])
-        return row["n"]
+        return int(row["n"]) if row else 0
 
     def _account(self, s: Session, usage: dict) -> None:
         """Add what a session spent to the session and to the project (kept in its config across restarts)."""
@@ -701,8 +302,9 @@ class Manager:
             prep.wait(900)
         twins = getattr(getattr(self.net, "twins", None), "jobs", {}).get(s.slug)
         if twins is not None and not twins.ordered.is_set():
-            s.push("info", "first setting hand-written assembly aside and putting the functions in order "
-                           "(seconds; a minute the first time)")
+            s.push(
+                "info", "first setting hand-written assembly aside and putting the functions in order (seconds; a minute the first time)"
+            )
             twins.ordered.wait(120)
         while not s.stop.is_set():
             if self._left(s.slug) == 0:
@@ -745,8 +347,11 @@ class Manager:
             if s.throttled and throttles < 10:  # the provider's limit, not the agent's failure: wait it out
                 s.throttled, throttles = False, throttles + 1
                 s.state = "waiting"
-                s.push("info", "the model's provider says too many requests at once: trying again in a minute "
-                               "(fewer agents at once on this account would wait less)")
+                s.push(
+                    "info",
+                    "the model's provider says too many requests at once: trying again in a minute "
+                    "(fewer agents at once on this account would wait less)",
+                )
                 s.stop.wait(60)
                 continue
             throttles = 0 if ok else throttles
@@ -782,16 +387,17 @@ class Manager:
 
         topics = assistance.topics(ov)
         text += "\n" + tools._assistance_hint()
-        text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(
-            tools._guide(t) for t in topics)
-        if (learned := self.net.learnings(s.slug)):
-            text += ("\nWhat agents learned on this project so far (compiler quirks, conventions; add yours with "
-                     f"add_note and no function):\n{learned}\n")
-        if (facts := self.net.intake_line(s.slug)):
+        text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(tools._guide(t) for t in topics)
+        if learned := self.net.learnings(s.slug):
+            text += (
+                "\nWhat agents learned on this project so far (compiler quirks, conventions; add yours with "
+                f"add_note and no function):\n{learned}\n"
+            )
+        if facts := self.net.intake_line(s.slug):
             text += f"\n{facts}\n"
-        if (wish := self.net.instructions(s.slug)):
+        if wish := self.net.instructions(s.slug):
             text += f"\nThe user's instructions for this project (they come first):\n{wish}\n"
-        if (roots := self.net.references(s.slug)):
+        if roots := self.net.references(s.slug):
             from . import references
 
             text += f"\n{references.prompt_line(roots)}\n"
@@ -800,32 +406,50 @@ class Manager:
     def _prompt(self, s: Session) -> str:
         ov = self.net.overview(s.slug)
         if ov.get("kind") == "analysis":
-            return tools.ANALYSIS_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
-                                                guides='guide("analysis")')
+            return tools.ANALYSIS_PROMPT.format(
+                title=ov["title"], count=s.options.get("per_session", PER_SESSION), guides='guide("analysis")'
+            )
         if ov.get("kind") == "fork":
             guides = ["fork", "objdiff", *tools.PLATFORM_GUIDES.get(ov.get("platform") or "", [])]
-            return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
-                                            count=s.options.get("per_session", PER_SESSION),
-                                            guides=", ".join(f'guide("{g}")' for g in guides))
+            return tools.FORK_PROMPT.format(
+                title=ov["title"],
+                platform=ov.get("platform_name") or "its platform",
+                count=s.options.get("per_session", PER_SESSION),
+                guides=", ".join(f'guide("{g}")' for g in guides),
+            )
         platform = ov.get("platform") or ""
         language = ov.get("source_language") or "C"
         if platform in ("windows", "linux"):
             target = "program"
             guide = "x86" + (" and cpp" if language == "C++" else "")
-            note = ("\nThe target's function names are C++ mangled names: write the class and signature that mangle to "
-                    "them (or wrap a sub_<address> in extern \"C\"); the cpp guide has the ABI details.") \
-                if language == "C++" else ""
+            note = (
+                (
+                    "\nThe target's function names are C++ mangled names: write the class and signature that mangle to "
+                    'them (or wrap a sub_<address> in extern "C"); the cpp guide has the ABI details.'
+                )
+                if language == "C++"
+                else ""
+            )
         else:
             target = "game"
             guide = {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(platform) or (
-                "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
+                "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc"
+            )
             note = ""
         detected = ov.get("detected") or {}
         if detected and not detected.get("matchable", True):
-            note += (f"\nThis target was built with {detected['label']}: C/C++ cannot reproduce that compiler's output, "
-                     "so matches will stay elusive. Use the tools to inspect and explain the program; don't claim a match.")
-        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
-                                        compiler_guide=guide, language=language, target=target, language_note=note)
+            note += (
+                f"\nThis target was built with {detected['label']}: C/C++ cannot reproduce that compiler's output, "
+                "so matches will stay elusive. Use the tools to inspect and explain the program; don't claim a match."
+            )
+        return tools.WORK_PROMPT.format(
+            title=ov["title"],
+            count=s.options.get("per_session", PER_SESSION),
+            compiler_guide=guide,
+            language=language,
+            target=target,
+            language_note=note,
+        )
 
     def _command(self, s: Session, token: str, workdir: Path) -> tuple[list[str], dict, str]:
         """The agent's command line, environment and what goes in on stdin (the prompt)."""
@@ -834,8 +458,8 @@ class Manager:
         if not exe:
             raise RuntimeError(f"{k.name} is not installed")
         env = dict(os.environ)
-        if WIN:
-            env["PATH"] = search_path()  # the agent finds node (and what it needs) even when installed after the app
+        if WIN and (path := search_path()):
+            env["PATH"] = path  # the agent finds node (and what it needs) even when installed after the app
         # An agent that only loads the MCP servers in the user's own settings (Antigravity CLI since 1.1.3 ignores a
         # workspace's .agents/mcp_config.json) reaches decomp.anything through the `decomp mcp` the user connected it
         # with: that bridge works as this session's agent when it finds this, not as a new agent of the user's
@@ -844,12 +468,26 @@ class Manager:
         model = s.options.get("model") or ""
         if s.kind == "claude":
             cfg = workdir / "mcp.json"
-            cfg.write_text(json.dumps({"mcpServers": {"decomp": {"type": "http", "url": self.mcp_url,
-                                                                  "headers": {"Authorization": f"Bearer {token}"}}}}),
-                           encoding="utf-8")
-            cmd = [exe, "-p", "--output-format", "stream-json", "--verbose", "--mcp-config", str(cfg),
-                   "--strict-mcp-config", "--allowedTools", "mcp__decomp", "--disallowedTools",
-                   "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"]
+            cfg.write_text(
+                json.dumps(
+                    {"mcpServers": {"decomp": {"type": "http", "url": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"}}}}
+                ),
+                encoding="utf-8",
+            )
+            cmd = [
+                exe,
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--mcp-config",
+                str(cfg),
+                "--strict-mcp-config",
+                "--allowedTools",
+                "mcp__decomp",
+                "--disallowedTools",
+                "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+            ]
             if model:
                 cmd += ["--model", model]
         elif s.kind == "codex":
@@ -858,20 +496,26 @@ class Manager:
             # `decomp connect codex` gave that a stdio `decomp` entry (a url on top of it: "url is not supported for
             # stdio"). The user's MCP servers are switched off for the run, as --strict-mcp-config does for Claude.
             cmd = [exe, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-C", str(workdir), "-s", "read-only"]
-            for name in (_codex_config().get("mcp_servers") or {}):
+            for name in _codex_config().get("mcp_servers") or {}:
                 if re.fullmatch(r"[A-Za-z0-9_-]+", name):
                     cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
-            cmd += ["-c", f'mcp_servers.decomp_agent={{url="{self.mcp_url}", bearer_token_env_var="DECOMP_TOKEN", '
-                          'default_tools_approval_mode="approve", tool_timeout_sec=180}',
-                    "-c", 'approval_policy="never"']
+            cmd += [
+                "-c",
+                f'mcp_servers.decomp_agent={{url="{self.mcp_url}", bearer_token_env_var="DECOMP_TOKEN", '
+                'default_tools_approval_mode="approve", tool_timeout_sec=180}',
+                "-c",
+                'approval_policy="never"',
+            ]
             if model:
                 cmd += ["-m", model]
             cmd.append("-")  # the prompt comes from stdin
         elif s.kind == "antigravity":
             # the workspace's own MCP config; tool permission comes from the user's rule for decomp's tools (AGY_ALLOW)
             (workdir / ".agents").mkdir(exist_ok=True)
-            (workdir / ".agents" / "mcp_config.json").write_text(json.dumps({"mcpServers": {"decomp": {
-                "serverUrl": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"}}}}), encoding="utf-8")
+            (workdir / ".agents" / "mcp_config.json").write_text(
+                json.dumps({"mcpServers": {"decomp": {"serverUrl": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"}}}}),
+                encoding="utf-8",
+            )
             # a session works through several functions: more than agy's default 5 minutes
             cmd = [exe, "--output-format", "stream-json", "--input-format", "stream-json", "--print-timeout", "2h"]
             if model:
@@ -888,15 +532,17 @@ class Manager:
             if v2:
                 # OpenCode 2 reaches MCP tools through one `execute` tool by default (Code Mode), where models wander
                 # off to the user's other servers: decomp's tools are offered as themselves and `execute` is denied.
-                cfg = {"mcp": {"servers": {"decomp": {**server, "oauth": False, "codemode": False}}},
-                       "permissions": [{"action": "execute", "resource": "*", "effect": "deny"},
-                                       {"action": "decomp_*", "resource": "*", "effect": "allow"},
-                                       *({"action": a, "resource": "*", "effect": never} for a in ("edit", "shell", "webfetch"))]}
+                cfg = {
+                    "mcp": {"servers": {"decomp": {**server, "oauth": False, "codemode": False}}},
+                    "permissions": [
+                        {"action": "execute", "resource": "*", "effect": "deny"},
+                        {"action": "decomp_*", "resource": "*", "effect": "allow"},
+                        *({"action": a, "resource": "*", "effect": never} for a in ("edit", "shell", "webfetch")),
+                    ],
+                }
             else:
-                cfg = {"mcp": {"decomp": {**server, "enabled": True}},
-                       "permission": {"edit": never, "bash": never, "webfetch": never}}
-            (workdir / "opencode.json").write_text(json.dumps({"$schema": "https://opencode.ai/config.json", **cfg}),
-                                                   encoding="utf-8")
+                cfg = {"mcp": {"decomp": {**server, "enabled": True}}, "permission": {"edit": never, "bash": never, "webfetch": never}}
+            (workdir / "opencode.json").write_text(json.dumps({"$schema": "https://opencode.ai/config.json", **cfg}), encoding="utf-8")
             # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.
             # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag. No --log-level: OpenCode 2
             # stops at "ERROR", earlier ones at "error"; clean_stderr keeps only the errors anyway.) OpenCode 2 runs
@@ -913,41 +559,58 @@ class Manager:
             from . import connect  # (connect imports this module)
 
             if not connect.status("antigravity"):  # decomp.anything's tools only reach it through the user's settings
-                raise Fatal("Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.anything "
-                            "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again")
+                raise Fatal(
+                    "Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.anything "
+                    "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again"
+                )
             allowed = connect.antigravity_allows()
             if not connect.allow_antigravity():
-                raise Fatal("Antigravity's settings couldn't be updated to allow decomp.anything's tools: add "
-                            f"\"{AGY_ALLOW}\" to \"permissions\": {{\"allow\": [...]}} in {agy_settings()}")
+                raise Fatal(
+                    "Antigravity's settings couldn't be updated to allow decomp.anything's tools: add "
+                    f'"{AGY_ALLOW}" to "permissions": {{"allow": [...]}} in {agy_settings()}'
+                )
             if not allowed:
                 s.push("info", "allowed decomp.anything's tools in Antigravity's settings")
         cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if WIN else 0
-        proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                creationflags=flags, start_new_session=not WIN)
+        flags = CREATE_NEW_PROCESS_GROUP if WIN else 0
+        proc = subprocess.Popen(
+            cmd,
+            cwd=workdir,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=flags,
+            start_new_session=not WIN,
+        )
         s.proc = proc
         errors: collections.deque = collections.deque(maxlen=20)
 
         def feed_prompt():
             try:
-                proc.stdin.write(prompt)
-                proc.stdin.close()  # end of input: the agent works on this one prompt, then exits
+                if proc.stdin is not None:
+                    proc.stdin.write(prompt)
+                    proc.stdin.close()  # end of input: the agent works on this one prompt, then exits
             except OSError:  # it exited before reading (stderr says why)
                 pass
 
         def drain_err():
-            for line in proc.stderr:
+            for line in proc.stderr or ():
                 if (text := clean_stderr(s.kind, line)) and (not errors or errors[-1] != text):
                     errors.append(text)
+
         threading.Thread(target=feed_prompt, daemon=True).start()
         threading.Thread(target=drain_err, daemon=True).start()
         saw_tool = False
         said: collections.deque = collections.deque(maxlen=20)
         state: dict = {}
         last_error = refused = ""
-        for line in proc.stdout:
+        for line in proc.stdout or ():
             for kind, text in parse_line(s.kind, line, state):
                 if kind == "usage":
                     self._account(s, json.loads(text))
@@ -1004,8 +667,7 @@ class Manager:
         except NetworkError:
             analysis = False
         schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)), analysis=analysis)
-        messages = [{"role": "system", "content": tools.INSTRUCTIONS},
-                    {"role": "user", "content": self.prompt(s)}]
+        messages = [{"role": "system", "content": tools.INSTRUCTIONS}, {"role": "user", "content": self.prompt(s)}]
         used_tool = False
         client = httpx.Client(timeout=httpx.Timeout(300, connect=15))
         s.http = client  # stop() closes this, so a long local generation doesn't keep the session alive
@@ -1017,27 +679,37 @@ class Manager:
                 for _step in range(int(s.options.get("max_steps", 120))):
                     if s.stop.is_set():
                         return True
+                    r = None
                     for _attempt in range(4):
                         if s.stop.is_set():
                             return True
                         fit(messages, budget, trim_latest_tools=True)
-                        r = _request_or_stop(s.stop, client, "post", f"{base}/chat/completions", headers=headers,
-                                             json={"model": model, "messages": messages, "tools": schema,
-                                                   "tool_choice": "auto"})
+                        r = _request_or_stop(
+                            s.stop,
+                            client,
+                            "post",
+                            f"{base}/chat/completions",
+                            headers=headers,
+                            json={"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"},
+                        )
                         if r is None:
                             return True
                         if r.status_code == 200 or not _too_long(r):
                             break
                         budget = int(budget * 0.6)  # the server counts differently, or knows better: trim more
+                    if r is None:  # stopped between attempts
+                        return True
                     if r.status_code != 200:
                         if (why := no_credit(r.text)) or r.status_code == 402:
                             raise Fatal(why or no_credit("payment required"))
                         s.throttled = r.status_code == 429 or bool(_THROTTLED.search(r.text))
                         s.error = f"API error {r.status_code}: {r.text[:300]}"
                         if _too_long(r):
-                            s.error = ("the model's context is too small for this work even after trimming: give it at "
-                                       "least 16K tokens (llama.cpp: -c 16384; Ollama: OLLAMA_CONTEXT_LENGTH=16384; LM "
-                                       "Studio: Context Length) and set it in Agents & models")
+                            s.error = (
+                                "the model's context is too small for this work even after trimming: give it at "
+                                "least 16K tokens (llama.cpp: -c 16384; Ollama: OLLAMA_CONTEXT_LENGTH=16384; LM "
+                                "Studio: Context Length) and set it in Agents & models"
+                            )
                         s.push("error", s.error)
                         return False
                     reply = r.json()
@@ -1085,8 +757,9 @@ def _tokens(obj) -> int:
 
 def _too_long(r) -> bool:
     """The server refused the request because it doesn't fit the model's context."""
-    return r.status_code in (400, 413, 422, 500) and bool(re.search(
-        r"context|too long|exceed|maximum.*tokens|n_ctx|prompt is too|reduce the length", r.text[:2000], re.IGNORECASE))
+    return r.status_code in (400, 413, 422, 500) and bool(
+        re.search(r"context|too long|exceed|maximum.*tokens|n_ctx|prompt is too|reduce the length", r.text[:2000], re.IGNORECASE)
+    )
 
 
 def fit(messages: list[dict], budget: int, *, trim_latest_tools: bool = False) -> int:
@@ -1105,8 +778,11 @@ def fit(messages: list[dict], budget: int, *, trim_latest_tools: bool = False) -
                 before = _tokens(m)
                 lines = text.splitlines()
                 prefix = lines[0] if lines else text[:240]
-                if (len(lines) > 1 and len(prefix) + len(lines[1]) + 1 <= 240
-                        and not lines[1].strip().startswith(("|", "TARGET", "markers:"))):
+                if (
+                    len(lines) > 1
+                    and len(prefix) + len(lines[1]) + 1 <= 240
+                    and not lines[1].strip().startswith(("|", "TARGET", "markers:"))
+                ):
                     prefix = prefix + "\n" + lines[1]
                 m["content"] = prefix[:240] + "\n[... trimmed to save context: call the tool again if you need this]"
                 total -= before - _tokens(m)
@@ -1117,8 +793,10 @@ def fit(messages: list[dict], budget: int, *, trim_latest_tools: bool = False) -
                 continue
             before = _tokens(message)
             size = max(300, len(text) - (total - budget) * 3 - 300)
-            message["content"] = (text[:size // 2] + "\n[Incomplete tool preview: trimmed to fit context. "
-                                  "Use a focused view or retained evidence; do not infer full coverage.]\n" + text[-size // 2:])
+            message["content"] = (
+                text[: size // 2] + "\n[Incomplete tool preview: trimmed to fit context. "
+                "Use a focused view or retained evidence; do not infer full coverage.]\n" + text[-size // 2 :]
+            )
             total += _tokens(message) - before
             if total <= budget:
                 break
@@ -1167,8 +845,11 @@ def context_window(client, base: str, options: dict, stop: threading.Event | Non
         pass
     if is_local(base):
         try:
-            r = _request_or_stop(stop, client, "get", re.sub(r"/v1$", "", base) + "/props", timeout=5) if stop else client.get(
-                re.sub(r"/v1$", "", base) + "/props", timeout=5)
+            r = (
+                _request_or_stop(stop, client, "get", re.sub(r"/v1$", "", base) + "/props", timeout=5)
+                if stop
+                else client.get(re.sub(r"/v1$", "", base) + "/props", timeout=5)
+            )
             n = (r.json().get("default_generation_settings") or {}).get("n_ctx") if r is not None and r.status_code == 200 else None
             if isinstance(n, int) and n >= 2048:
                 return n

@@ -15,6 +15,38 @@ const rcNorm = (a) => { const m = /^0x0*([0-9a-f]+)$/i.exec(String(a ?? "").trim
 const rcNum = (a) => { try { return Number(BigInt(rcNorm(a))); } catch { return NaN; } };
 const rcShort = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : String(n));
 
+/* ------------------------------------------------------------------ the project this file belongs to */
+
+/* REA loads a file at its own image base (a Linux ELF comes back at 0x100000 and up); the project's functions are at
+   the file's real addresses. `RC.proj.base` is the difference, so the console can show both and match names. */
+function rcBase() {
+  const starts = (RC.segments || []).map((s) => rcNum(s.start)).filter((n) => Number.isFinite(n));
+  return starts.length ? Math.min(...starts) : 0;
+}
+function rcProjAddr(address) {
+  const elf = rcNum(address) - (RC.proj?.base || 0);
+  return Number.isFinite(elf) && elf >= 0 ? rcNorm(`0x${elf.toString(16)}`) : null;
+}
+function rcProjAt(address) {
+  const elf = rcProjAddr(address);
+  return elf ? RC.proj?.byAddr.get(elf) || null : null;
+}
+async function rcProject() {
+  RC.proj = null;
+  const path = RC.target?.path;
+  if (!path) return;
+  const res = await rcPost(`/api/rea/project?path=${encodeURIComponent(path)}`).catch(() => null);
+  const project = res?.project;
+  if (!project) return;
+  const byAddr = new Map((project.functions || []).map(([a, n, st, size]) => [rcNorm(`0x${a.toString(16)}`), { name: n, status: st, size, addr: a }]));
+  RC.proj = { slug: project.slug, title: project.title, kind: project.kind, base: rcBase(), byAddr, count: byAddr.size };
+}
+function rcProjChip(address) {
+  const hit = rcProjAt(address);
+  if (!hit) return "";
+  return `<button class="rc-chip" type="button" data-project="${esc(RC.proj.slug)}/${esc(hit.name)}" title="Open ${esc(hit.name)} in ${esc(RC.proj.title)}">${esc(RC.proj.title)} <b>${esc(hit.status)}</b> · ${esc(rcProjAddr(address))}</button>`;
+}
+
 /* ------------------------------------------------------------------ calls */
 
 /* Any REA tool, through the app: a job, so a minutes-long Ghidra import never holds a request open. Tools that aren't
@@ -192,6 +224,7 @@ async function showConsole() {
     rcWelcome();
   }
   await rcStatus();
+  if (RC.target && !RC.proj) await rcProject().catch(() => {});
   const q = new URLSearchParams((location.hash.split("?")[1]) || "");
   const path = q.get("path"), fn = q.get("fn");
   if (path && RC.status?.configured) {
@@ -318,8 +351,17 @@ async function rcAfterOpen(res) {
   RC.overview = ov.status === "fulfilled" ? ov.value.result : null;
   if (procs.status === "fulfilled" && Array.isArray(procs.value.result)) rcSetProcs(procs.value.result);
   if (segs.status === "fulfilled" && Array.isArray(segs.value.result)) RC.segments = segs.value.result;
+  await rcProject();  // the project this file belongs to, if any: names, statuses and the address base
   rcRenderSide();
   rcOverview();
+}
+
+async function rcReloadProcedures() {
+  const res = await reaCall("list_procedures", {}, { quiet: true }).catch(() => null);
+  if (res && Array.isArray(res.result)) {
+    rcSetProcs(res.result);
+    rcRenderSide();
+  }
 }
 
 function rcSetProcs(list) {
@@ -398,8 +440,14 @@ function rcRenderSide() {
   if (!RC.procs.length) { box.innerHTML = `<div class="rc-empty">${RC.target ? "No functions listed." : "Open a target to list its functions."}</div>`; return; }
   const hits = RC.procs.filter((p) => !q || p.name.toLowerCase().includes(q) || p.address.includes(q));
   hits.sort((a, b) => (a.ext - b.ext));
-  box.innerHTML = hits.slice(0, cap).map((p) => `<div class="rc-item ${RC.fn?.address === p.address ? "on" : ""}" data-fn="${esc(p.address)}"><span class="a">${esc(p.ext ? "ext" : p.address)}</span><span class="t ${p.ext || p.thunk ? "ext" : ""}">${esc(p.name)}</span></div>`).join("") + more(hits.length);
+  box.innerHTML = hits.slice(0, cap).map((p) => `<div class="rc-item ${RC.fn?.address === p.address ? "on" : ""}" data-fn="${esc(p.address)}"><span class="a">${esc(p.ext ? "ext" : p.address)}</span><span class="t ${p.ext || p.thunk ? "ext" : ""}">${esc(p.name)}${rcProjAt(p.address) ? ` <span class="rc-tag ro">${esc(rcProjAt(p.address).status)}</span>` : ""}</span></div>`).join("") + more(hits.length);
 }
+document.addEventListener("click", (e) => {
+  const go = e.target.closest("[data-project]");
+  if (!go) return;
+  const [slug, name] = go.dataset.project.split("/");
+  location.hash = `#/p/${slug}/functions/${encodeURIComponent(name)}`;
+});
 $("rcList").addEventListener("click", (e) => {
   const item = e.target.closest("[data-fn],[data-tool],[data-str]");
   if (!item) return;
@@ -498,7 +546,17 @@ async function rcFunction(what, { back = false } = {}) {
   if (!key) return;
   if (!/^0x/i.test(key) && RC.byName.has(key)) key = RC.byName.get(key).address;
   if (/^[0-9a-f]{5,}$/i.test(key)) key = `0x${key}`;
-  if (RC.fn && !back && RC.fn.address !== rcNorm(key)) RC.trail.push(RC.fn.address);
+  key = rcNorm(key);
+  if (/^0x/.test(key) && !RC.byAddr.has(key)) {
+    // The list on this page can be older than the program REA has open (the app restarted, or REA reopened a target).
+    // Ask again before spending a call REA will only answer with "Analysis input is invalid".
+    await rcReloadProcedures();
+    if (!RC.byAddr.has(key)) {
+      rcSay(`${key} isn't a procedure in ${RC.target?.path || "the program REA has open"} — the function list here is from an earlier target; reopen the program to see its functions`, "err");
+      return;
+    }
+  }
+  if (RC.fn && !back && RC.fn.address !== key) RC.trail.push(RC.fn.address);
   rcLoading(`Analysing ${key}…`);
   const res = await reaCall("analyze_function", { procedure: key });
   const d = res.result || {};
@@ -516,10 +574,10 @@ function rcRenderFunction() {
   const { data: d, meta } = RC.fn, p = d.procedure || {}, nat = d.native_api || {};
   const size = p.body?.total_bytes, blocks = (d.basic_blocks || []).length, asm = rcAsmLines(d.assembly);
   const chip = (k, v) => (v || v === 0 ? `<span class="rc-chip">${esc(k)} <b>${esc(v)}</b></span>` : "");
-  const s = rcStage(`<div class="rc-fhead"><div>${RC.trail.length ? '<button class="rc-btn small" id="rcBack" type="button">◀ back</button> ' : ""}<span class="addr">${esc(RC.fn.address)}</span>
-      <h2>${esc(p.name || RC.fn.address)}</h2><div class="sig">${esc(p.signature || "")}</div>
+  const s = rcStage(`<div class="rc-fhead"><div>${RC.trail.length ? '<button class="rc-btn small" id="rcBack" type="button">◀ back</button> ' : ""}<span class="addr">${esc(RC.fn.address)}${RC.proj ? ` · ${esc(rcProjAddr(RC.fn.address) || "?")}` : ""}</span>
+      <h2>${esc(p.name || RC.fn.address)}${rcProjAt(RC.fn.address) ? ` <small class="sig">${esc(RC.proj.title)}</small>` : ""}</h2><div class="sig">${esc(p.signature || "")}</div>
       <div class="rc-chips">${chip("bytes", size)}${chip("instructions", asm.length)}${chip("blocks", blocks)}${chip("callers", (d.callers || []).length)}${chip("callees", (d.callees || []).length)}
-        ${chip("convention", nat.calling_convention)}${chip("engine", meta?.provider)}${chip("confidence", meta?.confidence)}</div></div>
+        ${chip("convention", nat.calling_convention)}${chip("engine", meta?.provider)}${chip("confidence", meta?.confidence)}${rcProjChip(RC.fn.address)}</div></div>
       <span class="grow"></span><button class="rc-btn small" id="rcFnTool" type="button">More tools…</button></div>
     <nav class="rc-ftabs" id="rcFtabs">${[["code", "Code"], ["graph", "Flow graph"], ["calls", "Callers & callees"], ["data", "Strings & names"], ["raw", "Everything"]]
       .map(([k, l]) => `<button type="button" data-ftab="${k}" class="${RC.ftab === k ? "on" : ""}">${l}</button>`).join("")}</nav>
