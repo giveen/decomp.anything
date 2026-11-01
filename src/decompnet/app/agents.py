@@ -88,6 +88,10 @@ __all__ = [
 ]
 
 
+# Windows only: the agent gets its own process group, so Ctrl-C in the app doesn't reach it.
+CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+
 @dataclass
 class Session:
     id: str
@@ -240,12 +244,12 @@ class Manager:
         row = self.net.store.one(
             "SELECT (SELECT COUNT(*) FROM attempts WHERE agent_id=?) + (SELECT COUNT(*) FROM events WHERE agent_id=?) AS n",
             agent_id, agent_id)
-        return row["n"]
+        return int(row["n"]) if row else 0
 
     def _left(self, slug: str) -> int:
         proj = self.net.project_row(slug)
         row = self.net.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'", proj["id"])
-        return row["n"]
+        return int(row["n"]) if row else 0
 
     def _account(self, s: Session, usage: dict) -> None:
         """Add what a session spent to the session and to the project (kept in its config across restarts)."""
@@ -408,8 +412,8 @@ class Manager:
         if not exe:
             raise RuntimeError(f"{k.name} is not installed")
         env = dict(os.environ)
-        if WIN:
-            env["PATH"] = search_path()  # the agent finds node (and what it needs) even when installed after the app
+        if WIN and (path := search_path()):
+            env["PATH"] = path  # the agent finds node (and what it needs) even when installed after the app
         # An agent that only loads the MCP servers in the user's own settings (Antigravity CLI since 1.1.3 ignores a
         # workspace's .agents/mcp_config.json) reaches decomp.anything through the `decomp mcp` the user connected it
         # with: that bridge works as this session's agent when it finds this, not as a new agent of the user's
@@ -497,7 +501,7 @@ class Manager:
                 s.push("info", "allowed decomp.anything's tools in Antigravity's settings")
         cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if WIN else 0
+        flags = CREATE_NEW_PROCESS_GROUP if WIN else 0
         proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
                                 creationflags=flags, start_new_session=not WIN)
@@ -506,13 +510,14 @@ class Manager:
 
         def feed_prompt():
             try:
-                proc.stdin.write(prompt)
-                proc.stdin.close()  # end of input: the agent works on this one prompt, then exits
+                if proc.stdin is not None:
+                    proc.stdin.write(prompt)
+                    proc.stdin.close()  # end of input: the agent works on this one prompt, then exits
             except OSError:  # it exited before reading (stderr says why)
                 pass
 
         def drain_err():
-            for line in proc.stderr:
+            for line in proc.stderr or ():
                 if (text := clean_stderr(s.kind, line)) and (not errors or errors[-1] != text):
                     errors.append(text)
         threading.Thread(target=feed_prompt, daemon=True).start()
@@ -521,7 +526,7 @@ class Manager:
         said: collections.deque = collections.deque(maxlen=20)
         state: dict = {}
         last_error = refused = ""
-        for line in proc.stdout:
+        for line in proc.stdout or ():
             for kind, text in parse_line(s.kind, line, state):
                 if kind == "usage":
                     self._account(s, json.loads(text))
@@ -591,6 +596,7 @@ class Manager:
                 for _step in range(int(s.options.get("max_steps", 120))):
                     if s.stop.is_set():
                         return True
+                    r = None
                     for _attempt in range(4):
                         if s.stop.is_set():
                             return True
@@ -603,6 +609,8 @@ class Manager:
                         if r.status_code == 200 or not _too_long(r):
                             break
                         budget = int(budget * 0.6)  # the server counts differently, or knows better: trim more
+                    if r is None:  # stopped between attempts
+                        return True
                     if r.status_code != 200:
                         if (why := no_credit(r.text)) or r.status_code == 402:
                             raise Fatal(why or no_credit("payment required"))
