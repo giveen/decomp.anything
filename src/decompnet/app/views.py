@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """What the page is shown: the overview, the map, the live view, a function's diff.
 
 These read the database and the project config and say what they found, so the page, an agent's project_info and the

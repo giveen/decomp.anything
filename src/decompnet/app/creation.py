@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """Importing a target: an artifact into an analysis project, a ROM into a matching one.
 
 An artifact (an executable, a disc image, a JavaScript application) becomes an analysis project whose work items come

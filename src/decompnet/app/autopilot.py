@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """Trying every open function's machine draft without an agent.
 
 Identical code is tried first, because a twin costs nothing; then each open function's draft decompiler output is

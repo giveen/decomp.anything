@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """The tools that change a ROM project's shape: split, merge, rename, retire.
 
 splat splits a ROM into functions by pattern; where it merged two functions, or missed one an agent found, the split is

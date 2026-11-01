@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """The intake report: what the import found, in the words the next agent needs.
 
 An import knows the compiler, the debug symbols, the libraries and the subsystems it saw, and an agent that starts on a

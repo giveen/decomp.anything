@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """Reading an artifact: what it is made of, and what can be asked about one piece of it.
 
 analysis_summary is the survey an analysis project starts from (entry points, imports, strings, subsystems) and
@@ -48,6 +51,8 @@ class ContentsMixin:
         target = {"path": str(Path(proj["root"]) / cfg["rom"]["program"])}
         try:
             client = rea.agent_client(target, native=True, connect=True)
+            if client is None:  # REA isn't set up for this program (see the RE console's settings)
+                raise NetworkError("REA isn't set up for this program: check the RE console's settings, then try again")
             record = client.call(tool, arguments or {}, timeout=1800, any_tool=True, envelope=True)
         except rea.ReaError as e:
             raise NetworkError(str(e)) from e
@@ -273,7 +278,7 @@ class ContentsMixin:
             meta = json.loads(row["meta"] or "{}")
             if meta.get("path") == entry and (meta.get("kind") == "artifact-entry" or meta.get("entry_type")):
                 return row, meta
-        return None, None
+        return None, {}
 
     def analysis_contents(self, slug: str) -> dict:
         """The archive's files as a tree for the project page, including which entries already have child targets."""
