@@ -9,7 +9,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from decompnet import toolchains
-from decompnet.app import collab
+from decompnet.app import collab, collablink
 from decompnet.app.engine import RomNetwork
 from decompnet.network import NetworkError
 
@@ -468,7 +468,8 @@ def test_the_join_route_refuses_the_hosts_own_invite(built, tmp_path, monkeypatc
     code = net.rooms[slug].open_invite()
     hello = {"room": slug, "sha1": "a" * 40, "title": "Demo Quest 64", "kind": "rom", "functions": 4,
              "matched": 0, "compiler": {"toolchain": "gcc-2.7.2-kmc", "flags": []}, "members": 1}
-    monkeypatch.setattr(collab, "_hello", lambda http, link: ("http://192.168.1.20:6481", code, hello))
+    # the join workflow lives in collablink.py now: that is where its hello comes from
+    monkeypatch.setattr(collablink, "_hello", lambda http, link: ("http://192.168.1.20:6481", code, hello))
     mcp, _manager, security = build(net, home, 6497, "s3cret")
     client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
                         base_url="http://127.0.0.1:6497")
