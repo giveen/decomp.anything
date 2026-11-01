@@ -50,8 +50,10 @@ def _split_page(tmp_path: Path, order: list[str]) -> Path:
     for name in parts:
         if name != "app.js":  # the joined file is written over it
             (static / name).unlink()
-    single = '<script src="/assets/app.js?v=2"></script>\n'
-    listed = "".join(f'<script src="/assets/{name}?v=2"></script>\n' for name in parts)
+    ver = re.search(r'/assets/app\.js(\?v=\d+)?', index)
+    query = ver.group(1) if ver and ver.group(1) else ""  # whatever cache-buster the page uses
+    single = f'<script src="/assets/app.js{query}"></script>\n'
+    listed = "".join(f'<script src="/assets/{name}{query}"></script>\n' for name in parts)
     (static / "index.html").write_text(index.replace(listed, single), encoding="utf-8")
 
     cut = tmp_path / "parts"
@@ -61,7 +63,7 @@ def _split_page(tmp_path: Path, order: list[str]) -> Path:
         shutil.copy(part, static / part.name)
     index = (static / "index.html").read_text(encoding="utf-8")
     (static / "index.html").write_text(index.replace(single, "".join(
-        f'<script src="/assets/{name}?v=2"></script>\n' for name in order)), encoding="utf-8")
+        f'<script src="/assets/{name}{query}"></script>\n' for name in order)), encoding="utf-8")
     return static
 
 

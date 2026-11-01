@@ -322,6 +322,14 @@ async function rcAfterOpen(res) {
   rcOverview();
 }
 
+async function rcReloadProcedures() {
+  const res = await reaCall("list_procedures", {}, { quiet: true }).catch(() => null);
+  if (res && Array.isArray(res.result)) {
+    rcSetProcs(res.result);
+    rcRenderSide();
+  }
+}
+
 function rcSetProcs(list) {
   RC.procs = list.map((p) => ({ address: rcNorm(p.address), name: String(p.value ?? p.name ?? p.address),
     ext: String(p.address).startsWith("EXTERNAL") || !!p.procedure?.external, thunk: !!p.procedure?.thunk }));
@@ -498,7 +506,17 @@ async function rcFunction(what, { back = false } = {}) {
   if (!key) return;
   if (!/^0x/i.test(key) && RC.byName.has(key)) key = RC.byName.get(key).address;
   if (/^[0-9a-f]{5,}$/i.test(key)) key = `0x${key}`;
-  if (RC.fn && !back && RC.fn.address !== rcNorm(key)) RC.trail.push(RC.fn.address);
+  key = rcNorm(key);
+  if (/^0x/.test(key) && !RC.byAddr.has(key)) {
+    // The list on this page can be older than the program REA has open (the app restarted, or REA reopened a target).
+    // Ask again before spending a call REA will only answer with "Analysis input is invalid".
+    await rcReloadProcedures();
+    if (!RC.byAddr.has(key)) {
+      rcSay(`${key} isn't a procedure in ${RC.target?.path || "the program REA has open"} — the function list here is from an earlier target; reopen the program to see its functions`, "err");
+      return;
+    }
+  }
+  if (RC.fn && !back && RC.fn.address !== key) RC.trail.push(RC.fn.address);
   rcLoading(`Analysing ${key}…`);
   const res = await reaCall("analyze_function", { procedure: key });
   const d = res.result || {};
