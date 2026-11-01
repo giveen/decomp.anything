@@ -1,12 +1,14 @@
-# pyright: reportAttributeAccessIssue=false
-# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
-# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """The code a project has: recovered, reconstructed, and how much is still missing.
 
 Recovered code is what the shipped artifact itself carries (a source map's sourcesContent, a file inside an archive);
 reconstructed code is what an agent wrote, and it is never counted as proof. write_source is the only way in, and it
 labels what it saves as unverified.
 """
+
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
+
 
 from __future__ import annotations
 

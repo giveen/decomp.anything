@@ -1,6 +1,3 @@
-# pyright: reportAttributeAccessIssue=false
-# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
-# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """The intake report: what the import found, in the words the next agent needs.
 
 An import knows the compiler, the debug symbols, the libraries and the subsystems it saw, and an agent that starts on a
@@ -8,6 +5,11 @@ function needs that as one readable brief (intake.md) instead of twenty separate
 symbols (PDB, DWARF, map, symbol_addrs), repairing a split where a symbol starts inside a merged function, and version
 comparison live here too, next to the report that quotes them.
 """
+
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
+
 
 from __future__ import annotations
 

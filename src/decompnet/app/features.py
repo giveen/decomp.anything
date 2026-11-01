@@ -1,12 +1,14 @@
-# pyright: reportAttributeAccessIssue=false
-# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
-# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """Analysis work items that are not procedures: features to trace, and tasks the user adds.
 
 A feature is a question about the target ("loads a save file", "opens a socket") with the REA trace that answers it; a
 task is a plain work item the user writes. Both are rows in the same table as functions, so claiming, notes and
 status work for them the way they work for a procedure.
 """
+
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
+
 
 from __future__ import annotations
 

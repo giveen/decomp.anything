@@ -467,7 +467,8 @@ class ForkProject:
     def report(self) -> dict:
         return objdiff.report(self.root, self.root / STATE / "report.json")
 
-    def diff(self, unit: Unit, symbol: str) -> objdiff.FunctionDiff:
+    def diff(self, unit: Unit, symbol: str | None) -> objdiff.FunctionDiff:
+        """One function's rows, or the whole unit's scores when symbol is None."""
         return objdiff.diff(unit.target, unit.base, symbol, cwd=self.root, options=self.diff_options(unit),
                             project=self.root if unit.mappings else None, unit=unit.name)
 

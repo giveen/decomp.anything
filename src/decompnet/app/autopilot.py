@@ -1,6 +1,3 @@
-# pyright: reportAttributeAccessIssue=false
-# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
-# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """Trying every open function's machine draft without an agent.
 
 Identical code is tried first, because a twin costs nothing; then each open function's draft decompiler output is
@@ -8,6 +5,11 @@ compiled and judged, smallest first, and whatever matches is saved before any ag
 compiles becomes the function's best attempt, so an agent starts from it. A draft is made again only when what it was
 made against changed, which is why "Run again" after a context or compiler change costs a fraction of the first run.
 """
+
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
+
 
 from __future__ import annotations
 

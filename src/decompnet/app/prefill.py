@@ -1,6 +1,3 @@
-# pyright: reportAttributeAccessIssue=false
-# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
-# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """The starting point an analysis work item gets before an agent reads it.
 
 A procedure no one has decompiled yet has no code for an agent to argue with, so the first agent to claim it gets a
@@ -9,6 +6,11 @@ a task. A batch is decompiled once and kept (in this process, and in the project
 decompiling the same function twice costs minutes. _analysis_brief is the same evidence as a work item's brief, and
 complete_analysis is what an agent writes back.
 """
+
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
+
 
 from __future__ import annotations
 

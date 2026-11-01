@@ -1,6 +1,3 @@
-# pyright: reportAttributeAccessIssue=false
-# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
-# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """Working on a shared project: the host's side of a room.
 
 A room's members keep working on their own copy. What they claim, attempt, match, note and change arrives here as an
@@ -8,6 +5,11 @@ event, and this is where it is applied to the host's database: claims, attempts,
 layout of what each member has split and named. Every method here that overrides the plain Network version falls back
 to it when the project is not in a room, so a project works alone and in company through the same calls.
 """
+
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
+
 
 from __future__ import annotations
 

@@ -1,6 +1,3 @@
-# pyright: reportAttributeAccessIssue=false
-# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
-# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """Importing a target: an artifact into an analysis project, a ROM into a matching one.
 
 An artifact (an executable, a disc image, a JavaScript application) becomes an analysis project whose work items come
@@ -8,6 +5,11 @@ from REA's description of it; a ROM is split into functions by splat, so a candi
 own address. The import detects the platform and compiler and records what it guessed in the project config, so a
 wrong guess is fixed in one place instead of in every step that follows it.
 """
+
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
+
 
 from __future__ import annotations
 

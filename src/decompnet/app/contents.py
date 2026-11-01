@@ -1,12 +1,14 @@
-# pyright: reportAttributeAccessIssue=false
-# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
-# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
 """Reading an artifact: what it is made of, and what can be asked about one piece of it.
 
 analysis_summary is the survey an analysis project starts from (entry points, imports, strings, subsystems) and
 analysis_contents walks an archive or the binary itself. The rest pass a question through to REA and report what it
 answered, with what it would not say. Nothing here writes to the target.
 """
+
+# pyright: reportAttributeAccessIssue=false
+# Each part is read on its own, so every self.<name> that lives in another part (or in Network) looks unknown to a
+# type checker. RomNetwork is one class at runtime, and tests/test_engine_parts.py proves every name resolves there.
+
 
 from __future__ import annotations
 
