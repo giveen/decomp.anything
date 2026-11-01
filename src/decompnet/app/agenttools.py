@@ -274,6 +274,11 @@ def signin(k: Kind) -> str:
     text = k.signin.removeprefix("Open a terminal, ").removeprefix("Open a terminal and ")
     return f"{hostenv.terminal_hint()}, then: {text[0].lower()}{text[1:]}"
 
+def forget(kind: str) -> None:
+    """Drop the cached version of an agent CLI: after installing or updating one, ask it again next time."""
+    _versions.pop(kind, None)
+
+
 def version(kind: str, path: str) -> str | None:
     """What the agent's `--version` says (cached for 5 minutes), or None."""
     cached = _versions.get(kind)

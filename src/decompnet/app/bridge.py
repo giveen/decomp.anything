@@ -55,11 +55,13 @@ def ensure_app(home: Path) -> dict:
         return info
     internal.mkdir(parents=True, exist_ok=True)
     _log("starting decomp.wtf in the background")
-    kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS} \
-        if sys.platform == "win32" else {"start_new_session": True}
+    args = [sys.executable, "-m", "decompnet.app.cli", "--no-browser"]
     with open(internal / "app.log", "ab") as out:
-        subprocess.Popen([sys.executable, "-m", "decompnet.app.cli", "--no-browser"], stdin=subprocess.DEVNULL,
-                         stdout=out, stderr=out, **kwargs)
+        if sys.platform == "win32":  # its own process group and no console window
+            subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out, stderr=out, close_fds=True,
+                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
+        else:  # outlives the agent that started it
+            subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
     for _ in range(300):
         time.sleep(0.2)
         if (info := _running(state)):

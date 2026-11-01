@@ -545,7 +545,8 @@ function renderOverview() {
   $("fnStack").innerHTML = seg("matched", "s-match") + seg("recon", "s-recon") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("unmatchable", "s-asm") + seg("library", "s-lib") + seg("open", "s-open");
   setWidths($("fnStack"));
   const togo = S.ov.functions - S.ov.matched;
-  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.recon ? ` · ${c.recon} reconstructed` : ""}${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}${c.unmatchable ? ` · ${c.unmatchable} retired` : ""}${c.library ? ` · ${c.library} library` : ""}`;
+  const reaGap = S.ov.rea?.counts?.functions || 0;
+  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.recon ? ` · ${c.recon} reconstructed` : ""}${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}${c.unmatchable ? ` · ${c.unmatchable} retired` : ""}${c.library ? ` · ${c.library} library` : ""}${reaGap ? ` · REA sees ${reaGap} procedures that aren't work items` : ""}`;
   const st = S.stats;
   if (st) {
     const ph = st.matches_per_hour, max = Math.max(1, ...ph);
@@ -563,6 +564,30 @@ function renderOverview() {
   $("recentMatches").innerHTML = recent.length ? recent.map((f) => `<li><span class="ok">✓</span>${fnLink(f.name)}<span class="grow"></span><span class="muted small">${esc(f.matched_by || "")} · ${esc(since(f.matched_at))}</span></li>`).join("")
     : `<li class="muted small">${analysis ? "No work item analyzed yet." : "No matches yet."}</li>`;
   $("recentMatches").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
+  renderRea(analysis);
+}
+
+/* What REA added to this project, when an import or Re-check asked it: the memory map it sees, the strings it found,
+   and the procedures it has that no work item covers (reported, not inserted: a matching work item needs a target the
+   split builds, and these are link stubs in practice). */
+function renderRea(analysis) {
+  const card = $("reaCard");
+  if (!card) return;
+  const segs = S.ov?.segments || [], rea = S.ov?.rea || {}, counts = rea.counts || {};
+  if (!segs.length && !Object.keys(counts).length) { card.hidden = true; return; }
+  card.hidden = false;
+  const perms = (g) => `${g.readable ? "r" : "-"}${g.writable ? "w" : "-"}${g.executable ? "x" : "-"}`;
+  const rows = segs.slice(0, 40).map((g) => `<li><span class="mono small">${hex8(g.start)}–${hex8(g.end)}</span>
+      <span class="grow"></span><span class="t ${g.executable ? "" : "muted"}">${esc(g.name)}</span>
+      <span class="muted small mono">${perms(g)} · ${bytes(g.end - g.start)}</span></li>`).join("");
+  const missing = (rea.missing || []);
+  $("reaSub").textContent = rea.base ? `REA opened it at 0x${rea.base.toString(16).toUpperCase()}; addresses below are the project's` : "";
+  $("reaBody").innerHTML = `
+    <p class="muted small">${(counts.totals?.strings ?? counts.strings ?? 0).toLocaleString()} strings${counts.strings ? ` (${counts.strings.toLocaleString()} new)` : ""} ·
+      ${segs.length} memory regions${counts.procedures ? ` · ${counts.procedures.toLocaleString()} procedures REA sees: ${counts.covered || 0} already work items, ${counts.stubs || 0} link stubs${counts.functions ? `, ${counts.functions} the split doesn't cover` : ""}` : ""}</p>
+    ${missing.length ? `<details class="mini-list"><summary class="muted small">${missing.length} procedures REA has that no work item covers (reported only: a matching work item needs a target the split builds)</summary>
+      <ul>${missing.map((m) => `<li class="mono small">${esc(m)}</li>`).join("")}</ul></details>` : ""}
+    ${rows ? `<details class="mini-list"><summary class="muted small">Memory map (${segs.length} regions)</summary><ul>${rows}</ul></details>` : ""}`;
 }
 
 function renderAgentsKpi(ov) {

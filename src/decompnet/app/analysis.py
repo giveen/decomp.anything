@@ -745,8 +745,8 @@ _STUB_NAME = re.compile(r"^(?:_init|_fini|_start|deregister_tm_clones|register_t
 _STUB_SEGMENT = ("plt", "init", "fini", "got", "dynamic")
 
 
-def inventory(segments: list[dict], procedures: list[dict], strings: list[dict], taken_ranges: list[tuple[int, int]],
-              taken_strings: set[int]) -> dict:
+def inventory(segments: list[dict], procedures: list[dict], strings: list[tuple[str, int]],
+              taken_ranges: list[tuple[int, int]], taken_strings: set[int]) -> dict:
     """What REA found, in the project's own address space: memory regions, functions the split missed, new strings.
 
     REA opens a file at its own image base (a Linux ELF comes back from 0x100000 up), so everything is rebased by the
@@ -761,7 +761,8 @@ def inventory(segments: list[dict], procedures: list[dict], strings: list[dict],
         return any(part in name for part in names)
 
     def stub(address: int, name: str) -> bool:
-        return bool(_STUB_NAME.match(name) or in_segment(address, _STUB_SEGMENT))
+        # "<EXTERNAL>::printf" is REA's name for an import slot: a jump through the PLT, not code anyone wrote
+        return bool(name.startswith("<EXTERNAL>") or _STUB_NAME.match(name) or in_segment(address, _STUB_SEGMENT))
 
     ranges = [(lo, lo + max(size, 1)) for lo, size in taken_ranges]
 
@@ -784,8 +785,8 @@ def inventory(segments: list[dict], procedures: list[dict], strings: list[dict],
 
     new_strings = []
     for text, address in strings:
-        rel = address - base
-        if rel < 0 or address in taken_strings:
+        rel = address - base  # the project's addresses are the rebased ones, so compare rebased to rebased
+        if rel < 0 or rel in taken_strings:
             continue
         new_strings.append({"text": text, "address": rel})
 

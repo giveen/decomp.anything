@@ -119,10 +119,22 @@ class Session:
         self.feed.append({"seq": self.seq, "t": time.time(), "type": kind, "text": text[:4000]})
 
     def snapshot(self, since: int = 0) -> dict:
-        return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name,
-                "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
-                "model": self.options.get("model") or "", "usd": round(self.usd, 4), "tokens": self.tokens,
-                "feed": [f for f in self.feed if f["seq"] > since]}
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "label": self.label,
+            "slug": self.slug,
+            "agent": self.agent_name,
+            "state": self.state,
+            "runs": self.runs,
+            "error": self.error,
+            "started_at": self.started_at,
+            "model": self.options.get("model") or "",
+            "usd": round(self.usd, 4),
+            "tokens": self.tokens,
+            "feed": [f for f in self.feed if f["seq"] > since],
+        }
+
 
 class Manager:
     def __init__(self, net: RomNetwork, home: Path, mcp_url: str):
@@ -154,8 +166,14 @@ class Manager:
                     sid = f"{kind}-{n}"
                 if kind == "api":  # numbered per endpoint: "gpu-box #2" says which machine it runs on
                     name = options.get("provider_name") or "API"
-                    k = 1 + max((int(s.label.rsplit(" #", 1)[1]) for s in self.sessions.values() if s.kind == "api"
-                                 and s.label.rsplit(" #", 1)[0] == name and s.label.rsplit(" #", 1)[-1].isdigit()), default=0)
+                    k = 1 + max(
+                        (
+                            int(s.label.rsplit(" #", 1)[1])
+                            for s in self.sessions.values()
+                            if s.kind == "api" and s.label.rsplit(" #", 1)[0] == name and s.label.rsplit(" #", 1)[-1].isdigit()
+                        ),
+                        default=0,
+                    )
                     label = f"{name} #{k}"
                 else:
                     label = f"{KINDS[kind].name} #{n}"
@@ -202,8 +220,11 @@ class Manager:
 
     def running(self) -> list[dict]:
         """The helpers that should keep working: resumed by the server after the app restarts."""
-        return [{"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k != "api_key"}}
-                for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()]
+        return [
+            {"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k != "api_key"}}
+            for s in self.sessions.values()
+            if s.state in ("starting", "working", "waiting") and not s.stop.is_set()
+        ]
 
     def stop(self, sid: str | None = None) -> None:
         """Stop one helper (for good) or all of them (the app is quitting: they resume next time)."""
@@ -243,7 +264,9 @@ class Manager:
         """Compiles + claims + notes by this agent: a session that adds none of these made no progress."""
         row = self.net.store.one(
             "SELECT (SELECT COUNT(*) FROM attempts WHERE agent_id=?) + (SELECT COUNT(*) FROM events WHERE agent_id=?) AS n",
-            agent_id, agent_id)
+            agent_id,
+            agent_id,
+        )
         return int(row["n"]) if row else 0
 
     def _left(self, slug: str) -> int:
@@ -279,8 +302,9 @@ class Manager:
             prep.wait(900)
         twins = getattr(getattr(self.net, "twins", None), "jobs", {}).get(s.slug)
         if twins is not None and not twins.ordered.is_set():
-            s.push("info", "first setting hand-written assembly aside and putting the functions in order "
-                           "(seconds; a minute the first time)")
+            s.push(
+                "info", "first setting hand-written assembly aside and putting the functions in order (seconds; a minute the first time)"
+            )
             twins.ordered.wait(120)
         while not s.stop.is_set():
             if self._left(s.slug) == 0:
@@ -323,8 +347,11 @@ class Manager:
             if s.throttled and throttles < 10:  # the provider's limit, not the agent's failure: wait it out
                 s.throttled, throttles = False, throttles + 1
                 s.state = "waiting"
-                s.push("info", "the model's provider says too many requests at once: trying again in a minute "
-                               "(fewer agents at once on this account would wait less)")
+                s.push(
+                    "info",
+                    "the model's provider says too many requests at once: trying again in a minute "
+                    "(fewer agents at once on this account would wait less)",
+                )
                 s.stop.wait(60)
                 continue
             throttles = 0 if ok else throttles
@@ -360,16 +387,17 @@ class Manager:
 
         topics = assistance.topics(ov)
         text += "\n" + tools._assistance_hint()
-        text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(
-            tools._guide(t) for t in topics)
-        if (learned := self.net.learnings(s.slug)):
-            text += ("\nWhat agents learned on this project so far (compiler quirks, conventions; add yours with "
-                     f"add_note and no function):\n{learned}\n")
-        if (facts := self.net.intake_line(s.slug)):
+        text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(tools._guide(t) for t in topics)
+        if learned := self.net.learnings(s.slug):
+            text += (
+                "\nWhat agents learned on this project so far (compiler quirks, conventions; add yours with "
+                f"add_note and no function):\n{learned}\n"
+            )
+        if facts := self.net.intake_line(s.slug):
             text += f"\n{facts}\n"
-        if (wish := self.net.instructions(s.slug)):
+        if wish := self.net.instructions(s.slug):
             text += f"\nThe user's instructions for this project (they come first):\n{wish}\n"
-        if (roots := self.net.references(s.slug)):
+        if roots := self.net.references(s.slug):
             from . import references
 
             text += f"\n{references.prompt_line(roots)}\n"
@@ -378,32 +406,50 @@ class Manager:
     def _prompt(self, s: Session) -> str:
         ov = self.net.overview(s.slug)
         if ov.get("kind") == "analysis":
-            return tools.ANALYSIS_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
-                                                guides='guide("analysis")')
+            return tools.ANALYSIS_PROMPT.format(
+                title=ov["title"], count=s.options.get("per_session", PER_SESSION), guides='guide("analysis")'
+            )
         if ov.get("kind") == "fork":
             guides = ["fork", "objdiff", *tools.PLATFORM_GUIDES.get(ov.get("platform") or "", [])]
-            return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
-                                            count=s.options.get("per_session", PER_SESSION),
-                                            guides=", ".join(f'guide("{g}")' for g in guides))
+            return tools.FORK_PROMPT.format(
+                title=ov["title"],
+                platform=ov.get("platform_name") or "its platform",
+                count=s.options.get("per_session", PER_SESSION),
+                guides=", ".join(f'guide("{g}")' for g in guides),
+            )
         platform = ov.get("platform") or ""
         language = ov.get("source_language") or "C"
         if platform in ("windows", "linux"):
             target = "program"
             guide = "x86" + (" and cpp" if language == "C++" else "")
-            note = ("\nThe target's function names are C++ mangled names: write the class and signature that mangle to "
-                    "them (or wrap a sub_<address> in extern \"C\"); the cpp guide has the ABI details.") \
-                if language == "C++" else ""
+            note = (
+                (
+                    "\nThe target's function names are C++ mangled names: write the class and signature that mangle to "
+                    'them (or wrap a sub_<address> in extern "C"); the cpp guide has the ABI details.'
+                )
+                if language == "C++"
+                else ""
+            )
         else:
             target = "game"
             guide = {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(platform) or (
-                "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
+                "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc"
+            )
             note = ""
         detected = ov.get("detected") or {}
         if detected and not detected.get("matchable", True):
-            note += (f"\nThis target was built with {detected['label']}: C/C++ cannot reproduce that compiler's output, "
-                     "so matches will stay elusive. Use the tools to inspect and explain the program; don't claim a match.")
-        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
-                                        compiler_guide=guide, language=language, target=target, language_note=note)
+            note += (
+                f"\nThis target was built with {detected['label']}: C/C++ cannot reproduce that compiler's output, "
+                "so matches will stay elusive. Use the tools to inspect and explain the program; don't claim a match."
+            )
+        return tools.WORK_PROMPT.format(
+            title=ov["title"],
+            count=s.options.get("per_session", PER_SESSION),
+            compiler_guide=guide,
+            language=language,
+            target=target,
+            language_note=note,
+        )
 
     def _command(self, s: Session, token: str, workdir: Path) -> tuple[list[str], dict, str]:
         """The agent's command line, environment and what goes in on stdin (the prompt)."""
@@ -422,12 +468,26 @@ class Manager:
         model = s.options.get("model") or ""
         if s.kind == "claude":
             cfg = workdir / "mcp.json"
-            cfg.write_text(json.dumps({"mcpServers": {"decomp": {"type": "http", "url": self.mcp_url,
-                                                                  "headers": {"Authorization": f"Bearer {token}"}}}}),
-                           encoding="utf-8")
-            cmd = [exe, "-p", "--output-format", "stream-json", "--verbose", "--mcp-config", str(cfg),
-                   "--strict-mcp-config", "--allowedTools", "mcp__decomp", "--disallowedTools",
-                   "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"]
+            cfg.write_text(
+                json.dumps(
+                    {"mcpServers": {"decomp": {"type": "http", "url": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"}}}}
+                ),
+                encoding="utf-8",
+            )
+            cmd = [
+                exe,
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--mcp-config",
+                str(cfg),
+                "--strict-mcp-config",
+                "--allowedTools",
+                "mcp__decomp",
+                "--disallowedTools",
+                "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+            ]
             if model:
                 cmd += ["--model", model]
         elif s.kind == "codex":
@@ -436,20 +496,26 @@ class Manager:
             # `decomp connect codex` gave that a stdio `decomp` entry (a url on top of it: "url is not supported for
             # stdio"). The user's MCP servers are switched off for the run, as --strict-mcp-config does for Claude.
             cmd = [exe, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-C", str(workdir), "-s", "read-only"]
-            for name in (_codex_config().get("mcp_servers") or {}):
+            for name in _codex_config().get("mcp_servers") or {}:
                 if re.fullmatch(r"[A-Za-z0-9_-]+", name):
                     cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
-            cmd += ["-c", f'mcp_servers.decomp_agent={{url="{self.mcp_url}", bearer_token_env_var="DECOMP_TOKEN", '
-                          'default_tools_approval_mode="approve", tool_timeout_sec=180}',
-                    "-c", 'approval_policy="never"']
+            cmd += [
+                "-c",
+                f'mcp_servers.decomp_agent={{url="{self.mcp_url}", bearer_token_env_var="DECOMP_TOKEN", '
+                'default_tools_approval_mode="approve", tool_timeout_sec=180}',
+                "-c",
+                'approval_policy="never"',
+            ]
             if model:
                 cmd += ["-m", model]
             cmd.append("-")  # the prompt comes from stdin
         elif s.kind == "antigravity":
             # the workspace's own MCP config; tool permission comes from the user's rule for decomp's tools (AGY_ALLOW)
             (workdir / ".agents").mkdir(exist_ok=True)
-            (workdir / ".agents" / "mcp_config.json").write_text(json.dumps({"mcpServers": {"decomp": {
-                "serverUrl": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"}}}}), encoding="utf-8")
+            (workdir / ".agents" / "mcp_config.json").write_text(
+                json.dumps({"mcpServers": {"decomp": {"serverUrl": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"}}}}),
+                encoding="utf-8",
+            )
             # a session works through several functions: more than agy's default 5 minutes
             cmd = [exe, "--output-format", "stream-json", "--input-format", "stream-json", "--print-timeout", "2h"]
             if model:
@@ -466,15 +532,17 @@ class Manager:
             if v2:
                 # OpenCode 2 reaches MCP tools through one `execute` tool by default (Code Mode), where models wander
                 # off to the user's other servers: decomp's tools are offered as themselves and `execute` is denied.
-                cfg = {"mcp": {"servers": {"decomp": {**server, "oauth": False, "codemode": False}}},
-                       "permissions": [{"action": "execute", "resource": "*", "effect": "deny"},
-                                       {"action": "decomp_*", "resource": "*", "effect": "allow"},
-                                       *({"action": a, "resource": "*", "effect": never} for a in ("edit", "shell", "webfetch"))]}
+                cfg = {
+                    "mcp": {"servers": {"decomp": {**server, "oauth": False, "codemode": False}}},
+                    "permissions": [
+                        {"action": "execute", "resource": "*", "effect": "deny"},
+                        {"action": "decomp_*", "resource": "*", "effect": "allow"},
+                        *({"action": a, "resource": "*", "effect": never} for a in ("edit", "shell", "webfetch")),
+                    ],
+                }
             else:
-                cfg = {"mcp": {"decomp": {**server, "enabled": True}},
-                       "permission": {"edit": never, "bash": never, "webfetch": never}}
-            (workdir / "opencode.json").write_text(json.dumps({"$schema": "https://opencode.ai/config.json", **cfg}),
-                                                   encoding="utf-8")
+                cfg = {"mcp": {"decomp": {**server, "enabled": True}}, "permission": {"edit": never, "bash": never, "webfetch": never}}
+            (workdir / "opencode.json").write_text(json.dumps({"$schema": "https://opencode.ai/config.json", **cfg}), encoding="utf-8")
             # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.
             # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag. No --log-level: OpenCode 2
             # stops at "ERROR", earlier ones at "error"; clean_stderr keeps only the errors anyway.) OpenCode 2 runs
@@ -491,20 +559,35 @@ class Manager:
             from . import connect  # (connect imports this module)
 
             if not connect.status("antigravity"):  # decomp.anything's tools only reach it through the user's settings
-                raise Fatal("Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.anything "
-                            "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again")
+                raise Fatal(
+                    "Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.anything "
+                    "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again"
+                )
             allowed = connect.antigravity_allows()
             if not connect.allow_antigravity():
-                raise Fatal("Antigravity's settings couldn't be updated to allow decomp.anything's tools: add "
-                            f"\"{AGY_ALLOW}\" to \"permissions\": {{\"allow\": [...]}} in {agy_settings()}")
+                raise Fatal(
+                    "Antigravity's settings couldn't be updated to allow decomp.anything's tools: add "
+                    f'"{AGY_ALLOW}" to "permissions": {{"allow": [...]}} in {agy_settings()}'
+                )
             if not allowed:
                 s.push("info", "allowed decomp.anything's tools in Antigravity's settings")
         cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
         flags = CREATE_NEW_PROCESS_GROUP if WIN else 0
-        proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                creationflags=flags, start_new_session=not WIN)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=workdir,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=flags,
+            start_new_session=not WIN,
+        )
         s.proc = proc
         errors: collections.deque = collections.deque(maxlen=20)
 
@@ -520,6 +603,7 @@ class Manager:
             for line in proc.stderr or ():
                 if (text := clean_stderr(s.kind, line)) and (not errors or errors[-1] != text):
                     errors.append(text)
+
         threading.Thread(target=feed_prompt, daemon=True).start()
         threading.Thread(target=drain_err, daemon=True).start()
         saw_tool = False
@@ -583,8 +667,7 @@ class Manager:
         except NetworkError:
             analysis = False
         schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)), analysis=analysis)
-        messages = [{"role": "system", "content": tools.INSTRUCTIONS},
-                    {"role": "user", "content": self.prompt(s)}]
+        messages = [{"role": "system", "content": tools.INSTRUCTIONS}, {"role": "user", "content": self.prompt(s)}]
         used_tool = False
         client = httpx.Client(timeout=httpx.Timeout(300, connect=15))
         s.http = client  # stop() closes this, so a long local generation doesn't keep the session alive
@@ -601,9 +684,14 @@ class Manager:
                         if s.stop.is_set():
                             return True
                         fit(messages, budget, trim_latest_tools=True)
-                        r = _request_or_stop(s.stop, client, "post", f"{base}/chat/completions", headers=headers,
-                                             json={"model": model, "messages": messages, "tools": schema,
-                                                   "tool_choice": "auto"})
+                        r = _request_or_stop(
+                            s.stop,
+                            client,
+                            "post",
+                            f"{base}/chat/completions",
+                            headers=headers,
+                            json={"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"},
+                        )
                         if r is None:
                             return True
                         if r.status_code == 200 or not _too_long(r):
@@ -617,9 +705,11 @@ class Manager:
                         s.throttled = r.status_code == 429 or bool(_THROTTLED.search(r.text))
                         s.error = f"API error {r.status_code}: {r.text[:300]}"
                         if _too_long(r):
-                            s.error = ("the model's context is too small for this work even after trimming: give it at "
-                                       "least 16K tokens (llama.cpp: -c 16384; Ollama: OLLAMA_CONTEXT_LENGTH=16384; LM "
-                                       "Studio: Context Length) and set it in Agents & models")
+                            s.error = (
+                                "the model's context is too small for this work even after trimming: give it at "
+                                "least 16K tokens (llama.cpp: -c 16384; Ollama: OLLAMA_CONTEXT_LENGTH=16384; LM "
+                                "Studio: Context Length) and set it in Agents & models"
+                            )
                         s.push("error", s.error)
                         return False
                     reply = r.json()
@@ -659,14 +749,18 @@ class Manager:
         finally:
             s.http = None
 
+
 def _tokens(obj) -> int:
     """A cautious token estimate: code and assembly run about 3 characters a token."""
     return len(obj if isinstance(obj, str) else json.dumps(obj)) // 3 + 4
 
+
 def _too_long(r) -> bool:
     """The server refused the request because it doesn't fit the model's context."""
-    return r.status_code in (400, 413, 422, 500) and bool(re.search(
-        r"context|too long|exceed|maximum.*tokens|n_ctx|prompt is too|reduce the length", r.text[:2000], re.IGNORECASE))
+    return r.status_code in (400, 413, 422, 500) and bool(
+        re.search(r"context|too long|exceed|maximum.*tokens|n_ctx|prompt is too|reduce the length", r.text[:2000], re.IGNORECASE)
+    )
+
 
 def fit(messages: list[dict], budget: int, *, trim_latest_tools: bool = False) -> int:
     """Shrink the conversation to `budget` tokens: older tool output goes first (a function's assembly and diffs
@@ -684,8 +778,11 @@ def fit(messages: list[dict], budget: int, *, trim_latest_tools: bool = False) -
                 before = _tokens(m)
                 lines = text.splitlines()
                 prefix = lines[0] if lines else text[:240]
-                if (len(lines) > 1 and len(prefix) + len(lines[1]) + 1 <= 240
-                        and not lines[1].strip().startswith(("|", "TARGET", "markers:"))):
+                if (
+                    len(lines) > 1
+                    and len(prefix) + len(lines[1]) + 1 <= 240
+                    and not lines[1].strip().startswith(("|", "TARGET", "markers:"))
+                ):
                     prefix = prefix + "\n" + lines[1]
                 m["content"] = prefix[:240] + "\n[... trimmed to save context: call the tool again if you need this]"
                 total -= before - _tokens(m)
@@ -696,12 +793,15 @@ def fit(messages: list[dict], budget: int, *, trim_latest_tools: bool = False) -
                 continue
             before = _tokens(message)
             size = max(300, len(text) - (total - budget) * 3 - 300)
-            message["content"] = (text[:size // 2] + "\n[Incomplete tool preview: trimmed to fit context. "
-                                  "Use a focused view or retained evidence; do not infer full coverage.]\n" + text[-size // 2:])
+            message["content"] = (
+                text[: size // 2] + "\n[Incomplete tool preview: trimmed to fit context. "
+                "Use a focused view or retained evidence; do not infer full coverage.]\n" + text[-size // 2 :]
+            )
             total += _tokens(message) - before
             if total <= budget:
                 break
     return total
+
 
 def _request_or_stop(stop: threading.Event, client, method: str, url: str, **kwargs):
     """Run one HTTP request in a worker thread and return early when the session is stopped.
@@ -734,6 +834,7 @@ def _request_or_stop(stop: threading.Event, client, method: str, url: str, **kwa
         raise box["error"]
     return box.get("response")
 
+
 def context_window(client, base: str, options: dict, stop: threading.Event | None = None) -> int:
     """The model's context in tokens: what the user set, else what a llama.cpp server reports (/props), else a
     guess (local servers often run small contexts)."""
@@ -744,8 +845,11 @@ def context_window(client, base: str, options: dict, stop: threading.Event | Non
         pass
     if is_local(base):
         try:
-            r = _request_or_stop(stop, client, "get", re.sub(r"/v1$", "", base) + "/props", timeout=5) if stop else client.get(
-                re.sub(r"/v1$", "", base) + "/props", timeout=5)
+            r = (
+                _request_or_stop(stop, client, "get", re.sub(r"/v1$", "", base) + "/props", timeout=5)
+                if stop
+                else client.get(re.sub(r"/v1$", "", base) + "/props", timeout=5)
+            )
             n = (r.json().get("default_generation_settings") or {}).get("n_ctx") if r is not None and r.status_code == 200 else None
             if isinstance(n, int) and n >= 2048:
                 return n
@@ -754,9 +858,11 @@ def context_window(client, base: str, options: dict, stop: threading.Event | Non
         return 16384
     return 128000
 
+
 def api_tool_schemas(fork: bool = False, analysis: bool = False) -> list[dict]:
     """The same project-scoped schemas the MCP server advertises, without a second handwritten registry."""
     return tools.tool_schemas(fork, analysis)
+
 
 def _terminate(proc: subprocess.Popen) -> None:
     try:
@@ -770,4 +876,3 @@ def _terminate(proc: subprocess.Popen) -> None:
             os.killpg(proc.pid, 15)
     except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
         pass
-

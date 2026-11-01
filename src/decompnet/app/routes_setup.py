@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse, Response
 from .. import hostenv, toolchains
 from ..network import NetworkError
 from . import agents, connect
+from .agenttools import forget
 from .serverctx import (
     ServerContext,
     _session_options,
@@ -71,14 +72,14 @@ def register(ctx: ServerContext) -> None:
             proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                                     errors="replace", env=env)
             try:
-                for line in proc.stdout:
+                for line in proc.stdout or ():
                     log(line.rstrip())
                 if proc.wait() != 0:
                     raise RuntimeError(f"the installer exited with code {proc.returncode}")
             finally:
                 if proc.stdout is not None:
                     proc.stdout.close()  # the pipe's file object, not left for the garbage collector
-            agents._versions.pop(kind.id, None)
+            forget(kind.id)  # ask the new install for its version next time
             return {"kind": kind.id}
         return JSONResponse({"job": jobs.start("agent-install", work)})
 

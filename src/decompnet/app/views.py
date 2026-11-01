@@ -298,6 +298,9 @@ class ViewsMixin:
             "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba", *X86_PLATFORMS),
             "debug": cfg.get("debug"),
             "binary": cfg.get("rom", {}).get("program") if cfg.get("platform") in X86_PLATFORMS else None,
+            # what REA added to this project (an import or Re-check): the memory map, and what it reported
+            "segments": cfg.get("segments") or [],
+            "rea": cfg.get("rea") or {},
             "room": self._room_info(proj["slug"]),
         }
 

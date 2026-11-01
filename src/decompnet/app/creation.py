@@ -514,27 +514,32 @@ class CreationMixin:
         if client is None:
             return {}
 
-        def ask(tool: str):
+        def ask(tool: str) -> list:
             try:
-                return client.call(tool, {}, timeout=900, any_tool=True)
+                found = client.call(tool, {}, timeout=900, any_tool=True)
             except rea.ReaError:
                 return []
+            return found if isinstance(found, list) else []
 
-        segments = ask("list_segments")
+        segments: list[dict] = [s for s in ask("list_segments") if isinstance(s, dict)]
         procedures = analysis.procedures(ask("list_procedures"), segments)
-        rows = [(str(s.get("value") or s.get("text") or ""), analysis.number(s.get("address")))
-                for s in ask("list_strings") if isinstance(s, dict)]
-        strings = [(text, address) for text, address in rows if address is not None and text]
+        strings: list[tuple[str, int]] = [
+            (str(row.get("value") or row.get("text") or ""), address)
+            for row in ask("list_strings") if isinstance(row, dict)
+            for address in [analysis.number(row.get("address"))]
+            if address is not None and (row.get("value") or row.get("text"))]
         taken = [(int(r["vram"]), int(r["size"] or 0)) for r in self.store.all(
             "SELECT vram, size FROM functions WHERE project_id=? AND vram IS NOT NULL", proj["id"])]
         known = {int(r["address"]) for r in self.store.all(
             "SELECT address FROM symbols WHERE project_id=? AND kind='string'", proj["id"])}
         plan = analysis.inventory(segments, procedures, strings, taken, known)
-        counts = {**plan["counts"], "regions": len(plan["segments"]),
+        totals = {"procedures": len(procedures), "strings": len(strings), "regions": len(plan["segments"])}
+        counts = {**plan["counts"], "regions": len(plan["segments"]), "totals": totals,
                   # something new to keep: new strings, or a memory map that changed. REA's extra procedures are only
                   # reported, so they are not a change on their own (a second recheck must say nothing happened).
                   "added": bool(plan["strings"]) or plan["segments"] != (cfg.get("segments") or [])}
         if not counts["added"]:
+            self._store_rea(proj, cfg, plan, counts, totals)
             return counts
         now = time.time()
         with self.store.tx() as db:
@@ -553,6 +558,18 @@ class CreationMixin:
         log(f"REA: +{counts['strings']} strings, {counts['regions']} memory regions, "
             f"{counts['functions']} procedures the split doesn't cover")
         return counts
+
+
+    def _store_rea(self, proj, cfg: dict, plan: dict, counts: dict, totals: dict) -> None:
+        """Keep the report of what REA sees even when this run added nothing, so the page can always show it."""
+        if cfg.get("rea", {}).get("counts") == counts and cfg.get("segments") == plan["segments"]:
+            return
+        with self.store.tx() as db:
+            fresh = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
+            fresh["segments"] = plan["segments"]
+            fresh["rea"] = {"base": plan["base"], "counts": counts, "at": time.time(),
+                            "missing": [f"{f['name']} @0x{f['vram']:X}" for f in plan["functions"][:20]]}
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(fresh), proj["id"]))
 
     def _import_gba(self, picked, slug: str, workdir: Path, toolchain: str | None, flags: list[str] | None, log) -> str:
         """Game Boy Advance: functions found by luvdis (plus a pass for code nothing calls), judged by the ARM matcher."""

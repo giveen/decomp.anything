@@ -28,9 +28,9 @@ class Link:
     def __init__(self, net, slug: str, url: str, room: str, token: str, member: str, client: httpx.Client | None = None):
         self.net, self.slug, self.url, self.room, self.token, self.member = net, slug, url.rstrip("/"), room, token, member
         self.client = client or httpx.Client(timeout=httpx.Timeout(60, connect=15))
-        cfg = json.loads(net.project_row(slug)["config"])
-        info = cfg.get("link") if isinstance(cfg.get("link"), dict) else {}
-        saved = info.get("cursor") if isinstance(info.get("cursor"), dict) else {}
+        cfg = json.loads(net.project_row(slug)["config"]) or {}
+        info: dict = cfg.get("link") if isinstance(cfg.get("link"), dict) else {}
+        saved: dict = info.get("cursor") if isinstance(info.get("cursor"), dict) else {}
         # where this member got to last time: restarting the app then syncs only what it missed, not the whole room
         self.cursor = {"e": int(saved.get("e") or 0), "a": int(saved.get("a") or 0),
                        "v": int(saved.get("v") or 0), "l": float(saved.get("l") or 0.0)}
@@ -362,7 +362,7 @@ def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: 
     try:
         if hello.get("sha1") and forkroom.game_identity(game) != hello["sha1"]:
             raise NetworkError(f"this isn't the same game as the host's: the room is for {hello['title']} "
-                               f"({PLATFORMS.get(hello.get('platform'), hello.get('platform') or '')}, "
+                               f"({PLATFORMS.get(str(hello.get('platform') or ''), hello.get('platform') or '')}, "
                                f"{hello.get('version') or 'the same version'}), and every member needs their own copy of "
                                "exactly that version")
         log(f"joining {hello['title']} ({hello['functions']} functions, {hello['matched']} matched)")

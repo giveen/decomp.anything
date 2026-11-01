@@ -41,5 +41,18 @@ def test_what_a_work_item_already_covers_is_not_added_again():
 
 
 def test_only_strings_the_project_does_not_have_come_back():
-    plan = analysis.inventory(SEGMENTS, [], [("hello", 0x100120), ("world", 0x100180)], [], {0x100120})
+    """The project stores rebased addresses, so a string it already has is compared after rebasing (0x120, not 0x100120)."""
+    plan = analysis.inventory(SEGMENTS, [], [("hello", 0x100120), ("world", 0x100180)], [], {0x120})
     assert plan["strings"] == [{"text": "world", "address": 0x180}]
+    assert analysis.inventory(SEGMENTS, [], [("hello", 0x100120)], [], {0x100120})["strings"] == [
+        {"text": "hello", "address": 0x120}]  # an unrebased address matches nothing: that is the bug this pins down
+
+
+def test_import_slots_are_stubs_whatever_segment_rea_gave_them():
+    """Ghidra names some segments synthetically (segment_3.2), so a PLT slot's name is the reliable sign."""
+    plan = analysis.inventory(SEGMENTS, [
+        {"name": "main", "address": 0x100100, "size": 0x40},
+        {"name": "<EXTERNAL>::__printf_chk", "address": 0x100140, "size": 8},
+    ], [], [], set())
+    assert [f["name"] for f in plan["functions"]] == ["main"]
+    assert plan["counts"]["stubs"] == 1

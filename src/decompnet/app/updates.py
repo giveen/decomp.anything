@@ -161,7 +161,7 @@ def install(found: dict, log=print) -> dict:
     cur = found["current"]
     log(f"installing decomp.wtf {found['latest'].get('version') or ''}".rstrip()
         + (f" ({cur.get('branch')} @ {found['latest']['commit'][:7]})" if cur["channel"] == "branch" else ""))
-    cmd = [uv(), "tool", "install", "--force", "--python", "3.12", found["spec"]]
+    cmd = [uv() or "uv", "tool", "install", "--force", "--python", "3.12", found["spec"]]
     _stream(cmd, log, "installing the update failed")
     bindir = subprocess.run([uv(), "tool", "dir", "--bin"], capture_output=True, text=True).stdout.strip()
     decomp = Path(bindir) / "decomp" if bindir else None
@@ -180,7 +180,7 @@ def _stream(cmd: list[str], log, failure: str) -> None:
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                             text=True, encoding="utf-8", errors="replace", env=dict(os.environ, NO_COLOR="1"))
     tail: list[str] = []
-    for line in proc.stdout:
+    for line in proc.stdout or ():
         line = line.rstrip()
         if line:
             tail = ([*tail, line])[-20:]

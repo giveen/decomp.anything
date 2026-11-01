@@ -99,7 +99,7 @@ def install(found: dict, log=print) -> dict:
     pointer = dest / f"{stage.name}.json"
     try:
         log(f"installing rea-agents@{version} in an isolated tool folder")
-        updates._stream([shutil.which("npm"), "install", "--prefix", str(stage), "--no-save", "--no-package-lock",
+        updates._stream([shutil.which("npm") or "npm", "install", "--prefix", str(stage), "--no-save", "--no-package-lock",
                          "--no-audit", "--no-fund", "--engine-strict", "--registry", REGISTRY,
                          f"rea-agents@{version}"], log, "installing REA failed")
         if package(stage)["version"] != version:

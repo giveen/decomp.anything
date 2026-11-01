@@ -131,7 +131,7 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
             out.append(("info", "session finished" + (f" ({', '.join(b for b in bits if b)})" if any(bits) else "")))
             if isinstance(cost, (int, float)):
                 out.append(("usage", json.dumps({"usd": cost})))
-            stats = obj.get("stats") if isinstance(obj.get("stats"), dict) else {}
+            stats: dict = obj.get("stats") if isinstance(obj.get("stats"), dict) else {}
             if stats.get("total_tokens"):
                 out.append(("usage", json.dumps({"tokens": stats["total_tokens"]})))
     elif t in ("item.started", "item.completed") and isinstance(obj.get("item"), dict):  # Codex
@@ -149,7 +149,7 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
             out.append(("error", str(item.get("message", ""))[:400]))
     elif t == "turn.completed":
         out.append(("info", "turn finished"))
-        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
+        usage: dict = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
         tokens = sum(v for k, v in usage.items() if k in ("input_tokens", "output_tokens") and isinstance(v, int))
         if tokens:
             out.append(("usage", json.dumps({"tokens": tokens})))
@@ -158,7 +158,7 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
         if not text.startswith("Unexpected server error"):  # opencode's placeholder: its log line says what failed
             out.append(("error", text[:400]))
     elif t == "tool_use":  # opencode
-        part = obj.get("part") if isinstance(obj.get("part"), dict) else obj
+        part: dict = obj.get("part") if isinstance(obj.get("part"), dict) else obj
         name = part.get("tool_name") or part.get("tool") or part.get("name") or ""
         args = part.get("parameters") or (part.get("state") or {}).get("input") or part.get("input")
         out.append(("tool", f"{_tool_name(name)}({_args_brief(args)})"))

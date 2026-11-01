@@ -35,7 +35,7 @@ class Tunnel:
         found = threading.Event()
 
         def read():
-            for line in self.proc.stderr:
+            for line in self.proc.stderr or ():
                 m = TUNNEL_URL.search(line)
                 if m and not self.url:
                     self.url = m.group(0)
@@ -43,6 +43,8 @@ class Tunnel:
         threading.Thread(target=read, daemon=True).start()
         if not found.wait(timeout):
             self.stop()
+            raise RuntimeError("couldn't open a tunnel (is the internet reachable?)")
+        if not self.url:  # found.wait timed out and didn't raise: no URL to hand back
             raise RuntimeError("couldn't open a tunnel (is the internet reachable?)")
         log(f"tunnel open: {self.url}")
         return self.url

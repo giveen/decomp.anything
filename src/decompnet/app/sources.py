@@ -273,7 +273,7 @@ def application_modules(value) -> list[dict]:
     if not isinstance(value, dict):
         return []
     value = value.get("result") if isinstance(value.get("result"), dict) else value
-    graph = value.get("graph") if isinstance(value.get("graph"), dict) else {}
+    graph = (value.get("graph") if isinstance(value.get("graph"), dict) else {}) or {}
     found: dict[str, dict] = {}
     for node in graph.get("nodes") or []:
         if not isinstance(node, dict) or node.get("kind") not in MODULE_KINDS:
