@@ -23,6 +23,9 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import cast
+
+from mcp_types import CallToolResult, ListToolsResult
 
 from .. import __version__
 from .cli import _alive, home_dir, replace_older
@@ -160,11 +163,13 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
         async with changed:
             await changed.wait_for(lambda: conn["remote"] is not None)
 
-        async def list_tools(ctx, params):
-            return await remote_call(lambda r: r.list_tools(cursor=params.cursor if params else None))
+        async def list_tools(ctx, params) -> ListToolsResult:
+            found = await remote_call(lambda r: r.list_tools(cursor=params.cursor if params else None))
+            return cast(ListToolsResult, found)
 
-        async def call_tool(ctx, params):
-            return await remote_call(lambda r: r.call_tool(params.name, params.arguments or {}))
+        async def call_tool(ctx, params) -> CallToolResult:
+            found = await remote_call(lambda r: r.call_tool(params.name, params.arguments or {}))
+            return cast(CallToolResult, found)
 
         server = Server("decomp", version=__version__, title="decomp.wtf",
                         instructions=("" if helper else CHAT_INSTRUCTIONS + "\n") + (conn["remote"].instructions or ""),

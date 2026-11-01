@@ -102,8 +102,9 @@ class FeaturesMixin:
                     node["work_item"] = key_items[key]
                     grouped += 1
                     continue
-                row: dict | None = (by_path.get(node["path"]) if node.get("path") else None) or \
+                found = (by_path.get(node["path"]) if node.get("path") else None) or \
                     by_name.get(node.get("label") or "") or by_name.get(node.get("name") or "")
+                row = found if isinstance(found, dict) else None
                 if row is not None:  # an existing procedure or archive entry: the feature points at it
                     node["work_item"] = row["name"]
                     if key:

@@ -29,8 +29,10 @@ class Link:
         self.net, self.slug, self.url, self.room, self.token, self.member = net, slug, url.rstrip("/"), room, token, member
         self.client = client or httpx.Client(timeout=httpx.Timeout(60, connect=15))
         cfg = json.loads(net.project_row(slug)["config"]) or {}
-        info: dict = cfg.get("link") if isinstance(cfg.get("link"), dict) else {}
-        saved: dict = info.get("cursor") if isinstance(info.get("cursor"), dict) else {}
+        link = cfg.get("link")
+        info: dict = dict(link) if isinstance(link, dict) else {}
+        cursor = info.get("cursor")
+        saved: dict = dict(cursor) if isinstance(cursor, dict) else {}
         # where this member got to last time: restarting the app then syncs only what it missed, not the whole room
         self.cursor = {"e": int(saved.get("e") or 0), "a": int(saved.get("a") or 0),
                        "v": int(saved.get("v") or 0), "l": float(saved.get("l") or 0.0)}
