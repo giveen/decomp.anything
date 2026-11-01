@@ -101,7 +101,11 @@ for line in sys.stdin:
             result = wrap(name, f"int sub_{args['procedure']}(void) {{ return 1; }}")
         elif name == "analyze_function":
             result = wrap(name, {"procedure": {"name": "f", "signature": "int f(void)"}, "native_value_flow": {"huge": 1},
-                                 "callers": [{"address": "0x1020", "name": "caller", "classification": {"thunk": False}, "body": {}}]})
+                                 "native_api": {"calling_convention": "cdecl"},
+                                 "callers": [{"address": "0x1020", "name": "caller", "classification": {"thunk": False}, "body": {}}],
+                                 "callees": [{"address": "0x1030", "value": "helper"}, {"address": "0x1040", "value": "puts"}],
+                                 "referenced_strings": [{"value": "hello world"}],
+                                 "referenced_names": [{"value": "LAB_00103afa"}]})
         elif name == "binary_overview":
             result = wrap(name, {"procedure_count": 2, "string_count": 3, "segment_count": 1})
         elif name == "list_procedures":

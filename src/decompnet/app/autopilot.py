@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 
-from .. import scoring, seeds
+from .. import rea, scoring, seeds
 from ..network import Agent, NetworkError
 from .platform import (
     X86_PLATFORMS,
@@ -44,14 +44,17 @@ class AutopilotMixin:
                 try_one, workers = self.forks.autopilot_one, min(workers, 2)  # each try builds a file: fewer at once
             else:
                 proj = self._project(slug)
-                if self.cfg(proj).get("platform") in X86_PLATFORMS:  # nothing to draft them from (yet)
-                    raise NetworkError("there's no machine-draft decompiler for x86 projects yet: the autopilot matches "
-                                       "identical code only")
-                if not seeds.available():
-                    raise NetworkError("autopilot's drafts need m2c, the draft decompiler: install it in Setup")
-                tc = self.cfg(proj)["compiler"]["toolchain"]
-                if not seeds.M2C_TARGETS.get(tc):
-                    raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
+                if self.cfg(proj).get("platform") in X86_PLATFORMS:
+                    # REA's decompiler drafts PC programs; m2c can't read x86. Without REA only twins are possible.
+                    if self.rea_file(proj) is None:
+                        raise NetworkError("autopilot's drafts for x86 programs come from REA (m2c can't read them): set it "
+                                           "up in the RE console; until then it matches identical code only")
+                else:
+                    if not seeds.available():
+                        raise NetworkError("autopilot's drafts need m2c, the draft decompiler: install it in Setup")
+                    tc = self.cfg(proj)["compiler"]["toolchain"]
+                    if not seeds.M2C_TARGETS.get(tc):
+                        raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
                 ids = [r["id"] for r in self.store.all(
                     "SELECT id FROM functions WHERE project_id=? AND status='open' AND boost >= 0 "
                     "ORDER BY (boost > 0) DESC, boost DESC, n_insns ASC, vram ASC", proj["id"]
@@ -182,8 +185,10 @@ class AutopilotMixin:
         "why": a short reason for the panel}. A draft is made and compiled again only when what it's made against
         changed (the context version, or the compiler and flags): "Run again" then costs what actually improved,
         not every open function's draft a second time."""
-        if self.cfg(proj).get("platform") in X86_PLATFORMS:
-            return {"outcome": "skip", "why": "no machine-draft decompiler for x86"}
+        # PC programs are drafted by REA's decompiler (m2c can't read x86); without REA there is nothing to try
+        pc = self.cfg(proj).get("platform") in X86_PLATFORMS
+        if pc and self.rea_file(proj) is None:
+            return {"outcome": "skip", "why": "no machine-draft decompiler for x86: set REA up in the RE console"}
         fn = self.store.one("SELECT * FROM functions WHERE id=?", fid)
         if fn is None or fn["status"] != "open":
             return {"outcome": "skip", "why": "no longer open"}
@@ -203,16 +208,28 @@ class AutopilotMixin:
         outcome, why = "fail", f"{fn['name']}: the draft went wrong"
         try:
             self._seed_for(fn, proj)  # the readable draft, for the agents that come after
-            data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
-            draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"], self.cfg(proj)["compiler"]["toolchain"],
-                                            ctx["header"], data_asm, valid=True)
-            if not draft:
-                why = f"{fn['name']}: m2c made no draft"
-            elif "M2C_ERROR" in draft or draft.count("goto ") > 10:
-                outcome = "far"
-                why = f"{fn['name']}: draft has errors/excessive gotos"
-            else:
-                source = f"/* machine draft (m2c), tried by autopilot */\n{seeds.M2C_MACROS}\n{draft}\n"
+            source = ""
+            if pc:  # REA's pseudocode, straight from Ghidra
+                target = self.rea_file(proj)
+                base = int((self.cfg(proj).get("rea") or {}).get("base") or 0)
+                text = rea.pseudo(target, fn, base=base) if target is not None else None
+                if text:
+                    source = f"/* machine draft (REA, Ghidra), tried by autopilot */\n{text}\n"
+                else:
+                    why = f"{fn['name']}: REA made no draft"
+            else:  # m2c, from the assembly
+                data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
+                draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"],
+                                                self.cfg(proj)["compiler"]["toolchain"], ctx["header"], data_asm,
+                                                valid=True)
+                if not draft:
+                    why = f"{fn['name']}: m2c made no draft"
+                elif "M2C_ERROR" in draft or draft.count("goto ") > 10:
+                    outcome = "far"
+                    why = f"{fn['name']}: draft has errors/excessive gotos"
+                else:
+                    source = f"/* machine draft (m2c), tried by autopilot */\n{seeds.M2C_MACROS}\n{draft}\n"
+            if source:
                 result = self._compile(proj, ctx["header"], source)
                 if not result.ok:
                     why = f"{fn['name']}: the draft didn't compile"

@@ -228,7 +228,26 @@ class IntakeMixin:
             graph = {"called_by": {}, "calls": {}, "used_by": {}, "uses": {}}
         by_addr = {int(f["vram"]): f["name"] for f in self.store.all(
             "SELECT name, vram FROM functions WHERE project_id=? AND vram IS NOT NULL", pid)}
+        rea_rows = []
+        for row in self.store.all("SELECT name, vram, meta FROM functions WHERE project_id=? AND meta LIKE '%\"rea\"%'",
+                                  pid):
+            facts = (json.loads(row["meta"] or "{}") or {}).get("rea") if row["meta"] else None
+            if not isinstance(facts, dict):
+                continue
+            haystack = " ".join([str(facts.get("signature") or ""), *map(str, facts.get("callees") or []),
+                                 *map(str, facts.get("strings") or [])]).lower()
+            if low in haystack:
+                rea_rows.append((row, facts))
+            if len(rea_rows) >= limit:
+                break
         lines = [f'Facts matching "{q}"']
+        if rea_rows:
+            lines.append(f"REA named ({len(rea_rows)}) - its reading, not proof:")
+            for row, facts in rea_rows[:limit]:
+                what = facts.get("signature") or ""
+                also = [str(x) for x in (facts.get("callees") or facts.get("strings") or [])[:4]]
+                lines.append(f"- `{row['name']}` at 0x{int(row['vram'] or 0):X}"
+                             + (f" - {what}" if what else "") + (f" (calls/names: {', '.join(also)})" if also else ""))
         if functions:
             lines.append(f"Functions ({len(functions)}):")
             for r in functions:

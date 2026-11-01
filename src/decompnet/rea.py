@@ -329,8 +329,9 @@ def _client(binary: Path) -> Client:
     return client
 
 
-def _procedure(fn) -> str:
-    return f"0x{int(fn['vram']):X}"
+def _procedure(fn, base: int = 0) -> str:
+    """The procedure string REA wants: the project's address plus its image base (Ghidra loads a file at 0x100000 and up)."""
+    return f"0x{int(fn['vram']) + int(base or 0):X}"
 
 
 def draft(binary: Path, fn, timeout: float = 60) -> str | None:
@@ -367,7 +368,7 @@ def inspect(binary: Path, fn, symbols, what: str = "", timeout: float = 900) -> 
         client = _client(bpath)
         proc = _procedure(fn)
         if what in ("all", "info"):
-            dossier = client.call("analyze_function", {"procedure": proc}, timeout=timeout)
+            dossier = client.call("analyze_function", {"procedure": proc, "detail": "complete"}, timeout=timeout)
             if isinstance(dossier, dict):
                 info = dossier.get("procedure") or dossier.get("function") or {}
                 if isinstance(info, dict):
@@ -594,3 +595,60 @@ def close_all() -> None:
         _analysis_clients.clear()
         _analysis_results.clear()
         _analysis_records.clear()
+def pseudo(binary: Path, fn, timeout: float = 600, *, base: int = 0) -> str | None:
+    """REA's decompiler output for one function, whatever the environment says (the autopilot asked for it)."""
+    if command() is None:
+        return None
+    bpath = Path(binary).resolve()
+    try:
+        with _binary_lock(str(bpath)):
+            text = _client(bpath).call("procedure_pseudo_code", {"procedure": _procedure(fn, base)}, timeout=timeout)
+    except (ReaError, OSError):
+        return None
+    return text.strip() if isinstance(text, str) and text.strip() else None
+
+
+def dossier(binary: Path, fn, timeout: float = 900, *, base: int = 0) -> dict | None:
+    """REA's reading of one function as data: signature, calling convention, callees, the strings and names it refers to.
+
+    `detail: complete` is what carries them (the default answer is a summary view); a provider that doesn't know the
+    option is asked again without it. One call per function: callers keep the result, because a Ghidra call is slow.
+    Raises ReaError when REA answers with an error, so the caller can say why instead of pretending there was nothing."""
+    if command() is None:
+        return None
+    bpath = Path(binary).resolve()
+    proc = _procedure(fn, base)
+    try:
+        with _binary_lock(str(bpath)):
+            client = _client(bpath)
+            record = client.call("analyze_function", {"procedure": proc, "detail": "complete"}, timeout=timeout)
+            if not isinstance(record, dict) or not (record.get("procedure") or record.get("callees")):
+                record = client.call("analyze_function", {"procedure": proc}, timeout=timeout)
+    except OSError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    info = record.get("procedure") if isinstance(record.get("procedure"), dict) else {}
+    native = record.get("native_api") if isinstance(record.get("native_api"), dict) else {}
+
+    def named(*keys) -> list[str]:
+        out: list[str] = []
+        for key in keys:
+            for row in record.get(key) or ():
+                if isinstance(row, dict):
+                    symbol = row.get("symbol") if isinstance(row.get("symbol"), dict) else {}
+                    text = row.get("value") or row.get("name") or symbol.get("name") or ""
+                else:
+                    text = row
+                text = str(text or "").strip()
+                if text and text not in out:
+                    out.append(text)
+        return out
+
+    return {"name": str(info.get("name") or ""), "signature": str(info.get("signature") or ""),
+            "calling_convention": str(native.get("calling_convention") or ""),
+            "callees": named("callees", "unresolved_calls"), "callers": named("callers"),
+            "strings": named("referenced_strings", "referenced_names", "strings"),
+            "provider": "REA", "confidence": "observed", "at": time.time()}
+
+

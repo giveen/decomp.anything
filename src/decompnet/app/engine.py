@@ -54,6 +54,7 @@ from .platform import (
     source_language,
 )
 from .prefill import PrefillMixin
+from .reafacts import ReaFactsMixin
 from .romedit import RomEditMixin
 from .roomops import RoomOpsMixin
 from .sourcefiles import SourceFilesMixin
@@ -91,6 +92,7 @@ class RomNetwork(
     RomEditMixin,
     RoomOpsMixin,
     AutopilotMixin,
+    ReaFactsMixin,
     ViewsMixin,
     Network,
 ):
@@ -569,6 +571,7 @@ class RomNetwork(
             hits = references.search(roots, rf"0x0*{fn['vram']:x}\b")
             if hits != "no matches":
                 lines += ["", "### In the reference folders (read_file / search_code for more)", *hits.splitlines()[:12]]
+        lines += self.rea_brief_lines(proj, fn)
         lines += [
             "",
             "Names: use the names shown here (or rename_symbol to give an address a real name). "

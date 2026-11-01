@@ -13,6 +13,7 @@ wrong guess is fixed in one place instead of in every step that follows it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import posixpath
@@ -550,13 +551,20 @@ class CreationMixin:
             fresh = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
             fresh["segments"] = plan["segments"]  # the page's memory map
             fresh["rea"] = {"base": plan["base"], "counts": counts, "at": now,
-                            "missing": [f"{f['name']} @0x{f['vram']:X}" for f in plan["functions"][:20]]}
+                            "missing": [f"{f['name']} @0x{f['vram']:X}" for f in plan["functions"][:20]],
+                            # names REA resolved for addresses the project only knows by number (adopt_rea_names
+                            # turns them into real names; briefs already prefer them)
+                            "names": {f"0x{item['vram']:X}": item["name"] for item in plan["functions"]
+                                      if item.get("name") and not str(item["name"]).startswith(("FUN_", "sub_", "thunk_"))}}
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(fresh), proj["id"]))
             self._event(db, proj["id"], None, "rea",
                         f"REA: +{counts['strings']} strings, {counts['regions']} memory regions, "
                         f"{counts['functions']} procedures the split doesn't cover")
         log(f"REA: +{counts['strings']} strings, {counts['regions']} memory regions, "
             f"{counts['functions']} procedures the split doesn't cover")
+        # read the smallest open functions in detail (signature, callees, references) so the first briefs have them
+        with contextlib.suppress(Exception):
+            self.rea_warm(slug, limit=15, log=log)
         return counts
 
 
