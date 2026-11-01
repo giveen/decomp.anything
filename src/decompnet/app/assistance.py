@@ -35,13 +35,13 @@ def topics(overview: dict) -> list[str]:
     if overview.get("kind") == "analysis":
         return ["analysis", "rea"]
     if overview.get("kind") == "fork":
-        return list(dict.fromkeys(["fork", "objdiff", *PLATFORM_GUIDES.get(overview.get("platform"), [])]))
+        return list(dict.fromkeys(["fork", "objdiff", *PLATFORM_GUIDES.get(overview.get("platform") or "", [])]))
     platform = overview.get("platform")
     if platform in ("windows", "linux"):
         return ["workflow", "x86", "rea", *(["cpp"] if overview.get("source_language") == "C++" else [])]
     compiler = (overview.get("compiler") or {}).get("toolchain", "")
-    return list(dict.fromkeys(["workflow", *PLATFORM_GUIDES.get(platform, []),
-                              {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(platform) or
+    return list(dict.fromkeys(["workflow", *PLATFORM_GUIDES.get(platform or "", []),
+                              {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(platform or "") or
                               ("ido" if compiler.startswith("ido") else "gcc-kmc")]))
 
 

@@ -20,6 +20,7 @@ from .serverctx import (
 def register(ctx: ServerContext) -> None:
     jobs = ctx.jobs
     mcp = ctx.mcp
+    net = ctx.net
     console = ctx.console
     guard = ctx.guard
     body = ctx.body
@@ -80,3 +81,10 @@ def register(ctx: ServerContext) -> None:
         await call(console.stop)
         return JSONResponse(await call(console.status))
 
+    @mcp.custom_route("/api/rea/project", methods=["GET"])
+    async def api_rea_project(request: Request) -> Response:
+        """The project this file belongs to, if it is one: the console shows its names, statuses and addresses."""
+        if (bad := guard(request)):
+            return bad
+        project = await call(net.rea_project, request.query_params.get("path", ""))
+        return JSONResponse({"project": project})

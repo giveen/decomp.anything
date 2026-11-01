@@ -328,6 +328,7 @@ def _api(path: str, body: dict | None = None) -> dict:
 
 def _wait(job: str, what: str) -> dict:
     last = ""
+    st: dict = {}
     for _ in range(7200):
         st = _api(f"/api/job?id={job}")
         if st["log"] and st["log"][-1] != last:

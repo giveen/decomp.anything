@@ -34,6 +34,37 @@ from .platform import (
 
 
 class ViewsMixin:
+    def rea_project(self, path: str) -> dict | None:
+        """The decomp.anything project whose target is this file, with its functions by address.
+
+        The RE console opens any file, and REA reports it at its own image base (a Linux ELF comes back at 0x100000 and
+        up), while a project's functions are at the file's real addresses. So the console rebases with the base its own
+        segments give it, and here every address is the project's."""
+        if not path:
+            return None
+        wanted = Path(path).expanduser()
+        try:
+            wanted = wanted.resolve()
+        except OSError:
+            return None
+        for row in self.store.all("SELECT slug, name, root, config FROM projects ORDER BY id DESC"):
+            cfg = self.cfg(row)
+            name = (cfg.get("rom") or {}).get("program") or (cfg.get("rom") or {}).get("file")
+            if not name:
+                continue
+            try:
+                if Path(row["root"], name).resolve() != wanted:
+                    continue
+            except OSError:
+                continue
+            proj = self._project(row["slug"])
+            rows = self.store.all("SELECT name, vram, size, status FROM functions WHERE project_id=? AND vram IS NOT NULL "
+                                 "ORDER BY vram", proj["id"])
+            return {"slug": proj["slug"], "title": proj["name"], "kind": cfg.get("kind") or "rom",
+                    "platform": cfg.get("platform") or "",
+                    "functions": [[int(r["vram"]), r["name"], r["status"], int(r["size"] or 0)] for r in rows]}
+        return None
+
     def overview(self, slug: str, *, backfill: bool = False) -> dict:
         proj = self._project(slug)
         last = self.store.one("SELECT MAX(created_at) AS t FROM events WHERE project_id=?", proj["id"])["t"]
@@ -161,6 +192,14 @@ class ViewsMixin:
                    for (label, old), (_same, new) in zip(before, after, strict=True) if old != new]
         if lib_after != lib_before:
             changed.append(f"library/CRT functions: {lib_before} → {lib_after}")
+        rea_counts: dict = {}
+        try:  # the same pass an import runs: memory regions, strings, what REA sees that the split doesn't
+            rea_counts = self.rea_inventory(slug, log=lambda *_: None)
+        except Exception:  # noqa: BLE001 - a re-check must not fail because REA is missing or mid-restart
+            rea_counts = {}
+        if rea_counts.get("added"):
+            changed.append(f"REA: +{rea_counts.get('strings', 0)} strings, {rea_counts.get('regions', 0)} memory "
+                           f"regions, {rea_counts.get('functions', 0)} procedures the split doesn't cover")
         report = self.write_intake(slug, log=lambda *_: None)
         agent, _ = self.local_agent("recheck")
         now = time.time()

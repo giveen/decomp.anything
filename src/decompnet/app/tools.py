@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from functools import cache
 from importlib import resources
+from typing import cast
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
@@ -710,7 +711,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 @cache
 def _tool_specs() -> tuple[dict, ...]:
     # Use the public MCP schema API in a separate thread, also when the caller already has an event loop.
-    server = build_mcp(None, lambda ctx: None)
+    # Schemas only: no tool is ever called here, so there is no engine and no agent to hand a call to.
+    server = build_mcp(cast("RomNetwork", None), lambda ctx: (cast("Agent", None), ""))
     with ThreadPoolExecutor(max_workers=1) as executor:
         specs = executor.submit(anyio.run, server.list_tools).result()
     return tuple({"type": "function", "function": {"name": t.name, "description": t.description or "",

@@ -175,6 +175,7 @@ class CreationMixin:
                         "code": row.get("source"), "map": row.get("map") or "",
                         "node_id": row.get("node_id") or "", "module_kind": row.get("kind") or ""})
                 for path, rec in sorted(recovered["files"].items()):
+                    path = str(path)
                     if path in seen_paths:
                         continue
                     seen_paths.add(path)
@@ -478,7 +479,80 @@ class CreationMixin:
                                                   None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(res.functions)} functions from {info['title']}")
         log(f"ready: {len(res.functions)} functions to decompile")
+        if self.cfg(self._project(slug)).get("platform") in X86_PLATFORMS:
+            try:
+                self.rea_inventory(slug, log=log)  # what the split cannot see: memory, strings, REA's extra procedures
+            except Exception as e:  # noqa: BLE001 - an import never fails because REA is missing or mid-restart
+                log(f"REA inventory skipped: {e}")
         return slug
+
+
+    def rea_inventory(self, slug: str, log=print) -> dict:
+        """What REA sees in this project's target that the split cannot: memory regions, strings, and the procedures
+        REA has that no work item covers.
+
+        REA opens a file at its own image base, so every address is rebased onto the project's before it is stored.
+        Additive only: functions are reported rather than inserted, because a matching project's work item needs a target
+        byte range the split (or the image scanner) builds. Without REA nothing happens."""
+        from .. import rea
+
+        if rea.command() is None:
+            return {}
+        proj = self._project(slug)
+        if self.is_analysis(proj) or self.fork_slug(slug):
+            return {}
+        cfg = self.cfg(proj)
+        name = (cfg.get("rom") or {}).get("program") or (cfg.get("rom") or {}).get("file")
+        if not name or not (Path(proj["root"]) / name).is_file():
+            return {}
+        try:
+            client = rea.analysis_client({"path": str(Path(proj["root"]) / name), "tool": "open_binary"},
+                                         cfg.get("provider") or "")
+        except rea.ReaError as e:
+            log(f"REA: {e}")
+            return {}
+        if client is None:
+            return {}
+
+        def ask(tool: str):
+            try:
+                return client.call(tool, {}, timeout=900, any_tool=True)
+            except rea.ReaError:
+                return []
+
+        segments = ask("list_segments")
+        procedures = analysis.procedures(ask("list_procedures"), segments)
+        rows = [(str(s.get("value") or s.get("text") or ""), analysis.number(s.get("address")))
+                for s in ask("list_strings") if isinstance(s, dict)]
+        strings = [(text, address) for text, address in rows if address is not None and text]
+        taken = [(int(r["vram"]), int(r["size"] or 0)) for r in self.store.all(
+            "SELECT vram, size FROM functions WHERE project_id=? AND vram IS NOT NULL", proj["id"])]
+        known = {int(r["address"]) for r in self.store.all(
+            "SELECT address FROM symbols WHERE project_id=? AND kind='string'", proj["id"])}
+        plan = analysis.inventory(segments, procedures, strings, taken, known)
+        counts = {**plan["counts"], "regions": len(plan["segments"]),
+                  # something new to keep: new strings, or a memory map that changed. REA's extra procedures are only
+                  # reported, so they are not a change on their own (a second recheck must say nothing happened).
+                  "added": bool(plan["strings"]) or plan["segments"] != (cfg.get("segments") or [])}
+        if not counts["added"]:
+            return counts
+        now = time.time()
+        with self.store.tx() as db:
+            for item in plan["strings"]:
+                db.execute("INSERT OR IGNORE INTO symbols(project_id,name,address,size,kind,preview) "
+                           "VALUES(?,?,?,?,?,?)", (proj["id"], f"STR_{item['address']:08X}", item["address"],
+                                                   len(item["text"]), "string", json.dumps(item["text"])[:120]))
+            fresh = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
+            fresh["segments"] = plan["segments"]  # the page's memory map
+            fresh["rea"] = {"base": plan["base"], "counts": counts, "at": now,
+                            "missing": [f"{f['name']} @0x{f['vram']:X}" for f in plan["functions"][:20]]}
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(fresh), proj["id"]))
+            self._event(db, proj["id"], None, "rea",
+                        f"REA: +{counts['strings']} strings, {counts['regions']} memory regions, "
+                        f"{counts['functions']} procedures the split doesn't cover")
+        log(f"REA: +{counts['strings']} strings, {counts['regions']} memory regions, "
+            f"{counts['functions']} procedures the split doesn't cover")
+        return counts
 
     def _import_gba(self, picked, slug: str, workdir: Path, toolchain: str | None, flags: list[str] | None, log) -> str:
         """Game Boy Advance: functions found by luvdis (plus a pass for code nothing calls), judged by the ARM matcher."""
@@ -604,7 +678,7 @@ class CreationMixin:
         if not flags and suggestion["flags"] != list(tc.flags):
             flags = suggestion["flags"]
             info["flags_inferred"] = True
-            log("build flags inferred: " + " ".join(flags))
+            log("build flags inferred: " + " ".join(flags or ()))
         log(f"detected {info.get('build_label') or info['compiler_guess']}; matching with {tc.name}")
         if info.get("matchable") is False:
             log(f"{info.get('build_label') or 'this language'} can't be rebuilt from C/C++: inspect and annotate it, "
