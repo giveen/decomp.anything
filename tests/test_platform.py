@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from decompnet.app import agents, connect, service
+from decompnet.app import agents, agenttools, connect, service
 from decompnet.forks.project import ForkProject
 
 WIN = sys.platform == "win32"
@@ -30,8 +30,11 @@ def fake_npm_agent(tmp_path, monkeypatch, code: str):
     script.parent.mkdir(parents=True)
     script.write_text(code, encoding="utf-8")
     (tmp_path / "fake-agent.cmd").write_text(SHIM, encoding="utf-8")
-    which = agents.shutil.which
-    monkeypatch.setattr(agents.shutil, "which", lambda cmd, path=None: sys.executable if cmd == "node" else which(cmd, path=path))
+    # the launchers are resolved in agenttools (agenttools.argv, which agents.argv re-exports): that is the module whose
+    # shutil.which has to stand in for node here
+    which = agenttools.shutil.which
+    monkeypatch.setattr(agenttools.shutil, "which",
+                        lambda cmd, path=None: sys.executable if cmd == "node" else which(cmd, path=path))
     return tmp_path / "fake-agent.cmd", script
 
 
