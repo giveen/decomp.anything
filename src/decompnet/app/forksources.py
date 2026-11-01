@@ -29,11 +29,21 @@ class ForkSourceMixin:
     def _modules(self, fp: ForkProject, cfg: dict) -> dict:
         if fp.kind() not in ("dtk", "manifest") or not fp.linkable():
             raise NetworkError("giving code source files works on dtk-template projects (GameCube, Wii)")
-        version = cfg.get("version") or (fp.versions() or [None])[0]
+        version = cfg.get("version") or (fp.versions() or [""])[0]
+        if not version:  # config/<version>/config.yml is where the modules are listed
+            raise NetworkError("this project has no version to read its config from")
         try:
             return dtksplits.modules(fp.root, version)
         except (OSError, ValueError) as e:
             raise NetworkError(f"can't read the project's config for {version}: {e}") from None
+
+    @staticmethod
+    def _report_on_disk(fp: ForkProject) -> dict:
+        """objdiff's last report for a project, or {} when it hasn't measured one yet."""
+        try:
+            return json.loads((fp.root / STATE / "report.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
 
     @staticmethod
     def _text_extent(unit, syms: dict) -> tuple[int, int] | None:
@@ -64,11 +74,7 @@ class ForkSourceMixin:
         _proj, fp, cfg = self.get(slug)
         mods = self._modules(fp, cfg)
         src = fp.src_dir()
-        if rep is None:
-            try:
-                rep = json.loads((fp.root / STATE / "report.json").read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                rep = {}
+        rep = rep if rep is not None else self._report_on_disk(fp)  # the measure just taken, or the one on disk
         rep_fns = {u["name"]: len(u.get("functions", [])) for u in rep.get("units", [])}
         cpp = {u["name"] for u in rep.get("units", [])  # code with C++ names goes in a C++ file
                if any((f.get("metadata") or {}).get("demangled_name") not in (None, f["name"]) for f in u.get("functions", []))}

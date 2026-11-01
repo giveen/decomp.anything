@@ -25,6 +25,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Literal
 
 from ..elfobj import _MASKS, Reloc, mask_relocs
 from ..handwritten import mips_reason, ppc_reason
@@ -32,7 +33,8 @@ from ..network import NetworkError
 
 log = logging.getLogger("decomp.wtf")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
-_MACHINE = {"EM_PPC": ("ppc", "big"), "EM_MIPS": ("mips", None), "EM_ARM": ("arm", "little")}
+_MACHINE: dict[str, tuple[str, Literal["little", "big"] | None]] = {"EM_PPC": ("ppc", "big"),
+           "EM_MIPS": ("mips", None), "EM_ARM": ("arm", "little")}
 _CACHE_VERSION = 2  # of twins.json: 2 added why code is hand-written assembly
 # A twin's code that didn't match isn't tried again for this long while neither function's code changes (the
 # same source gives the same result): every agent start's pass would otherwise redo hundreds of compiles (Mario
@@ -51,7 +53,7 @@ class Print:
     asm: str = ""  # why no compiler makes this code (see handwritten.py), or ""
 
 
-def _mask(code: bytearray, relocs: list[tuple[int, int]], arch: str, order: str) -> None:
+def _mask(code: bytearray, relocs: list[tuple[int, int]], arch: str, order: Literal["little", "big"]) -> None:
     for off, rtype in relocs:
         delta, length, mask = _MASKS.get((arch, rtype), _MASKS.get(("thumb", rtype), (0, 4, 0xFFFFFFFF)))
         at = off + delta
@@ -72,12 +74,13 @@ def object_prints(data: bytes) -> dict[str, Print]:
     hand-written assembly)."""
     from elftools.elf.elffile import ELFFile
     from elftools.elf.relocation import RelocationSection
+    from elftools.elf.sections import SymbolTableSection
 
     elf = ELFFile(BytesIO(data))
     arch, order = _MACHINE.get(elf["e_machine"], ("", None))
     order = order or ("little" if elf.little_endian else "big")
     symtab = elf.get_section_by_name(".symtab")
-    if symtab is None or not arch:
+    if not isinstance(symtab, SymbolTableSection) or not arch:  # an object with no symbol table to read
         return {}
     by_section: dict[int, list] = defaultdict(list)
     for s in symtab.iter_symbols():
@@ -95,6 +98,8 @@ def object_prints(data: bytes) -> dict[str, Print]:
             if not isinstance(rs, RelocationSection) or rs["sh_info"] != shndx:
                 continue
             table = elf.get_section(rs["sh_link"])
+            if not isinstance(table, SymbolTableSection):  # relocations that don't point at a symbol table
+                continue
             for r in rs.iter_relocations():
                 sym = table.get_symbol(r["r_info_sym"])
                 name = elf.get_section(sym["st_shndx"]).name if sym["st_info"]["type"] == "STT_SECTION" and \
@@ -236,6 +241,7 @@ class Twins:
 
         fp = ForkProject(Path(proj["root"]))
         cache_path = fp.root / STATE / "twins.json"
+        cache: dict[str, Any]  # what twins.json holds per unit: a mtime and the unit's prints
         try:
             cache = json.loads(cache_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

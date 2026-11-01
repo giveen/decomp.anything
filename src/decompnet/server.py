@@ -191,8 +191,9 @@ def build_server(net: Network, *, public_url: str, open_registration: bool = Fal
 
         def info() -> str:
             rep = policy.reputation(net.store, agent.id)
-            used = net.store.one("SELECT COUNT(*) AS n FROM attempts WHERE agent_id=? AND created_at > strftime('%s','now') - 3600",
-                                 agent.id)["n"]
+            used = net.store.must_one(
+                "SELECT COUNT(*) AS n FROM attempts WHERE agent_id=? AND created_at > strftime('%s','now') - 3600",
+                agent.id)["n"]
             nxt = f"; {rep['next'][1]} more match(es) to reach '{rep['next'][0]}'" if rep["next"] else ""
             return (f"{agent.name}: level '{rep['level'].name}', {rep['matches']} matches / {rep['insns']} instructions, "
                     f"{used}/{rep['level'].compiles_per_hour} compiles used this hour, header edits "

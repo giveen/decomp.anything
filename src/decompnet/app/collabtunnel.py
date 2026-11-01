@@ -33,9 +33,10 @@ class Tunnel:
                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                      errors="replace")
         found = threading.Event()
+        err = self.proc.stderr or ()  # the pipe asked for above; the thread reads the tunnel's own log
 
         def read():
-            for line in self.proc.stderr or ():
+            for line in err:
                 m = TUNNEL_URL.search(line)
                 if m and not self.url:
                     self.url = m.group(0)
