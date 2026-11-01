@@ -16,7 +16,7 @@ import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .. import __version__
+from .. import __version__, scoring
 from ..network import Agent, NetworkError
 from . import references
 from .engine import RomNetwork
@@ -328,6 +328,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
     "search_facts": lambda net, agent, slug, query, limit=40: net.search_facts(slug, query, limit),
     "type_hint": lambda net, agent, slug, function: _type_hint(net, slug, function),
+    "why_mismatch": lambda net, agent, slug, function: _why_mismatch(net, slug, function),
     "adopt_rea_names": lambda net, agent, slug: net.adopt_rea_names(agent, slug),
     "list_subsystems": lambda net, agent, slug, limit=12: net.subsystem_text(slug, limit),
     "add_note": lambda net, agent, slug, text, function="": net.add_note(agent, slug, text, function or None),
@@ -351,7 +352,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "retire_function",
             "import_debug_info", "export_debug_info", "compare_version", "write_source", "rea_tool",
-            "inspect_binary", "search_binary", "type_hint", "adopt_rea_names"}
+            "inspect_binary", "search_binary", "type_hint", "adopt_rea_names", "why_mismatch"}
 FORK_ONLY = {"edit_file", "file_status", "split_file"}
 ANALYSIS_ONLY = {"complete_function", "read_artifact_entry"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
@@ -398,6 +399,35 @@ def _type_hint(net: RomNetwork, slug: str, function: str) -> str:
         if facts.get(key):
             lines.append(f"- {label}: " + ", ".join(str(x) for x in facts[key][:12]))
     lines += ["", "Inference over a decompiler's output: write the code, then let the judge decide."]
+    return "\n".join(lines)
+
+
+def _why_mismatch(net: RomNetwork, slug: str, function: str) -> str:
+    """Why the latest attempt of a function isn't a match yet, in C terms, plus what REA says it should be."""
+    fn = net._function(function, slug)
+    try:
+        facts = json.loads(fn["meta"] or "{}").get("rea") or {}
+    except ValueError:
+        facts = {}
+    diff = net.function_diff(slug, function, "latest")
+    lines = [f"Why `{fn['name']}` doesn't match yet:"]
+    if diff.get("error"):
+        return "\n".join([*lines, f"- it doesn't compile: {str(diff['error'])[:400]}"])
+    rows = diff.get("rows")
+    if not rows:
+        return "\n".join([*lines, "- no attempt has been compiled for this function yet: compile_and_diff first."])
+    if isinstance(facts, dict) and facts.get("signature"):
+        lines.append(f"- REA's signature: `{facts['signature']}`")
+    hints = scoring.hypotheses(scoring.DiffResult(0, 1, [tuple(r) for r in rows], False))
+    lines += [f"- {hint}" for hint in hints] or ["- the rows point at no single cause: read the diff on the page"]
+    if diff.get("percent") is not None:
+        lines.append(f"- {diff['percent']}% match at score {diff.get('score')}")
+    if isinstance(facts, dict):
+        source = str(diff.get("source") or "")
+        missing = [c for c in facts.get("callees") or [] if str(c).split("::")[-1].split("(")[0] not in source]
+        if missing:
+            lines.append("- REA says it calls " + ", ".join(str(c) for c in missing[:6]) + ", which this attempt doesn't")
+    lines += ["", "Fix one thing at a time: the rows a diff shows first are the ones that changed first."]
     return "\n".join(lines)
 
 
@@ -483,6 +513,13 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         names. One Ghidra call the first time (kept on the function after that). Use it before writing a prototype
         by hand: a wrong arg count or return type is the usual reason a near miss stays a miss."""
         return await run(ctx, "type_hint", function=function)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def why_mismatch(ctx: Context, function: str) -> str:
+        """Why the latest attempt on a function isn't a match yet, in C terms: a struct size, a wrong constant, a
+        temporary the original kept in a local, statement order, an inlined call. Reads the diff that already exists
+        (no compile); pair it with type_hint for the signature."""
+        return await run(ctx, "why_mismatch", function=function)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def adopt_rea_names(ctx: Context) -> str:  # renamed below

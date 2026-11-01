@@ -463,19 +463,9 @@ class Network:
                     f"Target {len([r for r in d.rows if r[1]])} insns, yours {len([r for r in d.rows if r[2]])}."
                     f"{dup_warn}")
 
-            stack_hints = []
-            for m, t_str, c_str in d.rows:
-                if m == "s":
-                    t_nums = [int(n, 0) for n in re.findall(r"-?0x[0-9a-f]+|-?\d+", t_str, re.IGNORECASE)]
-                    c_nums = [int(n, 0) for n in re.findall(r"-?0x[0-9a-f]+|-?\d+", c_str, re.IGNORECASE)]
-                    if t_nums and c_nums and len(t_nums) == len(c_nums):
-                        delta = c_nums[0] - t_nums[0]
-                        if delta != 0 and abs(delta) % 4 == 0:
-                            stack_hints.append(f"stack offset difference (candidate is {delta:+d} bytes vs target)")
-                            break
-            if stack_hints:
-                head += f"\n💡 Stack hint: {stack_hints[0]} (check local variable types or stack frame allocation)."
-
+            hints = scoring.hypotheses(d)
+            if hints:
+                head += "".join(f"\n💡 {hint}" for hint in hints[:3])
             if d.rows and all(m == " " for m, _, _ in d.rows):
                 t_norm = target_obj.normalized()
                 c_norm = cand.normalized()
