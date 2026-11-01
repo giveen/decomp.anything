@@ -158,7 +158,7 @@ class AutopilotMixin:
                 raise NetworkError(f"{fn['name']} is claimed")
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + 300))
         try:
-            ctx = self._context(proj["id"], fn["unit"])
+            ctx = self._must_context(proj["id"], fn["unit"])
             result = self._compile(proj, ctx["header"], source)
             if not result.ok:
                 return {"matched": False, "score": None}
@@ -193,7 +193,7 @@ class AutopilotMixin:
         if fn is None or fn["status"] != "open":
             return {"outcome": "skip", "why": "no longer open"}
         compiler = self._compiler_key(proj)
-        ctx = self._context(proj["id"], fn["unit"])
+        ctx = self._must_context(proj["id"], fn["unit"])
         done = self.store.one("SELECT outcome, why FROM draft_tries WHERE function_id=? AND context_version=? "
                               "AND compiler=?", fid, ctx["version"], compiler)
         if done is not None:  # nothing it depends on changed since: the same draft gives the same verdict

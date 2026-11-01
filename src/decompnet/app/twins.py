@@ -471,7 +471,7 @@ class Twins:
         if names is None:
             return None
         # what the header declares for a's names, declared for b's too (`extern Player g_player;` for D_80047000)
-        header = self.net._context(proj["id"], b["unit"])["header"]
+        header = self.net._must_context(proj["id"], b["unit"])["header"]
         decls = []
         for old_name, new_name in names.items():
             if old_name == a["name"] or re.search(rf"\b{re.escape(new_name)}\b", header):

@@ -123,7 +123,7 @@ def export_pc(net, slug: str, out: Path, log=print) -> dict:
     if not sources:
         raise ExportPcError("no matched functions yet: match at least one function before exporting")
 
-    context = net._context(proj["id"])["header"]
+    context = net._must_context(proj["id"])["header"]
     lang, ext = _language(cfg)
     units = _sources(net, proj, sources, context, lang)
 

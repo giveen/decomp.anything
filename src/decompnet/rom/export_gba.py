@@ -36,7 +36,7 @@ def export_gba(net, slug: str, out: Path, log=print) -> dict:
     syms = net.symbols(proj["id"])
     units = net._unit_contexts(proj["id"])
     (out / "include").mkdir(exist_ok=True)
-    (out / "include" / "common.h").write_text(net._context(proj["id"])["header"], encoding="utf-8")
+    (out / "include" / "common.h").write_text(net._must_context(proj["id"])["header"], encoding="utf-8")
 
     log("checking the matched functions and writing them as C")
     functions, fallback = [], []
@@ -86,7 +86,7 @@ def _check_c(net, proj, row, thumb: bool, units, f: dict) -> str | None:
     """Why a matched function can't be C in the tree (None: it can), recording where its own data goes."""
     if row["vram"] % 4:
         return "it starts halfway a word, where agbcc never puts a function"
-    hdr = net._context(proj["id"], net._effective_unit(row, units))["header"]
+    hdr = net._must_context(proj["id"], net._effective_unit(row, units))["header"]
     compiled = net._compile(proj, hdr, row["matched_source"])
     if not compiled.ok:
         return "doesn't compile any more"

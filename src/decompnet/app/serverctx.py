@@ -24,6 +24,7 @@ import uuid
 from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 import anyio
 from mcp.server.mcpserver import MCPServer
@@ -131,8 +132,9 @@ class Jobs:
                 job["state"] = "done"
                 logger.info("job %s %s done in %.0fs", kind, jid, time.time() - job["t"])
             except BaseException as e:  # a job must end, whatever went wrong
-                if getattr(e, "details", None):  # what the tool said, in full
-                    job["trace"] = str(e.details)[-6000:]
+                details = getattr(e, "details", None)  # what the tool said, in full
+                if details:
+                    job["trace"] = str(details)[-6000:]
                 elif not isinstance(e, (NetworkError, RomError, ValueError)):
                     job["trace"] = traceback.format_exc()[-4000:]
                 job["error"] = job_error(e, self.log_path)
@@ -150,12 +152,14 @@ class Settings:
     def __init__(self, path: Path):
         self.path = path
         self._lock = threading.Lock()
+        self.data: dict[str, Any]  # whatever settings.json holds: strings, numbers, lists and dicts side by side
         try:
             self.data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.data = {}
         if not isinstance(self.data.get("endpoints"), list):  # one saved "api" before 0.10.1: the first endpoint
-            old = self.data.get("api") if isinstance(self.data.get("api"), dict) else {}
+            saved = self.data.get("api")
+            old = saved if isinstance(saved, dict) else {}  # one endpoint's fields, or none at all
             self.data["endpoints"] = [agents.endpoint_entry(old | {"id": "e1"})] if old.get("base_url") or old.get("provider") else []
 
     def save(self) -> None:
@@ -188,7 +192,8 @@ class Settings:
                                      else "the session limit is a number, like 1") from None
         with self._lock:
             eid = str(data.get("id") or "")
-            current = next((e for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id") == eid), None)
+            current: dict[str, Any] | None = next((e for e in self.data.get("endpoints") or []
+                                                   if isinstance(e, dict) and e.get("id") == eid), None)
             if current is None:  # ids are never reused: a session resumed later can't end up on another machine
                 ids = {e["id"] for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id")}
                 n = max(int(self.data.get("endpoint_seq") or 0), len(ids)) + 1
@@ -253,9 +258,12 @@ def _spread(settings: Settings, manager, picked: list[str], count: int, given: d
         if not entry.get("base_url") or not entry.get("model"):
             raise ValueError("add an API endpoint first (Agents & models): its address and model")
         return [(entry, count)]
-    eps = [settings.endpoint(e) for e in picked]
-    if any(e is None for e in eps):
-        raise ValueError("an endpoint you picked isn't saved any more: pick again")
+    eps: list[dict] = []
+    for eid in picked:
+        found = settings.endpoint(eid)
+        if found is None:
+            raise ValueError("an endpoint you picked isn't saved any more: pick again")
+        eps.append(found)
     busy = {e["id"]: sum(1 for x in manager.sessions.values() if x.kind == "api" and x.options.get("endpoint") == e["id"]
                          and x.state in ("starting", "working", "waiting") and not x.stop.is_set()) for e in eps}
     plan = {e["id"]: 0 for e in eps}
