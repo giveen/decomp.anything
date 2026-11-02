@@ -50,6 +50,22 @@ def test_gui_needs_the_secret_and_the_right_host(app):
     assert client.post("/api/settings", json={"autopilot": False}, headers={"X-Decomp": "1"}).json()["autopilot"] is False
 
 
+@pytest.fixture(scope="module")
+def demo(app):
+    """A project in the module's app, imported once. Tests that need one ask for this by name: reading
+    `SELECT slug FROM projects` instead made them pass or fail on file order, which is not the code's doing."""
+    client, net, _ = app
+    if net.store.one("SELECT slug FROM projects") is None:
+        job = client.post("/api/import?demo=1", content=b"", headers={"X-Decomp": "1"}).json()["job"]
+        for _ in range(200):
+            j = client.get(f"/api/job?id={job}").json()
+            if j["state"] != "running":
+                break
+            time.sleep(0.1)
+        assert j["state"] == "done", j
+    return net.store.must_one("SELECT slug FROM projects")["slug"]
+
+
 @needs_demo
 def test_import_demo_and_follow_it_live(app):
     client, _net, _ = app
@@ -96,10 +112,10 @@ def test_parse_agent_output():
 
 
 @needs_demo
-def test_builtin_api_agent_matches_a_function(app, monkeypatch):
+def test_builtin_api_agent_matches_a_function(app, demo, monkeypatch):
     """A scripted OpenAI-compatible model: claim, compile the right C, stop. The tool loop must do the rest."""
     _client, net, manager = app
-    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    slug = demo
     script = iter([
         {"tool_calls": [{"id": "1", "type": "function",
                          "function": {"name": "claim_function", "arguments": json.dumps({"function": "func_800007F4"})}}]},
@@ -127,7 +143,9 @@ def test_builtin_api_agent_matches_a_function(app, monkeypatch):
 
 def test_an_agent_nobody_signed_in_to_stops_and_says_so(tmp_path, monkeypatch):
     """Claude Code without a sign-in exits at once: say that (not "exited with code 1") and don't keep retrying."""
-    manager = agents.Manager(None, tmp_path, "http://127.0.0.1:9/mcp")
+    # a real, empty network: Manager is typed for RomNetwork, and None only survived because these
+    # tests point the MCP URL at a closed port and never touch it
+    manager = agents.Manager(RomNetwork(tmp_path / "decomp.db", tmp_path), tmp_path, "http://127.0.0.1:9/mcp")
     code = "print('Not logged in \\u00b7 Please run /login'); raise SystemExit(1)"
     monkeypatch.setattr(manager, "_command", lambda s, token, workdir: ([sys.executable, "-c", code], dict(os.environ), ""))
     s = agents.Session("claude-1", "claude", "Claude Code #1", "game", "claude-1", {})
@@ -138,7 +156,9 @@ def test_an_agent_nobody_signed_in_to_stops_and_says_so(tmp_path, monkeypatch):
 def test_an_agent_out_of_credit_stops_and_says_so(tmp_path, monkeypatch):
     """DeepSeek's "Insufficient Balance" (here through opencode): stop at once and say what to do. "Too many
     requests" is the provider's limit of requests at once: not a failure, the session waits and tries again."""
-    manager = agents.Manager(None, tmp_path, "http://127.0.0.1:9/mcp")
+    # a real, empty network: Manager is typed for RomNetwork, and None only survived because these
+    # tests point the MCP URL at a closed port and never touch it
+    manager = agents.Manager(RomNetwork(tmp_path / "decomp.db", tmp_path), tmp_path, "http://127.0.0.1:9/mcp")
     s = agents.Session("opencode-1", "opencode", "opencode #1", "game", "opencode-1", {})
 
     def says(text: str) -> None:
@@ -153,9 +173,9 @@ def test_an_agent_out_of_credit_stops_and_says_so(tmp_path, monkeypatch):
 
 
 @needs_demo
-def test_builtin_api_agent_out_of_credit(app, monkeypatch):
+def test_builtin_api_agent_out_of_credit(app, demo, monkeypatch):
     _client, net, manager = app
-    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    slug = net.store.must_one("SELECT slug FROM projects")["slug"]
     answers = iter([httpx.Response(429, json={"error": {"message": "Rate limit reached for requests"}}),
                     httpx.Response(402, json={"error": {"message": "Insufficient Balance"}})])
     real = httpx.Client
@@ -178,9 +198,9 @@ def test_agent_spend_is_read_from_their_output():
 
 
 @needs_demo
-def test_helpers_are_remembered_to_resume(app):
+def test_helpers_are_remembered_to_resume(app, demo):
     _client, net, manager = app
-    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    slug = net.store.must_one("SELECT slug FROM projects")["slug"]
     seen = []
     manager.persist = lambda running: seen.append([r["kind"] for r in running])
     (sid,) = manager.start("api", slug, 1, {"base_url": "http://127.0.0.1:9/v1", "model": "m"})
@@ -304,11 +324,11 @@ def test_a_project_that_cant_be_read_is_listed_with_the_reason(app, monkeypatch)
 
 
 @needs_demo
-def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
+def test_the_api_agent_stays_within_a_small_local_context(app, demo, monkeypatch):
     """A local llama.cpp model with a small context: the agent learns it from /props, trims older tool output to
     fit, and when the server still says the request is too long, trims harder and sends it again."""
     _client, net, manager = app
-    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    slug = net.store.must_one("SELECT slug FROM projects")["slug"]
     names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=(SELECT id FROM projects "
                                                  "WHERE slug=?) ORDER BY n_insns DESC LIMIT 6", slug)]
     script = iter([{"tool_calls": [{"id": str(k), "type": "function", "function": {

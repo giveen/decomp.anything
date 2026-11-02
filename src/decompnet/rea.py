@@ -27,6 +27,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from . import toolchains
 
@@ -57,6 +58,78 @@ ANALYSIS_ALLOWED = (ALLOWED - {"open_binary", "close_binary"}) | {
     "trace_application_feature",
     "binary_session", "get_evidence_bundle",
 }
+# What a native analysis provider looks for in the environment before REA will use it. Ghidra installed from
+# Compilers & tools used to be invisible to REA unless the operator also typed GHIDRA_INSTALL_DIR by hand, so a
+# pinned, sha256-verified Ghidra sat on disk while every native tool reported `not_configured` -- measured on a
+# machine that had it. We seed what we installed ourselves; a value the operator set always wins.
+OWN_PROVIDER_ENV = {"ghidra": ("GHIDRA_INSTALL_DIR", "ghidra")}
+
+# Providers we cannot supply: they are configured outside decomp.anything, and saying so beats a silent absence.
+FOREIGN_PROVIDERS = {
+    "hopper": ("HOPPER_LAUNCHER_PATH", "Hopper is macOS: install it there and point HOPPER_LAUNCHER_PATH at it."),
+    "ida": ("", "IDA Pro needs its own MCP adapter registered (mrexodia/ida-pro-mcp); decomp.anything cannot install it."),
+}
+
+
+def own_install(tid: str) -> str | None:
+    """An analysis tool decomp.anything installed itself, at the path REA would want."""
+    try:
+        if toolchains.installed(tid) is None:
+            return None
+        home = toolchains.path(tid)
+    except (toolchains.ToolchainError, OSError):
+        return None
+    # Ghidra's own layout is the proof, and it is exactly what REA's diagnostics look for
+    if (home / "support" / "analyzeHeadless").exists() or (home / "support" / "analyzeHeadless.bat").exists():
+        return str(home)
+    return None
+
+
+def provider_env() -> dict:
+    """Environment additions for providers we installed. Empty when we have nothing to offer or the operator set
+    the variable for the whole session, which still wins."""
+    out = {}
+    for _provider, (var, tid) in OWN_PROVIDER_ENV.items():
+        if not var or os.environ.get(var):
+            continue
+        found = own_install(tid)
+        if found:
+            out[var] = found
+    return out
+
+
+def readiness() -> list[dict]:
+    """Why each native provider can or cannot be used on this machine, and what would change it. Shown in the RE
+    console: an analysis tool that is quietly absent reads as 'this tool cannot do native code'."""
+    saved = {}
+    if CONFIG is not None and CONFIG.exists():
+        try:
+            saved = json.loads(CONFIG.read_text(encoding="utf-8")).get("env") or {}
+        except (OSError, ValueError):
+            saved = {}
+    rows = []
+    for provider in PROVIDERS:
+        var, tid = OWN_PROVIDER_ENV.get(provider, FOREIGN_PROVIDERS.get(provider, ("", "")))
+        we_supply = provider in OWN_PROVIDER_ENV and own_install(tid) is not None
+        set_by = "decomp.anything" if we_supply and not os.environ.get(var) else (
+            "operator" if os.environ.get(var) else ("saved settings" if var in saved else None))
+        if provider == "rizin":  # no variable: REA finds it on PATH
+            found, set_by = (shutil.which("rizin") is not None), ("PATH" if shutil.which("rizin") else None)
+        else:
+            found = bool(set_by)
+        row = {"provider": provider, "ready": bool(found), "variable": var or None, "set_by": set_by}
+        if not found:
+            if provider in FOREIGN_PROVIDERS:
+                row["fix"] = FOREIGN_PROVIDERS[provider][1]
+            elif provider == "rizin":
+                row["fix"] = "install rizin (Compilers & tools, or your package manager) and restart the server."
+            else:
+                row["fix"] = (f"install it from Compilers & tools (`decompnet toolchain install {provider}`); "
+                              "decomp.anything will then point REA at it by itself.")
+        rows.append(row)
+    return rows
+
+
 NATIVE_ALLOWED = (ALLOWED - {"open_binary", "close_binary"}) | {
     "binary_session", "batch_decompile", "get_call_graph", "trace_call_path", "trace_feature",
     "trace_native_values", "search_bytes", "inspect_native_api", "inspect_native_data_type",
@@ -96,6 +169,16 @@ def _installed_toolchain() -> dict | None:
 
 
 def settings() -> dict:
+    """How REA starts, with the analysis providers' variables it needs filled in. An operator's own
+    value -- in the console, in DECOMP_REA's process environment, or in a Claude Code registration -- always wins
+    over the one we would supply."""
+    res = _settings()
+    if res.get("command") and res.get("source") != "off":
+        res["env"] = {**provider_env(), **(res.get("env") or {})}
+    return res
+
+
+def _settings() -> dict:
     """How REA starts: {command, env, provider, source}. Saved console settings first, then DECOMP_REA,
     `rea` on PATH, REA from Compilers & tools, Claude Code's registration, and npx with the tested version."""
     saved: dict = {}
@@ -249,9 +332,12 @@ class Client:
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
     def call(self, tool: str, arguments: dict | None = None, timeout: float | None = None, *,
-             any_tool: bool = False, envelope: bool = False):
+             any_tool: bool = False, envelope: bool = False) -> Any:
         """A tool's answer (its normalized_result). `any_tool`: the console, past the agents' allowlist;
-        `envelope`: the whole evidence record (provider, confidence, limitations) instead of the answer."""
+        `envelope`: the whole evidence record (provider, confidence, limitations) instead of the answer.
+
+        The shape is whatever the tool returned: REA answers in JSON of its own choosing, and each tool picks its
+        own, so this is deliberately `Any` rather than a dict that would be wrong half the time."""
         if tool not in ALLOWED and not any_tool:
             raise ReaError(f"REA tool {tool!r} is not on decomp.wtf's allowlist")
         result = self._request("tools/call", {"name": tool, "arguments": arguments or {}}, timeout=timeout)

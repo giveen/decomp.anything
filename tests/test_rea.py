@@ -259,6 +259,9 @@ def test_console_api_asks_before_tools_that_act(monkeypatch, fake, tmp_path):
     from decompnet.app.server import build
 
     monkeypatch.setenv("DECOMP_REA", " ".join(fake))
+    # what this test is about is the confirmation flow, not which engines happen to be installed on the runner
+    monkeypatch.setattr(rea.toolchains, "installed", lambda tid, linux=None: {"id": tid} if tid == "rea" else None)
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     home = tmp_path / "home"
     (home / ".decomp").mkdir(parents=True)
     net = RomNetwork(home / ".decomp" / "decomp.db", home)
@@ -307,7 +310,7 @@ def test_analysis_project_has_work_items_claims_and_findings(monkeypatch, fake, 
         assert ov["kind"] == "analysis" and ov["platform_name"] == "ELF" and ov["functions"] == 2
         text = net.claim(agent, slug)
         assert "CLAIMED" in text and ("main" in text or "helper" in text) and "int f(void)" in text
-        claimed = net.store.one("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id")["name"]
+        claimed = net.store.must_one("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id")["name"]
         assert net.complete_analysis(agent, slug, claimed, "reads a table and returns one entry") == (
             f"✅ {claimed} is analyzed and saved. Your finding is on it and in the project's notes. "
             "Call claim_function for the next item, or add_note about the target as a whole.")
@@ -426,7 +429,7 @@ def test_batch_prefill_is_cached_per_project(monkeypatch, fake, tmp_path):
         assert proxy.count("batch_decompile") == 1
         assert "int sub_0x1000" in net.get_function(task, slug)
         assert proxy.count("batch_decompile") == 1  # a re-view is served from the project's cache
-        stored = json.loads(net.store.one("SELECT config FROM projects WHERE slug=?", slug)["config"])
+        stored = json.loads(net.store.must_one("SELECT config FROM projects WHERE slug=?", slug)["config"])
         assert stored["prefill"]
         net.complete_analysis(agent, slug, task, "startup decompiled from 0x1000")
 
@@ -642,3 +645,73 @@ def test_agent_discovery_round_trips_the_actual_mcp_catalog(fake):
         assert rea.agent_catalog(client, rea.NATIVE_ALLOWED) == result
     finally:
         client.close()
+
+
+def _fake_ghidra(monkeypatch, tmp_path):
+    """A Ghidra that decomp.anything installed: our layout, with the headless script REA looks for."""
+    home = tmp_path / "toolchains" / "ghidra"
+    (home / "support").mkdir(parents=True)
+    (home / "support" / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(rea.toolchains, "installed",
+                        lambda tid, linux=None: {"id": tid} if tid == "ghidra" else None)
+    monkeypatch.setattr(rea.toolchains, "path", lambda tid, linux=None: home)
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+    return home
+
+
+def test_a_ghidra_we_installed_is_pointed_at_without_being_asked(monkeypatch, tmp_path):
+    """Measured on a machine that had Ghidra installed from Compilers & tools and still reported
+    `GHIDRA_INSTALL_DIR is not set`: the install was real, the variable was the operator's job, so every native
+    tool was dark. Installing it is now enough."""
+    home = _fake_ghidra(monkeypatch, tmp_path)
+    assert rea.provider_env() == {"GHIDRA_INSTALL_DIR": str(home)}
+    row = next(r for r in rea.readiness() if r["provider"] == "ghidra")
+    assert row["ready"] and row["set_by"] == "decomp.anything" and "fix" not in row
+
+
+def test_an_ghidra_the_operator_exported_is_left_alone(monkeypatch, tmp_path):
+    _fake_ghidra(monkeypatch, tmp_path)
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", "/opt/ghidra")
+    assert rea.provider_env() == {}, "our install must not shadow a deliberate choice"
+    assert next(r for r in rea.readiness() if r["provider"] == "ghidra")["set_by"] == "operator"
+
+
+def test_a_half_installed_ghidra_is_not_offered_as_ready(monkeypatch, tmp_path):
+    """An unpacked directory without the headless entry point is exactly what REA's own diagnostics reject."""
+    home = tmp_path / "toolchains" / "ghidra"
+    home.mkdir(parents=True)
+    monkeypatch.setattr(rea.toolchains, "installed", lambda tid, linux=None: {"id": tid})
+    monkeypatch.setattr(rea.toolchains, "path", lambda tid, linux=None: home)
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+    assert rea.provider_env() == {}
+    row = next(r for r in rea.readiness() if r["provider"] == "ghidra")
+    assert not row["ready"] and "Compilers & tools" in row["fix"]
+
+
+def test_every_native_engine_is_accounted_for(monkeypatch, tmp_path):
+    """A provider that is quietly absent reads as 'this tool cannot do native code', so each one says what it needs."""
+    monkeypatch.setattr(rea.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(rea.toolchains, "installed", lambda tid, linux=None: None)
+    for var in ("GHIDRA_INSTALL_DIR", "HOPPER_LAUNCHER_PATH"):
+        monkeypatch.delenv(var, raising=False)
+    rows = rea.readiness()
+    assert [r["provider"] for r in rows] == list(rea.PROVIDERS)
+    assert all(not r["ready"] and r["fix"] for r in rows), rows
+    assert "mrexodia/ida-pro-mcp" in next(r for r in rows if r["provider"] == "ida")["fix"], "not ours to install"
+
+
+def test_the_provider_variables_reach_whatever_starts_rea(monkeypatch, fake, tmp_path):
+    """However REA is found - PATH, our tools page, npx - the engine variables come with it."""
+    home = _fake_ghidra(monkeypatch, tmp_path)
+    monkeypatch.setenv("DECOMP_REA", " ".join(fake))
+    assert rea.settings()["env"]["GHIDRA_INSTALL_DIR"] == str(home)
+    monkeypatch.setenv("DECOMP_REA", "off")
+    assert rea.settings()["env"] == {}, "nothing to start, nothing to configure"
+
+
+def test_a_saved_engine_path_beats_the_one_we_would_supply(monkeypatch, fake, tmp_path):
+    home = _fake_ghidra(monkeypatch, tmp_path)
+    rea.save(" ".join(fake), {"GHIDRA_INSTALL_DIR": "/opt/other-ghidra"}, "ghidra")
+    monkeypatch.setenv("DECOMP_REA", " ".join(fake))
+    assert rea.settings()["env"]["GHIDRA_INSTALL_DIR"] == "/opt/other-ghidra"
+    assert home.exists()

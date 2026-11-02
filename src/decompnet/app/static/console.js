@@ -290,6 +290,9 @@ function rcSettings(open) {
     <p>${running ? `REA <b>${esc(version || "(version not reported)")}</b> is connected.` : "REA is not running."}
     ${running?.source || s.source ? `Command source: <b>${esc(running?.source || s.source)}</b>.` : "Give the command that starts its MCP server."}
     Native code needs Ghidra (with Java), Hopper or IDA; JavaScript, web pages and many archives need nothing more.</p>
+    ${(st.readiness || []).length ? `<p class="small">Native engines: ${(st.readiness || [])
+      .map((r) => `${esc(r.provider)} ${r.ready ? "ready" : "not ready"}`).join(", ")}.
+      ${(st.readiness || []).filter((r) => !r.ready).map((r) => esc(r.fix || "")).filter(Boolean).join(" ")}</p>` : ""}
     ${running ? `<p class="small">Running command: <code>${esc((running.command || []).map(quote).join(" "))}</code></p>` : ""}
     <div class="row">
       <label class="grow">Command<input class="rc-input" id="rcSetCmd" value="${esc((s.command || []).map(quote).join(" "))}" placeholder="npx -y ${esc(st.package || "rea-agents")} mcp"></label>
