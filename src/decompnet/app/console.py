@@ -103,7 +103,8 @@ class Console:
     def status(self) -> dict:
         cfg = rea.settings()
         running = bool(self.client and self.client.alive())
-        return {"settings": rea.public(cfg), "providers": list(rea.PROVIDERS), "package": rea.PACKAGE,
+        return {"settings": rea.public(cfg), "providers": list(rea.PROVIDERS), "readiness": rea.readiness(),
+                "package": rea.PACKAGE,
                 "configured": bool(cfg["command"]), "running": running, "connection": self.connection if running else None,
                 "target": self.target if running else None, "tools": len(self.catalog or []) if running else 0}
 
