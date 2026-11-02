@@ -183,6 +183,10 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
             as_fallback.append((f["name"], "no longer matches"))
             f["kind"] = "asm"
             continue
+        if linked.candidate is None:  # nothing was placed: the object has no function of that name to export
+            as_fallback.append((f["name"], "the linker found no function of that name in its object"))
+            f["kind"] = "asm"
+            continue
         next_block = bisect_right(boundaries, f["vram"])
         if next_block < len(boundaries) and f["vram"] + len(linked.candidate.code) > boundaries[next_block]:
             as_fallback.append((f["name"], "its code overlaps the next splat block"))
