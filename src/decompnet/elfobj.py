@@ -12,6 +12,7 @@ import bisect
 import contextlib
 import hashlib
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from io import BytesIO
 
@@ -215,6 +216,27 @@ def _get_symbols_by_section(symtab: SymbolTableSection) -> dict[int, list[tuple[
     with contextlib.suppress(AttributeError):
         symtab._decomp_sym_cache = cache
     return cache
+
+
+def symbol_table(elf: ELFFile) -> SymbolTableSection | None:
+    """The object's `.symtab`, or None when it has none. pyelftools types every section as the base `Section`, so
+    asking for `iter_symbols` on the result of `get_section_by_name` is a crash waiting for a stripped object:
+    one check here keeps it out of the ten files that read symbols."""
+    found = elf.get_section_by_name(".symtab")
+    return found if isinstance(found, SymbolTableSection) else None
+
+
+def symbol_table_for(elf: ELFFile, rel: RelocationSection) -> SymbolTableSection | None:
+    """The table a relocation section's `sh_link` points at, which is where its symbol indexes live (None when the
+    object's relocations don't point at a symbol table at all)."""
+    found = elf.get_section(rel["sh_link"])
+    return found if isinstance(found, SymbolTableSection) else None
+
+
+def relocation_sections(elf: ELFFile) -> Iterator[RelocationSection]:
+    """The REL and RELA sections of an object, typed: `iter_sections()` yields `Section`, and `iter_relocations` is
+    only on the relocation subclass."""
+    return (s for s in elf.iter_sections() if isinstance(s, RelocationSection))
 
 
 def _symbol_at(symtab: SymbolTableSection, shndx: int, offset: int) -> tuple[str, int] | None:
