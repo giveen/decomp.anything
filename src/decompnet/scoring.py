@@ -276,7 +276,7 @@ def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:
             elif a:
                 rows.append(("<", a.text, ""))
                 missing[a.text] += 1
-            else:
+            elif b:  # the range above only runs while one of the two has an instruction left
                 rows.append((">", "", b.text))
                 extra[b.text] += 1
     # instructions that are merely in the wrong place are cheaper than real insert/delete
