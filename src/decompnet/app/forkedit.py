@@ -18,6 +18,7 @@ import struct
 from collections import defaultdict
 from pathlib import Path
 
+from .. import elfobj
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import EDITABLE, STATE, ForkError, ForkProject
 from ..network import Agent, NetworkError
@@ -75,7 +76,7 @@ class ForkEditMixin:
                 continue
             with open(unit.target, "rb") as f:
                 elf = ELFFile(f)
-                symtab = elf.get_section_by_name(".symtab")
+                symtab = elfobj.symbol_table(elf)
                 sym = next((x for x in symtab.iter_symbols() if x.name == name and isinstance(x["st_shndx"], int)
                             and x["st_info"]["type"] != "STT_FUNC"), None) if symtab else None
                 if sym is None:
@@ -131,7 +132,7 @@ class ForkEditMixin:
                 continue
             try:
                 with open(unit.target, "rb") as f:
-                    symtab = ELFFile(f).get_section_by_name(".symtab")
+                    symtab = elfobj.symbol_table(ELFFile(f))
                     for x in symtab.iter_symbols() if symtab else ():
                         if x.name and x["st_info"]["type"] in ("STT_OBJECT", "STT_NOTYPE") and isinstance(x["st_shndx"], int):
                             index[x.name].append(unit.name)

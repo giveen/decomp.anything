@@ -37,8 +37,14 @@ def status_of(net, name):
 
 
 def test_check_source_blocks_cheats():
-    for bad in ['void f(void){ asm("nop"); }', "#pragma GLOBAL_ASM(\"x.s\")", "#include <stdio.h>",
-                'INCLUDE_ASM("asm", f);', '#include "../../etc/passwd"', "void f(void){ __asm__ volatile(\"\"); }"]:
+    for bad in [
+        'void f(void){ asm("nop"); }',
+        '#pragma GLOBAL_ASM("x.s")',
+        "#include <stdio.h>",
+        'INCLUDE_ASM("asm", f);',
+        '#include "../../etc/passwd"',
+        'void f(void){ __asm__ volatile(""); }',
+    ]:
         with pytest.raises(SourceRejected):
             check_source(bad)
     check_source('// this used to be asm\nint f(void) { const char *s = "asm"; return 0; }')
@@ -157,6 +163,7 @@ def test_projects_need_a_lawful_basis(tmp_path):
     import shutil
 
     from decompnet.project import ProjectRejected
+
     proj = tmp_path / "game"
     shutil.copytree(DEMO, proj)
     toml = (proj / "project.toml").read_text()
@@ -171,7 +178,7 @@ def test_projects_need_a_lawful_basis(tmp_path):
     (proj / "project.toml").write_text(toml.replace('license = "CC0-1.0"\n', ""))
     with pytest.raises(ProjectRejected, match="license"):
         import_project(net.store, proj, log=lambda *_: None)
-    assert net.store.one("SELECT COUNT(*) AS n FROM projects")["n"] == 0
+    assert net.store.must_one("SELECT COUNT(*) AS n FROM projects")["n"] == 0
 
 
 def test_status_shows_legal_basis(net):
@@ -219,8 +226,14 @@ def test_give_ups_are_recounted_once_without_decomp_wtfs_own_expiries(tmp_path):
     db.execute("INSERT INTO agents(id,name,token_hash,created_at) VALUES(1,'autopilot','x',0),(2,'claude-1','y',0)")
     db.execute("INSERT INTO projects(id,slug,root,config) VALUES(1,'p','/','{}')")
     db.execute("INSERT INTO functions(project_id,name,abandons) VALUES(1,'f',5),(1,'g',3)")
-    for agent, kind, fn in [(1, "expired", "f"), (1, "expired", "f"), (2, "release", "f"), (1, "expired", "g"),
-                            (2, "expired", "g"), (2, "release", "g")]:
+    for agent, kind, fn in [
+        (1, "expired", "f"),
+        (1, "expired", "f"),
+        (2, "release", "f"),
+        (1, "expired", "g"),
+        (2, "expired", "g"),
+        (2, "release", "g"),
+    ]:
         db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(1,?,?,?,0)", (agent, kind, fn))
     db.commit()
     db.close()
@@ -228,7 +241,7 @@ def test_give_ups_are_recounted_once_without_decomp_wtfs_own_expiries(tmp_path):
     assert {r["name"]: r["abandons"] for r in store.all("SELECT name, abandons FROM functions")} == {"f": 1, "g": 2}
     with store.tx() as tx:
         tx.execute("UPDATE functions SET abandons=7 WHERE name='f'")
-    assert Store(path).one("SELECT abandons FROM functions WHERE name='f'")["abandons"] == 7  # once only
+    assert Store(path).must_one("SELECT abandons FROM functions WHERE name='f'")["abandons"] == 7  # once only
 
 
 def test_every_new_session_starts_with_what_agents_learned(net, agents):
@@ -248,9 +261,49 @@ def test_big_functions_get_more_compiles_before_the_nudge_to_move_on(net, agents
     fn = net.store.one("SELECT id FROM functions WHERE name='clamp_s32'")
     with net.store.tx() as db:
         for score in (50, 60, 60, 70, 80, 90, 95):
-            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,source,created_at) VALUES(?,?,?,?,?,?)",
-                       (fn["id"], alice.id, score, 1, "x", 0))
+            db.execute(
+                "INSERT INTO attempts(function_id,agent_id,score,compiled,source,created_at) VALUES(?,?,?,?,?,?)",
+                (fn["id"], alice.id, score, 1, "x", 0),
+            )
     assert "No better in your last 6" in net.stall_note(fn["id"], alice.id)  # a small function: after 4
     with net.store.tx() as db:
         db.execute("UPDATE functions SET n_insns=300 WHERE id=?", (fn["id"],))
     assert net.stall_note(fn["id"], alice.id) == ""  # a big one: not before 10
+
+
+def test_a_missing_row_is_said_where_it_is_missing(tmp_path):
+    """`Store.must_one` exists so that a row which has to be there fails with the query that found nothing, instead
+    of a None turning into a type error where a column of it is read."""
+    import pytest
+
+    from decompnet.app.engine import RomNetwork
+    from decompnet.store import StoreError
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    assert net.store.one("SELECT value FROM settings WHERE key='not-there'") is None  # the peeking form stays quiet
+    with pytest.raises(StoreError) as missing:
+        net.store.must_one("SELECT value FROM settings WHERE key='not-there'")
+    assert "SELECT value FROM settings" in str(missing.value)
+
+
+def test_a_project_without_a_header_says_so_before_anything_reads_it(tmp_path):
+    """`_must_context` is what compiles and exports go through: a project with no context.h yet fails as a
+    NetworkError that names the unit, not as a None subscripted somewhere inside the compiler."""
+    import pytest
+
+    from decompnet.app.engine import RomNetwork
+    from decompnet.network import NetworkError
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        pid = db.execute(
+            "INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES('no-header','No Header','','mips',0,?,'{}')",
+            (str(tmp_path),),
+        ).lastrowid
+    assert pid is not None  # an insert against an INTEGER PRIMARY KEY always knows its own id
+    assert net._context(pid) is None
+    for unit in ("", "src/main.c"):
+        with pytest.raises(NetworkError) as missing:
+            net._must_context(pid, unit)
+        assert "no context.h" in str(missing.value)
+        assert not unit or unit in str(missing.value)

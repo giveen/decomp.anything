@@ -47,6 +47,22 @@ def installed() -> dict:
     return data
 
 
+def running_id() -> str:
+    """The commit this process is running: the checkout's own HEAD when it runs from a git checkout, else the
+    commit the installer recorded. Only the install's commit was shown before, so a stale process and a freshly
+    rebuilt one reported the same build and /health could not tell them apart."""
+    root = Path(__file__).resolve().parents[3]  # src/decompnet/app/updates.py -> the checkout (site-packages has no .git)
+    if (root / ".git").exists():
+        try:
+            found = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True,
+                                   timeout=5)
+        except (OSError, subprocess.TimeoutExpired):  # no git, or it hung: fall back to what the installer recorded
+            return (installed().get("commit") or "")[:12]
+        if found.returncode == 0 and found.stdout.strip():
+            return found.stdout.strip()[:12]
+    return (installed().get("commit") or "")[:12]
+
+
 def record(channel: str, branch: str = "", commit: str = "", repo: str = REPO) -> dict:
     data = {"channel": channel if channel in ("release", "branch") else "release", "repo": repo or REPO,
             "branch": branch, "commit": commit, "version": __version__, "t": time.time()}

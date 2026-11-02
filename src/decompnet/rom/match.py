@@ -27,7 +27,7 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
 
-from .. import scoring
+from .. import elfobj, scoring
 from ..elfobj import _MASKS, FunctionObj, Reloc, _canonical, _section_target, _symbol_at
 from .split import RomFunction
 from .symbols import SymbolTable
@@ -193,8 +193,8 @@ class _Linker:
     def __init__(self, obj: bytes, name: str, target: RomTarget, symbols: SymbolTable, read: ReadFn):
         self.elf = ELFFile(BytesIO(obj))
         self.name, self.target, self.symbols, self.read = name, target, symbols, read
-        symtab = self.elf.get_section_by_name(".symtab")
-        if not isinstance(symtab, SymbolTableSection):  # every object a compiler produces has one
+        symtab = elfobj.symbol_table(self.elf)  # every object a compiler produces has one
+        if symtab is None:
             raise ValueError("the submitted object has no .symtab to link against")
         self.symtab = symtab
         self.problems: list[str] = []

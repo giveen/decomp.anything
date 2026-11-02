@@ -27,6 +27,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 
+from .. import elfobj
 from ..elfobj import _MASKS, Reloc, mask_relocs
 from ..handwritten import mips_reason, ppc_reason
 from ..network import NetworkError
@@ -73,14 +74,12 @@ def object_prints(data: bytes) -> dict[str, Print]:
     """Fingerprints of every function an object file defines, by symbol (with, for PowerPC, whether its code is
     hand-written assembly)."""
     from elftools.elf.elffile import ELFFile
-    from elftools.elf.relocation import RelocationSection
-    from elftools.elf.sections import SymbolTableSection
 
     elf = ELFFile(BytesIO(data))
     arch, order = _MACHINE.get(elf["e_machine"], ("", None))
     order = order or ("little" if elf.little_endian else "big")
-    symtab = elf.get_section_by_name(".symtab")
-    if not isinstance(symtab, SymbolTableSection) or not arch:  # an object with no symbol table to read
+    symtab = elfobj.symbol_table(elf)
+    if symtab is None or not arch:  # an object with no symbol table to read
         return {}
     by_section: dict[int, list] = defaultdict(list)
     for s in symtab.iter_symbols():
@@ -94,11 +93,11 @@ def object_prints(data: bytes) -> dict[str, Print]:
         raw = sec.data()
         code = bytearray(raw)
         rels: list[tuple[int, int, str]] = []
-        for rs in elf.iter_sections():
-            if not isinstance(rs, RelocationSection) or rs["sh_info"] != shndx:
+        for rs in elfobj.relocation_sections(elf):
+            if rs["sh_info"] != shndx:
                 continue
-            table = elf.get_section(rs["sh_link"])
-            if not isinstance(table, SymbolTableSection):  # relocations that don't point at a symbol table
+            table = elfobj.symbol_table_for(elf, rs)  # relocations that don't point at a symbol table: nothing to read
+            if table is None:
                 continue
             for r in rs.iter_relocations():
                 sym = table.get_symbol(r["r_info_sym"])

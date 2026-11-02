@@ -62,7 +62,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     manager.persist = remember
 
     ctx = ServerContext(net, home, port, secret, manager, jobs, settings, console)
-    ctx.build_id = (updates.installed().get("commit") or "")[:12]  # a branch install: the commit it came from
+    ctx.build_id = updates.running_id()  # which code this process is: the checkout's HEAD, or the installed commit
 
     threading.Thread(target=collab.local_addresses, daemon=True).start()  # `tailscale status` can take seconds
     # rooms this computer belongs to reconnect (members keep their place; their agents wait while the host is away)
