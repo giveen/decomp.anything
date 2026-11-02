@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parent
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
@@ -38,8 +39,8 @@ except ImportError:
     sys.exit("This build uses decomp.wtf's pinned compilers: install decomp.wtf first (https://decomp.wtf).")
 
 
-def fail(msg: str) -> None:
-    sys.exit(f"error: {msg}")
+def fail(msg: str) -> NoReturn:
+    sys.exit(f"error: {msg}")  # NoReturn: callers that fail() really stop here
 
 
 def run(argv: list[str]) -> None:
@@ -107,6 +108,7 @@ def trim(path: Path) -> None:
     from io import BytesIO
 
     from elftools.elf.elffile import ELFFile
+    from elftools.elf.relocation import RelocationSection
 
     from decompnet.elfobj import _function_symbols
 
@@ -122,7 +124,7 @@ def trim(path: Path) -> None:
         sec = elf.get_section(shndx)
         tail = sec.data()[end:]
         relocated = any(r["r_offset"] >= end for rs in elf.iter_sections()
-                        if rs.header["sh_type"] in ("SHT_REL", "SHT_RELA") and rs["sh_info"] == shndx
+                        if isinstance(rs, RelocationSection) and rs["sh_info"] == shndx
                         for r in rs.iter_relocations())
         if end < sec["sh_size"] and not tail.strip(b"\0") and not relocated:
             struct.pack_into(order + "I", data, shoff + shndx * shentsize + 20, end)
@@ -284,6 +286,8 @@ def check(name: str) -> bool:
     table = SymbolTable(found)
     big = B["big_endian"]
     rf = split.parse_function(ROOT / fn["asm"], fn["seg"], big)
+    if rf is None:  # the spimdisasm .s has no glabel-and-instructions for it: nothing to match against
+        fail(f"read the target from {fn['asm']} first: it has no labelled function there")
     target = match.target_from_split(rf, table.resolve, big, B.get("gp") or 0)
     image = (ROOT / B["image"]).read_bytes()
 
@@ -301,7 +305,7 @@ def check(name: str) -> bool:
     m = re.match(r'\s*#include "([^"]+)"\s*\n', text)
     header = (ROOT / "include" / m.group(1)).read_text(encoding="utf-8") if m else ""
     res = compile_source(cfg, header, text[m.end():] if m else text, trusted=True)
-    if not res.ok:
+    if res.obj is None:  # it didn't compile: the log says why
         print(res.log)
         return False
     linked = match.link(res.obj, name, target, table, read)

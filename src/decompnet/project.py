@@ -133,7 +133,7 @@ def build_target(root: Path, cfg: dict, log=print) -> None:
         log(f"building {out.relative_to(root)} from {src} with {cfg['compiler'].get('toolchain', 'cmd')}")
         out.parent.mkdir(parents=True, exist_ok=True)  # a fresh checkout has no target/ yet: gcc can't create it
         res = compile_source(cc, "", src_path.read_text(errors="replace", encoding="utf-8"), trusted=True)
-        if not res.ok:
+        if res.obj is None:  # it didn't compile: the log says why
             raise ProjectRejected(f"target build failed for {src}:\n{res.log}")
         out.write_bytes(res.obj)
 
@@ -171,6 +171,8 @@ def import_project(store: Store, root: Path, log=print) -> int:
             seen[name] = obj.name
             unit = obj.stem
             fn = extract_function(data, name)
+            if fn is None:  # list_functions named it, so a miss here is a malformed object
+                raise ProjectRejected(f"{obj.name}: no code at the symbol for {name!r}")
             arch, big_endian = fn.arch, fn.big_endian
             insns = scoring.disassemble(fn)
             seed_file = root / "seeds" / f"{name}.c"
@@ -204,6 +206,8 @@ def import_project(store: Store, root: Path, log=print) -> int:
                 "INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                 (slug, cfg.get("name", slug), cfg.get("description", ""), arch, big_endian, str(root), json.dumps(cfg)),
             ).lastrowid
+            if pid is None:  # an insert against an INTEGER PRIMARY KEY always knows its id
+                raise ProjectRejected(f"project {slug!r}: importing it returned no id")
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, header, None, "initial import", now, ""))
         else:
