@@ -21,9 +21,11 @@ import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
+from typing import Literal
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
+from elftools.elf.sections import SymbolTableSection
 
 from .. import scoring
 from ..elfobj import _MASKS, FunctionObj, Reloc, _canonical, _section_target, _symbol_at
@@ -51,7 +53,7 @@ class RomTarget:
     gp: int = 0  # $gp, for $gp-relative references (PlayStation small data)
 
     @property
-    def order(self) -> str:
+    def order(self) -> Literal["little", "big"]:
         return "big" if self.big_endian else "little"
 
     def to_json(self) -> list:
@@ -168,6 +170,8 @@ def _raw_relocs(elf: ELFFile, shndx: int, start: int, size: int, code: bytes) ->
         if not isinstance(rsec, RelocationSection) or rsec["sh_info"] != shndx:
             continue
         symtab = elf.get_section(rsec["sh_link"])
+        if not isinstance(symtab, SymbolTableSection):  # a reloc section that doesn't point at a symbol table
+            continue
         for rel in rsec.iter_relocations():
             off = rel["r_offset"]
             if not (start <= off < start + size):
@@ -189,7 +193,10 @@ class _Linker:
     def __init__(self, obj: bytes, name: str, target: RomTarget, symbols: SymbolTable, read: ReadFn):
         self.elf = ELFFile(BytesIO(obj))
         self.name, self.target, self.symbols, self.read = name, target, symbols, read
-        self.symtab = self.elf.get_section_by_name(".symtab")
+        symtab = self.elf.get_section_by_name(".symtab")
+        if not isinstance(symtab, SymbolTableSection):  # every object a compiler produces has one
+            raise ValueError("the submitted object has no .symtab to link against")
+        self.symtab = symtab
         self.problems: list[str] = []
         self.local_map: dict[tuple[int, int], int] = {}  # (section index, offset) -> ROM address
         self.target_at = {off: (rtype, addr) for off, rtype, addr in target.relocs}
@@ -245,7 +252,7 @@ class _Linker:
             return None if base is None else base + named[1]
         # data this submission defines itself: place it where the ROM keeps the data this instruction uses
         base = self.symbols.resolve(named[0]) if named else None
-        if base is not None:
+        if named is not None and base is not None:  # a name we know the address of: this is that datum
             addr = base + named[1]
         else:
             want = self.target_at.get(r["off"])
@@ -274,6 +281,8 @@ class _Linker:
             for rsec in self.elf.iter_sections():
                 if isinstance(rsec, RelocationSection) and rsec["sh_info"] == shndx:
                     rsym = self.elf.get_section(rsec["sh_link"])
+                    if not isinstance(rsym, SymbolTableSection):  # a reloc section that doesn't point at a symbol table
+                        continue
                     out += [(rel["r_offset"], rel["r_info_type"], rsym.get_symbol(rel["r_info_sym"]))
                             for rel in rsec.iter_relocations()]
             self._data_relocs[shndx] = sorted(out, key=lambda x: x[0])
@@ -303,7 +312,7 @@ class _Linker:
         if hit and hit[0] == self.name:
             return self.target.vram + hit[1], None
         base = self.symbols.resolve(hit[0]) if hit else None
-        if base is not None:
+        if hit is not None and base is not None:  # it points at something the project already placed
             return (base + hit[1]) & 0xFFFFFFFF, None
         if s["st_shndx"] == self.fn_shndx:
             return None, None
@@ -409,6 +418,9 @@ def link(obj: bytes, name: str, target: RomTarget, symbols: SymbolTable, read: R
 
 def diff(target: FunctionObj, result: LinkResult) -> scoring.DiffResult:
     """Score with the usual instruction diff, but decide the match by the linked bytes."""
+    if result.candidate is None:  # nothing linked (no such function, wrong endianness): the worst score, no rows to show
+        max_score = max(1, len(scoring.disassemble(target))) * scoring.PENALTY_INSERTION
+        return scoring.DiffResult(max_score, max_score, [], False)
     d = scoring.diff(target, result.candidate)
     if result.exact:
         return scoring.DiffResult(0, d.max_score, d.rows, True)
