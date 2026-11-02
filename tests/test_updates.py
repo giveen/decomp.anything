@@ -202,7 +202,12 @@ def test_running_id_reports_the_checkout_being_run():
         pytest.skip("not running from a git checkout")
     head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True)
     assert head.returncode == 0 and head.stdout.strip(), f"git rev-parse failed in {root}"
-    assert updates.running_id() == head.stdout.strip()[:12]
+    running = updates.running_id()
+    assert running.startswith(head.stdout.strip()[:12]), "the id names the commit on disk"
+    # a checkout with uncommitted edits says so: two processes at one HEAD can run different code
+    dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+                           capture_output=True, text=True).stdout.strip()
+    assert running.endswith("-dirty") == bool(dirty), f"{running!r} vs uncommitted={bool(dirty)}"
     recorded = (updates.installed().get("commit") or "")[:12]
     if recorded and recorded != head.stdout.strip()[:12]:
         assert updates.running_id() != recorded  # it follows the code on disk, not the install record
