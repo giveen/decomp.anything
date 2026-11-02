@@ -99,7 +99,7 @@ def test_parse_agent_output():
 def test_builtin_api_agent_matches_a_function(app, monkeypatch):
     """A scripted OpenAI-compatible model: claim, compile the right C, stop. The tool loop must do the rest."""
     _client, net, manager = app
-    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    slug = net.store.must_one("SELECT slug FROM projects")["slug"]
     script = iter([
         {"tool_calls": [{"id": "1", "type": "function",
                          "function": {"name": "claim_function", "arguments": json.dumps({"function": "func_800007F4"})}}]},
@@ -155,7 +155,7 @@ def test_an_agent_out_of_credit_stops_and_says_so(tmp_path, monkeypatch):
 @needs_demo
 def test_builtin_api_agent_out_of_credit(app, monkeypatch):
     _client, net, manager = app
-    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    slug = net.store.must_one("SELECT slug FROM projects")["slug"]
     answers = iter([httpx.Response(429, json={"error": {"message": "Rate limit reached for requests"}}),
                     httpx.Response(402, json={"error": {"message": "Insufficient Balance"}})])
     real = httpx.Client
@@ -180,7 +180,7 @@ def test_agent_spend_is_read_from_their_output():
 @needs_demo
 def test_helpers_are_remembered_to_resume(app):
     _client, net, manager = app
-    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    slug = net.store.must_one("SELECT slug FROM projects")["slug"]
     seen = []
     manager.persist = lambda running: seen.append([r["kind"] for r in running])
     (sid,) = manager.start("api", slug, 1, {"base_url": "http://127.0.0.1:9/v1", "model": "m"})
@@ -308,7 +308,7 @@ def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
     """A local llama.cpp model with a small context: the agent learns it from /props, trims older tool output to
     fit, and when the server still says the request is too long, trims harder and sends it again."""
     _client, net, manager = app
-    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    slug = net.store.must_one("SELECT slug FROM projects")["slug"]
     names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=(SELECT id FROM projects "
                                                  "WHERE slug=?) ORDER BY n_insns DESC LIMIT 6", slug)]
     script = iter([{"tool_calls": [{"id": str(k), "type": "function", "function": {
