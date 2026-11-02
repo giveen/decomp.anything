@@ -15,7 +15,7 @@ MAX_ATTEMPTS = 400
 
 def function_page(net: Network, project: str, name: str) -> dict:
     fn = net._function(name, project)
-    proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+    proj = net.store.must_one("SELECT * FROM projects WHERE id=?", fn["project_id"])  # a function always has its project
     cfg = json.loads(proj["config"])
     legal = cfg.get("legal", {})
     hash_only = net._hash_only(fn)
