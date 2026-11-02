@@ -35,7 +35,7 @@ def _args_brief(args) -> str:
 def _error_text(err) -> str:
     """The message in an agent's error object, whatever its shape (opencode nests it under data)."""
     if isinstance(err, dict):
-        data = err.get("data") if isinstance(err.get("data"), dict) else {}
+        data = inner if isinstance(inner := err.get("data"), dict) else {}  # opencode nests the message under data
         msg = err.get("message") or data.get("message") or ""
         name = err.get("name") or err.get("type") or ""
         if msg and name and name not in ("UnknownError", "Error") and name not in msg:
@@ -131,7 +131,7 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
             out.append(("info", "session finished" + (f" ({', '.join(b for b in bits if b)})" if any(bits) else "")))
             if isinstance(cost, (int, float)):
                 out.append(("usage", json.dumps({"usd": cost})))
-            stats: dict = obj.get("stats") if isinstance(obj.get("stats"), dict) else {}
+            stats = st if isinstance(st := obj.get("stats"), dict) else {}
             if stats.get("total_tokens"):
                 out.append(("usage", json.dumps({"tokens": stats["total_tokens"]})))
     elif t in ("item.started", "item.completed") and isinstance(obj.get("item"), dict):  # Codex
@@ -149,7 +149,7 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
             out.append(("error", str(item.get("message", ""))[:400]))
     elif t == "turn.completed":
         out.append(("info", "turn finished"))
-        usage: dict = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
+        usage = used if isinstance(used := obj.get("usage"), dict) else {}
         tokens = sum(v for k, v in usage.items() if k in ("input_tokens", "output_tokens") and isinstance(v, int))
         if tokens:
             out.append(("usage", json.dumps({"tokens": tokens})))
@@ -158,7 +158,7 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
         if not text.startswith("Unexpected server error"):  # opencode's placeholder: its log line says what failed
             out.append(("error", text[:400]))
     elif t == "tool_use":  # opencode
-        part: dict = obj.get("part") if isinstance(obj.get("part"), dict) else obj
+        part = piece if isinstance(piece := obj.get("part"), dict) else obj
         name = part.get("tool_name") or part.get("tool") or part.get("name") or ""
         args = part.get("parameters") or (part.get("state") or {}).get("input") or part.get("input")
         out.append(("tool", f"{_tool_name(name)}({_args_brief(args)})"))

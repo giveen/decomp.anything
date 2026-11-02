@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from elftools.elf.elffile import ELFFile
+from elftools.elf.sections import SymbolTableSection
 
 from decompnet import toolchains
 
@@ -70,7 +71,10 @@ def blank_logo() -> bytes:
 def arm9_binary(elf_path: Path) -> tuple[bytes, int, int]:
     """(ARM9 program: main part, autoload blocks and infos; build info offset; autoload callback address)."""
     elf = ELFFile(open(elf_path, "rb"))
-    syms = {s.name: s["st_value"] for s in elf.get_section_by_name(".symtab").iter_symbols()}
+    symtab = elf.get_section_by_name(".symtab")
+    if not isinstance(symtab, SymbolTableSection):  # the linked ARM9 has to name the autoload layout
+        sys.exit(f"{elf_path} has no .symtab: link it with symbols")
+    syms = {s.name: s["st_value"] for s in symtab.iter_symbols()}
     image = bytearray((BUILD / "arm9.bin").read_bytes())
     blocks = ARM9 + len(image)
     assert blocks == syms["__autoload_blocks"], (hex(blocks), hex(syms["__autoload_blocks"]))
