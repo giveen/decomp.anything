@@ -1,5 +1,5 @@
 {
-  "error_count": 42,
+  "error_count": 43,
   "recorded": "2026-11-02",
   "note": "pyright 1.1.414 in basic mode over [tool.pyright] include (src/decompnet), unresolved third-party imports ignored. 52 findings were there when the gate went in; 43 here after the symbol-table accessors and the None-at-the-read fixes. Re-declare this number in the PR that moves it, in either direction: the gate fails on an increase and on an unlowered decrease."
 }
