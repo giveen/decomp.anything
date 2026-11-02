@@ -108,12 +108,11 @@ def _read(data: bytes) -> tuple[str, list[_Section], list[_Symbol]]:
     strings = symptr + 18 * nsyms if symptr else 0
     at = 20 + opt_size
     for _ in range(nsections):
-        raw, _vsize, _vaddr, rawsize, rawptr, relptr, _nline, nreloc, _nlno, chars = struct.unpack_from(
-            "<8sIIIIIIHHI", data, at)
+        raw, _vsize, _vaddr, rawsize, rawptr, relptr, _nline, nreloc, _nlno, chars = struct.unpack_from("<8sIIIIIIHHI", data, at)
         name = _cstr(raw)
         if name.startswith("/") and name[1:].isdigit():  # long section name: offset into the string table
             name = _string(data, strings + int(name[1:]))
-        body = data[rawptr:rawptr + rawsize] if rawptr and rawsize else b""
+        body = data[rawptr : rawptr + rawsize] if rawptr and rawsize else b""
         relocs = []
         if relptr and nreloc:
             for k in range(nreloc):
@@ -128,8 +127,13 @@ def _read(data: bytes) -> tuple[str, list[_Section], list[_Symbol]]:
         if not 0 < symbol.section <= len(sections):
             continue
         section = sections[symbol.section - 1]
-        if (section.characteristics & 0x1000 and symbol.storage == IMAGE_SYM_CLASS_STATIC and symbol.type == 0
-                and symbol.value == 0 and symbol.name == section.name):
+        if (
+            section.characteristics & 0x1000
+            and symbol.storage == IMAGE_SYM_CLASS_STATIC
+            and symbol.type == 0
+            and symbol.value == 0
+            and symbol.name == section.name
+        ):
             at = symptr + 18 * symbol.index
             if data[at + 17] and at + 36 <= len(data):
                 section.comdat_selection = data[at + 18 + 14]
@@ -142,12 +146,19 @@ def _key(name: str) -> str:
 
 
 def _is_function(symbol: _Symbol) -> bool:
-    return symbol.section > 0 and (symbol.type & 0x20 or symbol.type == 0x20)  # IMAGE_SYM_DTYPE_FUNCTION
+    return symbol.section > 0 and bool(symbol.type & 0x20 or symbol.type == 0x20)  # IMAGE_SYM_DTYPE_FUNCTION
 
 
 def _defined_in(symbols: list[_Symbol], section: int) -> list[_Symbol]:
-    return [s for s in symbols if s.section == section and s.name and not s.name.startswith(".")
-            and not (s.storage == IMAGE_SYM_CLASS_STATIC and s.type == 0) and s.name not in (".text", ".data", ".bss")]
+    return [
+        s
+        for s in symbols
+        if s.section == section
+        and s.name
+        and not s.name.startswith(".")
+        and not (s.storage == IMAGE_SYM_CLASS_STATIC and s.type == 0)
+        and s.name not in (".text", ".data", ".bss")
+    ]
 
 
 def _symbol_name(symbols: list[_Symbol], index: int, sections: list[_Section]) -> tuple[str, int]:
@@ -181,7 +192,7 @@ def trim_code(code: bytes, arch: str) -> bytes:
         # Checking the whole suffix, not just the bytes right after a terminator, keeps an early `ret`
         # whose following block is reachable by a jump.
         if ins.address and ins.address >= pad_start:
-            return code[:ins.address]
+            return code[: ins.address]
     return code
 
 
@@ -217,7 +228,7 @@ def extract_function(data: bytes, name: str) -> FunctionObj | None:
         return None
     section = sections[sym.section - 1]
     size = _extent(symbols, sym, section)
-    full = section.data[sym.value:sym.value + size]
+    full = section.data[sym.value : sym.value + size]
     code = bytearray(trim_code(full, arch))
     if not code:
         return None
@@ -228,7 +239,7 @@ def extract_function(data: bytes, name: str) -> FunctionObj | None:
             continue
         symbol, adjustment = _symbol_name(symbols, r.symbol, sections)
         width = 8 if arch == "x86_64" and r.type == 1 else 4
-        addend = int.from_bytes(code[at:at + width], "little", signed=True)
+        addend = int.from_bytes(code[at : at + width], "little", signed=True)
         relocs.append(Reloc(at, r.type, symbol, addend + adjustment))
     relocs.sort(key=lambda r: r.offset)
     return FunctionObj(name=name, arch=arch, big_endian=False, code=bytes(code), relocs=relocs, format="coff")

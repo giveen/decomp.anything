@@ -163,11 +163,12 @@ def _obj_size(obj: str, sections: str = ".text") -> int:
 
 def _globals(obj: str) -> set[str]:
     from elftools.elf.elffile import ELFFile
-    from elftools.elf.sections import SymbolTableSection
+
+    from .. import elfobj
 
     with open(ROOT / obj, "rb") as f:
-        symtab = ELFFile(f).get_section_by_name(".symtab")
-    if not isinstance(symtab, SymbolTableSection):  # an object with no symbol table declares no globals
+        symtab = elfobj.symbol_table(ELFFile(f))
+    if symtab is None:  # an object with no symbol table declares no globals
         return set()
     return {s.name for s in symtab.iter_symbols() if s["st_info"]["bind"] == "STB_GLOBAL"
             and s["st_shndx"] != "SHN_UNDEF"}

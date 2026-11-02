@@ -19,6 +19,8 @@ from pathlib import Path
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 
+from .. import elfobj
+
 _SKIP = (".comment", ".note", ".debug", ".line", ".mwcats", ".gnu", ".reginfo", ".mdebug", ".pdr", ".MIPS")
 
 
@@ -54,7 +56,7 @@ class Section:
 def _items(path: Path) -> dict[str, list[Item]]:
     elf = ELFFile(BytesIO(path.read_bytes()))
     out: dict[str, list[Item]] = {}
-    symtab = elf.get_section_by_name(".symtab")
+    symtab = elfobj.symbol_table(elf)
     relocs: dict[int, list[int]] = {}
     for rs in elf.iter_sections():
         if isinstance(rs, RelocationSection):

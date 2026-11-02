@@ -1,6 +1,7 @@
 """Phase 2/3 features: reputation, open registration, hash-only projects, per-unit headers, function pages,
 donated compute and upstream export."""
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -148,3 +149,19 @@ def test_upstream_export_commits_with_credit(net, tmp_path):
     log = subprocess.run(["git", "-C", str(repo), "log", "--format=%an|%s|%b"], capture_output=True, text=True).stdout
     assert "alice|Match abs_s32" in log and "operator: Alice" in log
     assert "reconstruction, not the original source" in (repo / "src" / "game" / "abs_s32.c").read_text()
+
+
+def test_worker_warns_before_sending_a_token_in_the_clear():
+    """Donating compute to a coordinator over plain http is fine on your own machine or LAN and not fine anywhere
+    else: the agent token and the generated source ride in the request body."""
+    from decompnet.permuter import _cleartext, worker
+
+    for safe in ("https://api.decomp.online", "http://127.0.0.1:6464", "http://localhost:6464", "http://192.168.1.20:6481",
+                 "http://[::1]:6464", "http://box.local:6481"):
+        assert _cleartext(safe) is None, f"{safe} should not warn"
+    for risky in ("http://api.decomp.online", "http://8.8.8.8:6481"):
+        assert _cleartext(risky), f"{risky} should warn"
+    seen: list[str] = []
+    with contextlib.suppress(OSError):  # `.invalid` never resolves: the run stops at its first request
+        worker("http://coordinator.invalid", "dn_test", minutes_per_job=0.001, max_jobs=1, log=seen.append)
+    assert any("plain text" in line for line in seen), seen[:3]

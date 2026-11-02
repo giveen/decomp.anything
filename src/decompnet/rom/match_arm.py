@@ -16,6 +16,7 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
 
+from .. import elfobj
 from ..elfobj import FunctionObj, Reloc, _function_symbols
 from .match import LinkResult, significant
 from .symbols import SymbolTable
@@ -79,7 +80,7 @@ def link(obj: bytes, name: str, target: ArmTarget, symbols: SymbolTable, read) -
     relocs: list[Reloc] = []
     tcode = target.code
     own: dict[tuple[int, int], int] = {}  # data the candidate defines itself: (section, offset) -> the original's address
-    symtab_all = elf.get_section_by_name(".symtab")
+    symtab_all = elfobj.symbol_table(elf)
 
     def problem(text: str) -> None:
         if text not in problems:

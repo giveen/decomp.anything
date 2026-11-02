@@ -28,6 +28,14 @@ Prefer small synthetic fixtures over private binaries or large datasets. For exa
 variable limit instead of inserting a production-sized function table; restore the limit after the test. A parser
 fixture should reach the public reader when the bug affects imports, not only the internal unpacking helper.
 
+## Formatting
+
+Source is hand-wrapped at 140 columns, the width `[tool.ruff] line-length` in `pyproject.toml` enforces through `E501`.
+CI runs `ruff check` and deliberately **not** `ruff format`: most of the tree is not formatter-clean at that width
+either, so a format pass would be a ~200-file commit with no behaviour in it. Do not reformat files you are not
+already changing, and do not run an editor or tool formatter with default settings here (88-column output conflicts
+with the wrapping the code is written to).
+
 ## Validate the changed behavior
 
 Start with the smallest checks that cover the change and its direct consumers. Broaden when shared behavior changes
