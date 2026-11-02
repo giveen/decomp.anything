@@ -222,7 +222,13 @@ def symbol_table(elf: ELFFile) -> SymbolTableSection | None:
     """The object's `.symtab`, or None when it has none. pyelftools types every section as the base `Section`, so
     asking for `iter_symbols` on the result of `get_section_by_name` is a crash waiting for a stripped object:
     one check here keeps it out of the ten files that read symbols."""
-    found = elf.get_section_by_name(".symtab")
+    return symbol_table_named(elf, ".symtab")
+
+
+def symbol_table_named(elf: ELFFile, name: str) -> SymbolTableSection | None:
+    """A named symbol table: `.symtab` for what the compiler emitted, `.dynsym` for what a linked executable
+    exports. None when the object has no such table, which is the case an inline isinstance check kept missing."""
+    found = elf.get_section_by_name(name)
     return found if isinstance(found, SymbolTableSection) else None
 
 
@@ -237,6 +243,12 @@ def relocation_sections(elf: ELFFile) -> Iterator[RelocationSection]:
     """The REL and RELA sections of an object, typed: `iter_sections()` yields `Section`, and `iter_relocations` is
     only on the relocation subclass."""
     return (s for s in elf.iter_sections() if isinstance(s, RelocationSection))
+
+
+def relocations_targeting(elf: ELFFile, shndx: int) -> Iterator[RelocationSection]:
+    """The relocation sections that apply to one section. `sh_info` names their target, so this is the typed form of
+    "walk every section and compare the index" — the comparison five files used to write by hand."""
+    return (s for s in elf.iter_sections() if isinstance(s, RelocationSection) and s["sh_info"] == shndx)
 
 
 def _symbol_at(symtab: SymbolTableSection, shndx: int, offset: int) -> tuple[str, int] | None:

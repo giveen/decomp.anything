@@ -22,6 +22,7 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
 
+from .. import elfobj
 from . import buildinfo, pe
 from .pe import EXECUTABLE, PeImage, PeSection
 from .symbols import Symbol
@@ -62,8 +63,8 @@ def _symbols(elf: ELFFile) -> tuple[list[Symbol], list[tuple[int, int]]]:
     """Defined functions and objects from .symtab and .dynsym, and the exact ranges of sized functions."""
     syms, ranges, seen = [], [], set()
     for name in (".symtab", ".dynsym"):
-        tab = elf.get_section_by_name(name)
-        if not isinstance(tab, SymbolTableSection):
+        tab = elfobj.symbol_table_named(elf, name)
+        if tab is None:
             continue
         for s in tab.iter_symbols():
             kind = s["st_info"]["type"]

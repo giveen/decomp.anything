@@ -124,3 +124,29 @@ Wrapping here is hand-maintained (see above), so the lane stays off.
 
 `tools/ci/check_reformat.py` is the backstop for whatever else reformats: it refuses a commit whose Python changes
 parse to the same syntax tree *and* keep the same comments.
+
+### The type gate is a ratchet, in both directions
+
+`tools/ci/check_types.py` compares pyright's error count against `tools/ci/type_baseline.json`. More findings fail the
+build; so do *fewer*, if the baseline wasn't lowered in the same PR — otherwise the next branch silently inherits the
+debt. So:
+
+- **fixing a finding**: lower `error_count` in `type_baseline.json` in the same commit, and say what you fixed;
+- **adding one**: raise it and make the case in the PR body. That is a decision, not an accident.
+
+The gate covers `src/decompnet` only. `tests/` still has findings and is deliberately out of scope until the mixin split
+lands.
+
+### Two test profiles
+
+`DECOMP_TEST_PROFILE` decides what a run *promises*:
+
+| profile | means | who uses it |
+| --- | --- | --- |
+| `minimal` (default) | whatever happens to be installed; tests skip for anything missing | local work, quick loops |
+| `full` | the pinned toolchains and demo fixtures are present | every CI leg, after the `fixtures` job |
+
+Under `full`, a test that skips for a reason not listed in `tests/conftest.py:NOT_IN_FULL` **fails the run and names
+itself**. `NOT_IN_FULL` is the ledger of what this project does not verify (proprietary compilers, Windows-only,
+archives CI never fetches): deleting a line means the capability is now covered, and losing one turns the build red with
+the reason spelled out, instead of quietly reporting a smaller suite as a pass.
