@@ -91,20 +91,69 @@ jobs:
       - name: Validate workflow syntax, expressions, and shell commands
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 
+  fixtures:
+    name: build test fixtures once
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      DECOMPNET_TOOLCHAINS: ${{ github.workspace }}/.ci-toolchains
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: '3.12'
+          enable-cache: true
+      - name: Install host and cross compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bubblewrap gcc-multilib g++-multilib gcc-mingw-w64 g++-mingw-w64 clang-18 lld-18 llvm-18
+          echo /usr/lib/llvm-18/bin >> "$GITHUB_PATH"
+          # Ubuntu's AppArmor restriction otherwise prevents the compiler's bubblewrap sandbox.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+      - name: Cache pinned compiler binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .ci-toolchains/gcc-2.7.2-kmc
+            .ci-toolchains/objdiff-cli
+          key: toolchains-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/decompnet/toolchains.toml') }}
+      - name: Install pinned decompilation tools and build demo fixtures
+        run: |
+          for tool in gcc-2.7.2-kmc objdiff-cli m2c; do
+            uv run --no-sync decompnet toolchain install "$tool"
+            uv run --no-sync decompnet toolchain path "$tool"
+          done
+          uv run --no-sync python projects/zlib-n64/prepare.py
+          uv run --no-sync python projects/demo-rom/build.py
+      - name: Pack the toolchains and fixtures for every test leg
+        run: tar cf "${{ runner.temp }}/fixtures.tar" .ci-toolchains projects/zlib-n64 projects/demo-rom
+      - name: Upload the packed fixtures
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-fixtures
+          path: ${{ runner.temp }}/fixtures.tar
+          if-no-files-found: error
+          retention-days: 7
+
   test:
     name: pytest (Python ${{ matrix.python }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    needs: fixtures
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - python: '3.12'
-            toolchains: true
-          - python: '3.14'
-            toolchains: false
+        python: ['3.12', '3.14']
     env:
       DECOMPNET_TOOLCHAINS: ${{ github.workspace }}/.ci-toolchains
+      # the fixtures job built what this run promises, so a skip for anything but a written-down gap fails the leg
+      DECOMP_TEST_PROFILE: full
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,23 +179,13 @@ jobs:
           done
       - name: Install locked dependencies
         run: uv sync --locked --group dev
-      - name: Cache pinned compiler binaries
-        if: matrix.toolchains
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Unpack the fixtures built once for every leg
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          path: |
-            .ci-toolchains/gcc-2.7.2-kmc
-            .ci-toolchains/objdiff-cli
-          key: toolchains-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/decompnet/toolchains.toml') }}
-      - name: Install pinned decompilation tools and build demo fixtures
-        if: matrix.toolchains
-        run: |
-          for tool in gcc-2.7.2-kmc objdiff-cli m2c; do
-            uv run --no-sync decompnet toolchain install "$tool"
-            uv run --no-sync decompnet toolchain path "$tool"
-          done
-          uv run --no-sync python projects/zlib-n64/prepare.py
-          uv run --no-sync python projects/demo-rom/build.py
+          name: ci-fixtures
+          path: ${{ runner.temp }}/fixtures
+      - name: Place the packed toolchains and fixtures
+        run: tar xf "${{ runner.temp }}/fixtures/fixtures.tar"
       - name: Prepare test artifacts
         run: mkdir -p .ci-artifacts
       - name: Test
