@@ -44,6 +44,19 @@ jobs:
       - name: Lint
         run: uv run --no-sync ruff check .
 
+  reformat:
+    name: no wrap-only commits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Refuse a commit that only moves text around
+        env:
+          BASE: ${{ github.base_ref || 'main' }}
+        run: python3 tools/ci/check_reformat.py "origin/${BASE}"
+
   types:
     name: pyright
     runs-on: ubuntu-24.04
@@ -222,7 +235,7 @@ jobs:
   required:
     name: CI passed
     if: always()
-    needs: [lint, types, workflows, test, windows, package]
+    needs: [lint, reformat, types, workflows, test, windows, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

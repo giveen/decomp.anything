@@ -94,3 +94,20 @@ workflow; their project-specific commands and policies are reference material, n
 
 If a future contribution copies source text or resources, preserve the applicable license and attribution. The linked
 examples here supply ideas; this change does not vendor their files.
+
+### Wrap-only commits are refused
+
+A formatter runs on edit in some checkouts: `ruff format` at 140 with `skip-magic-trailing-comma = true`, which is not
+how this repo is written and is set by the calling tool rather than by any file here. It rewrites wrapping in files
+whose author changed no behaviour, and that has reached pull requests more than once.
+
+`tools/ci/check_reformat.py` refuses it. A commit fails when a Python file parses to the same syntax tree **and** has
+the same comments as the version it replaces — same program, different line breaks. Comment edits, renames and real
+changes pass, so only re-wrapping is caught. If the wrapping genuinely is the commit, say so and pass
+`--allow-reformat`.
+
+Install the hook once per clone:
+
+```sh
+git config core.hooksPath tools/git-hooks
+```

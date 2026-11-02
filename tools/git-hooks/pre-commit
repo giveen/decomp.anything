@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuse a commit whose staged Python changes only move text around. See tools/ci/check_reformat.py.
+# Install once per clone: git config core.hooksPath tools/git-hooks
+exec python3 "$(git rev-parse --show-toplevel)/tools/ci/check_reformat.py" --staged
