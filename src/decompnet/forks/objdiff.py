@@ -105,7 +105,9 @@ class FunctionDiff:
                            "<=missing (target only) >=extra (yours only)")
 
 
-def _sym(obj: dict | None, name: str) -> dict | None:
+def _sym(obj: dict | None, name: str | None) -> dict | None:
+    if name is None:  # a whole-unit diff names no symbol, so there is no side to pick out
+        return None
     for s in (obj or {}).get("symbols", []):
         if s.get("name") == name:
             return s
@@ -184,7 +186,7 @@ def diff(target: Path | None, base: Path | None, symbol: str | None, cwd: Path, 
                        if r.get("instruction") and r["instruction"].get("formatted")] for s in funcs}
     renamed = _renamed(data.get("left"), data.get("right"), lrows, rrows) if right is not None else []
     wrong = []
-    if pct is not None and float(pct) >= 100.0 and target is not None and base is not None and base.exists():
+    if pct is not None and float(pct) >= 100.0 and symbol is not None and target is not None and base is not None and base.exists():
         from . import literals
 
         insns, at = [], 0
