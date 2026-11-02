@@ -60,6 +60,9 @@ class Toolchain:
     # asks for a command. REA's own remediation says it wants "an absolute apktool launcher (the upstream wrapper
     # or a java -jar script)" -- a bare .jar is neither, so pointing REA at the JAR would fail in a tool call.
     launcher: dict | None = None
+    # programs a tool drives but does not contain (unblob shells out to 7z, cabextract and friends). Listed so the
+    # console can say what is still missing instead of reporting a working lane that fails on the first image.
+    extractors: list[str] = field(default_factory=list)
     pip_extra: list[str] = field(default_factory=list)  # extra requirements for a git tool's environment
     requires_java: int = 0  # minimum Java version (Ghidra)
     system: bool = False  # a compiler already on the host (MinGW, MSVC under wine), not a downloaded package

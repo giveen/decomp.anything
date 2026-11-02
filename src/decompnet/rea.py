@@ -77,6 +77,8 @@ OWN_ENGINES = {
     "REA_MITMDUMP_COMMAND": ("mitmproxy", "venvbin:mitmdump"),
     "REA_APKTOOL_COMMAND": ("apktool", "path:bin/apktool"),
     "REA_ADB_PATH": ("adb", "path:platform-tools/adb"),
+    "REA_KUNA_COMMAND": ("kuna", "path:kuna"),
+    "REA_UNBLOB_COMMAND": ("unblob", "venvbin:unblob"),
 }
 
 # The same engines as capability lanes, for the console: a missing Android decompiler should read as "install
@@ -89,6 +91,8 @@ ENGINE_LANES = {
     "mitmproxy": ("mitmproxy", "live HTTPS capture for browser and native clients"),
     "apktool": ("apktool", "Android APK resources and AndroidManifest"),
     "adb": ("adb", "a connected Android device: install, pull, logcat"),
+    "kuna": ("Kuna", "pseudocode for native procedures through a second decompiler"),
+    "unblob": ("unblob", "nested firmware images: squashfs, cramfs, UBI and the rest"),
 }
 
 # Tools the host already provides. Finding one and saying nothing would repeat the Ghidra lesson in a different
@@ -98,6 +102,7 @@ SYSTEM_ENGINES = {
     "tshark": "REA_TSHARK_COMMAND",
     "capinfos": "REA_CAPINFOS_COMMAND",
     "gdb": "REA_GDB_COMMAND",
+    "binwalk": "REA_BINWALK_COMMAND",
 }
 
 SYSTEM_LANES = {
@@ -105,6 +110,7 @@ SYSTEM_LANES = {
     "tshark": "reading pcap and pcapng captures",
     "capinfos": "a capture's shape before it is opened",
     "gdb": "observing a live native target instead of reading it statically",
+    "binwalk": "finding the filesystems embedded in a firmware image",
 }
 
 # Engines we will never download. Commercial software on a coordinator is the operator's own licensing decision,
@@ -211,6 +217,11 @@ def engines() -> list[dict]:
         rows.append({"tool": tid, "name": name, "capability": capability, "variable": var, "ready": path_ is not None,
                      "path": path_, "set_by": "decomp.anything" if path_ else ("operator" if os.environ.get(var) else None),
                      "fix": None if path_ or os.environ.get(var) else f"decompnet toolchain install {tid}"})
+        # a tool that drives other programs is not ready just because its own binary is there: name the gap
+        missing = [exe for exe in (toolchains.get(tid).extractors if path_ else []) if not shutil.which(exe)]
+        if missing:
+            rows[-1].update(ready=False, missing=missing,
+                            fix=f"{tid} is installed but needs {', '.join(missing)}; install them with your package manager")
     for tid, capability in SYSTEM_LANES.items():
         path_ = own_system(tid)
         rows.append({"tool": tid, "name": tid, "capability": capability, "variable": SYSTEM_ENGINES[tid],
