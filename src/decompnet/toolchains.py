@@ -55,6 +55,7 @@ class Toolchain:
     commit: str = ""
     binary_name: str = ""  # main executable of a tool, without .exe
     npm: str = ""  # a package@version installed with npm (rea-agents)
+    pip: str = ""  # a package==version installed into its own uv venv (pwntools wants its own interpreter)
     pip_extra: list[str] = field(default_factory=list)  # extra requirements for a git tool's environment
     requires_java: int = 0  # minimum Java version (Ghidra)
     system: bool = False  # a compiler already on the host (MinGW, MSVC under wine), not a downloaded package
@@ -79,7 +80,8 @@ class Toolchain:
     @property
     def supported(self) -> bool:
         """Whether this toolchain can be installed on this computer (on Windows, Linux ones through WSL 2)."""
-        return self.system or bool(self.git) or bool(self.npm) or bool(self.parts_for()) or self.via_wsl
+        return (self.system or bool(self.git) or bool(self.npm) or bool(self.pip) or bool(self.parts_for())
+                or self.via_wsl)
 
 
 def current_platform() -> str:
@@ -356,7 +358,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     if tc.system:
         raise _system_missing(tc)
     parts = tc.linux_parts() if linux else tc.parts_for()
-    if not parts and not tc.git and not tc.npm:
+    if not parts and not tc.git and not tc.npm and not tc.pip:
         why = unsupported_cpu()
         raise ToolchainError(f"{tid} ({tc.name}) has no build for this computer ({current_platform()})"
                              + (f": {why}" if why else ""))
@@ -378,6 +380,8 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
             _install_git_tool(tc, dest, log)
         if tc.npm:
             _install_npm_tool(tc, dest, log)
+        if tc.pip:
+            _install_pip_tool(tc, dest, log)
         downloads = root() / ".downloads"
         downloads.mkdir(parents=True, exist_ok=True)
         for part in parts:
@@ -420,6 +424,15 @@ def venv_bin(venv: Path, name: str) -> Path:
     return venv / "Scripts" / f"{name}.exe" if sys.platform == "win32" else venv / "bin" / name
 
 
+def _venv_with(uv: str, tc: Toolchain, dest: Path, log, spec: str, what: str) -> None:
+    """One pinned Python spec in its own venv. Tools that need Python stay out of the app's venv and off the host:
+    REA points at these interpreters directly (REA_PWNTOOLS_PYTHON), so the isolation is also the interface."""
+    log(f"  creating an isolated environment for {what}")
+    subprocess.run([uv, "venv", "--quiet", "--python", "3.12", str(dest / "venv")], check=True)
+    subprocess.run([uv, "pip", "install", "--quiet", "--python", str(venv_bin(dest / "venv", "python")), spec,
+                    *tc.pip_extra], check=True)
+
+
 def _install_git_tool(tc: Toolchain, dest: Path, log) -> None:
     uv = shutil.which("uv")
     if not uv:
@@ -429,10 +442,14 @@ def _install_git_tool(tc: Toolchain, dest: Path, log) -> None:
         spec = f"{tc.id} @ {tc.git.removesuffix('.git')}/archive/{tc.commit}.zip"
     else:
         spec = f"{tc.id} @ git+{tc.git}@{tc.commit}"
-    log(f"  creating an isolated environment for {tc.git} @ {tc.commit[:10]}")
-    subprocess.run([uv, "venv", "--quiet", "--python", "3.12", str(dest / "venv")], check=True)
-    subprocess.run([uv, "pip", "install", "--quiet", "--python", str(venv_bin(dest / "venv", "python")), spec, *tc.pip_extra],
-                   check=True)
+    _venv_with(uv, tc, dest, log, spec, f"{tc.git} @ {tc.commit[:10]}")
+
+
+def _install_pip_tool(tc: Toolchain, dest: Path, log) -> None:
+    uv = shutil.which("uv")
+    if not uv:
+        raise ToolchainError(f"{tc.id} needs `uv` to create its isolated environment")
+    _venv_with(uv, tc, dest, log, tc.pip, tc.pip)
 
 
 def _install_npm_tool(tc: Toolchain, dest: Path, log) -> None:

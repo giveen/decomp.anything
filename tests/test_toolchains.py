@@ -21,7 +21,17 @@ def test_registry_is_pinned_and_labelled():
     for tc in reg.values():
         assert tc.license and tc.source, tc.id
         if not tc.proprietary:  # everything we install by default is verified against a pinned hash
-            assert all(p["sha256"] for p in tc.parts) or tc.commit or tc.npm, tc.id
+            assert all(p["sha256"] for p in tc.parts) or tc.commit or tc.npm or tc.system, tc.id
+            # a venv tool has no archive to hash, so the version has to be pinned in the spec itself
+            if tc.pip:
+                assert "==" in tc.pip or "@" in tc.pip, f"{tc.id}: unpinned python spec {tc.pip!r}"
+            # nothing at all to install is only honest for a tool we detect on the host
+            assert tc.system or tc.git or tc.npm or tc.pip or tc.parts or tc.via_wsl, tc.id
+    for tid in ("wabt", "jadx-mcp", "pwntools", "mitmproxy"):  # engines REA will not fetch itself
+        assert reg[tid].kind == "tool" and not reg[tid].system, tid
+    assert all(p["sha256"] for p in reg["wabt"].parts) and len(reg["wabt"].parts) == 3
+    assert len(reg["jadx-mcp"].parts) == 1 and reg["jadx-mcp"].requires_java == 17
+    assert reg["pwntools"].pip.startswith("pwntools==") and reg["mitmproxy"].pip.startswith("mitmproxy==")
     assert reg["ido-7.1"].proprietary and not reg["gcc-2.7.2-kmc"].proprietary
     assert reg["mingwxx-x86_64"].download.startswith("https://") and reg["clang-clxx-x86_64"].download.startswith("https://")
     assert {"msvc-x86", "msvcxx-x86", "msvc-x86_64", "msvcxx-x86_64"} <= set(reg)

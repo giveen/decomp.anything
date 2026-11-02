@@ -415,6 +415,49 @@ description = "Reads PDB debug symbols for Windows programs. Optional: install L
 system = true
 download = "https://github.com/llvm/llvm-project/releases/latest"
 cmd = ["llvm-pdbutil"]
+
+# REA's policy is that it never downloads an engine during an analysis operation, so an analysis engine it can
+# use stays absent unless something installs it. These are the engines we install ourselves; rea.py names them
+# to REA through the REA_* variables below. Pinning follows the repo rule: exact artifact, sha256 verified.
+[wabt]
+name = "WABT"
+kind = "tool"
+license = "Apache-2.0"
+source = "WebAssembly/wabt 1.0.42"
+description = "WebAssembly tools (wasm2wat, wat2wasm, wasm-objdump, wasm-decompile): how the RE console reads a .wasm module. Optional; install it to open the WASM lanes."
+binary_name = "wasm2wat"
+parts = [
+  { url = "https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-x64.tar.gz", sha256 = "84895407a6bbb80e918f33b16b2fb2206021c150b6bc9ff6f761263a745ab131", subdir = "wabt-1.0.42", platforms = ["linux-x86_64"] },
+  { url = "https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-arm64.tar.gz", sha256 = "a7632c1cc66f70886441842ecf5a2ffa91a98c79e026059458451234ad013ea8", subdir = "wabt-1.0.42", platforms = ["linux-aarch64"] },
+  { url = "https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-windows-x64.tar.gz", sha256 = "62f1eb2b51aa57cf0f0b8ba333bf2c72a049930aa9c5de01dcad271c4fe48c88", subdir = "wabt-1.0.42", platforms = ["windows-x86_64"] },
+]
+
+[jadx-mcp]
+name = "jadx-headless-mcp"
+kind = "tool"
+license = "Apache-2.0"
+source = "1013503897/jadx-headless-mcp v0.7.1"
+description = "The Android decompiler the RE console drives to read APK Java and Kotlin. REA audits this exact 0.7.1 release and will not fetch an engine itself, so the pin lives here. Needs Java 17 or newer."
+requires_java = 17
+parts = [
+  { url = "https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar", sha256 = "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75", binary = "jadx-headless-mcp-0.7.1-all.jar" },
+]
+
+[pwntools]
+name = "pwntools"
+kind = "tool"
+license = "MIT, BSD-3-Clause, GPL-2.0-or-later"
+source = "pwntools 4.15.0 (PyPI)"
+description = "Binary analysis library the RE console reads ELF segment and stack-canary layout through. Optional; installed into an isolated Python environment of its own, which is what REA points at."
+pip = "pwntools==4.15.0"
+
+[mitmproxy]
+name = "mitmproxy"
+kind = "tool"
+license = "MIT"
+source = "mitmproxy 12.3.1 (PyPI)"
+description = "The proxy the RE console captures live HTTPS with when a browser or native network client is the target. Optional; installs mitmdump in an isolated Python environment."
+pip = "mitmproxy==12.3.1"
 binary_name = "llvm-pdbutil"
 
 [ghidra]

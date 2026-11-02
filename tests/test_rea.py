@@ -2,6 +2,7 @@
 every result wrapped in an evidence record (the answer is its normalized_result), errors as JSON text."""
 
 import json
+import shutil
 import sys
 import threading
 import time
@@ -657,6 +658,78 @@ def _fake_ghidra(monkeypatch, tmp_path):
     monkeypatch.setattr(rea.toolchains, "path", lambda tid, linux=None: home)
     monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     return home
+
+
+def _fake_engines(monkeypatch, tmp_path):
+    """Every engine Compilers & tools can install for REA, each in the layout it really ships with. The venv
+    paths come from venv_bin so this means the same thing on Windows, where they live in Scripts."""
+    homes = {}
+    wabt = homes["wabt"] = tmp_path / "wabt"
+    (wabt / "bin").mkdir(parents=True)
+    (wabt / "bin" / "wasm2wat").write_text("#!/bin/sh\n", encoding="utf-8")
+    jadx = homes["jadx-mcp"] = tmp_path / "jadx-mcp"
+    jadx.mkdir()
+    (jadx / "jadx-headless-mcp-0.7.1-all.jar").write_bytes(b"PK")
+    for tid, exe in (("pwntools", "python"), ("mitmproxy", "mitmdump")):
+        home = homes[tid] = tmp_path / tid
+        script = rea.toolchains.venv_bin(home / "venv", exe)
+        script.parent.mkdir(parents=True)
+        script.write_text("", encoding="utf-8")
+    monkeypatch.setattr(rea.toolchains, "installed",
+                        lambda tid, linux=None: {"id": tid} if tid in homes else None)
+    monkeypatch.setattr(rea.toolchains, "path", lambda tid, linux=None: homes[tid])
+    for var in rea.OWN_ENGINES:
+        monkeypatch.delenv(var, raising=False)
+    return homes
+
+
+def test_every_engine_we_installed_is_named_to_rea(monkeypatch, tmp_path):
+    """REA says plainly that it never downloads an engine during an analysis, so an engine sitting in our toolchains
+    directory is as dark as a Ghidra without GHIDRA_INSTALL_DIR was. Installing is now enough for all of them."""
+    homes = _fake_engines(monkeypatch, tmp_path)
+    assert rea.provider_env() == {
+        "REA_WABT_BIN_DIRECTORY": str(homes["wabt"] / "bin"),
+        "REA_JADX_MCP_JAR": str(homes["jadx-mcp"] / "jadx-headless-mcp-0.7.1-all.jar"),
+        "REA_PWNTOOLS_PYTHON": str(rea.toolchains.venv_bin(homes["pwntools"] / "venv", "python")),
+        "REA_MITMDUMP_COMMAND": str(rea.toolchains.venv_bin(homes["mitmproxy"] / "venv", "mitmdump"))}
+
+
+def test_an_engine_we_did_not_install_names_the_lane_it_keeps_shut(monkeypatch, tmp_path):
+    """A missing decompiler should read as "install jadx-mcp", not as "this tool cannot read APKs"."""
+    monkeypatch.setattr(rea.toolchains, "installed", lambda tid, linux=None: None)
+    for var in rea.OWN_ENGINES:
+        monkeypatch.delenv(var, raising=False)
+    rows = {row["tool"]: row for row in rea.engines()}
+    assert {"ghidra", "wabt", "jadx-mcp", "pwntools", "mitmproxy"} <= set(rows)
+    assert rows["jadx-mcp"]["capability"].lower().startswith("android")
+    for tid, row in rows.items():
+        assert not row["ready"] and row["set_by"] is None, tid
+        assert row["fix"] == f"decompnet toolchain install {tid}", tid
+
+
+def test_an_installed_engine_shows_its_lane_as_ready(monkeypatch, tmp_path):
+    homes = _fake_engines(monkeypatch, tmp_path)
+    rows = {row["tool"]: row for row in rea.engines() if row["tool"] != "ghidra"}
+    for tid, row in rows.items():
+        assert row["ready"] and row["set_by"] == "decomp.anything" and row["fix"] is None, tid
+    assert rows["wabt"]["path"] == str(homes["wabt"] / "bin")
+
+
+def test_an_unpack_but_wrong_layout_engine_is_not_offered(monkeypatch, tmp_path):
+    """A directory that exists but holds no bin/ (or no JAR) is a partial install; pointing REA at it would trade
+    an obvious absence for a confusing failure inside a tool call."""
+    homes = _fake_engines(monkeypatch, tmp_path)
+    shutil.rmtree(homes["wabt"] / "bin")
+    (homes["jadx-mcp"] / "jadx-headless-mcp-0.7.1-all.jar").unlink()
+    env = rea.provider_env()
+    assert "REA_WABT_BIN_DIRECTORY" not in env and "REA_JADX_MCP_JAR" not in env
+    assert {row["tool"] for row in rea.engines() if row["ready"]} == {"pwntools", "mitmproxy"}
+
+
+def test_an_engine_the_operator_pointed_at_themselves_is_left_alone(monkeypatch, tmp_path):
+    _fake_engines(monkeypatch, tmp_path)
+    monkeypatch.setenv("REA_WABT_BIN_DIRECTORY", "/opt/wabt/bin")
+    assert "REA_WABT_BIN_DIRECTORY" not in rea.provider_env(), "our install must not shadow a deliberate choice"
 
 
 def test_a_ghidra_we_installed_is_pointed_at_without_being_asked(monkeypatch, tmp_path):
