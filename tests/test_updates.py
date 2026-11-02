@@ -163,3 +163,24 @@ def test_update_api(tmp_path, monkeypatch):
     assert client.get("/api/update").json()["disabled"] is True
     health = client.get("/health").json()
     assert health["app"] == "decomp-anything" and "build" in health
+
+
+def test_running_id_reports_the_checkout_being_run():
+    """A source checkout reports the commit it is running, not the one an installer once recorded: both a stale
+    process and a freshly rebuilt one used to show the same build id, so /health could not tell them apart."""
+    import subprocess
+    from pathlib import Path
+
+    import pytest
+
+    from decompnet.app import updates
+
+    root = Path(updates.__file__).resolve().parents[3]
+    if not (root / ".git").exists():  # installed from a wheel: there is no checkout to report, only the fallback
+        pytest.skip("not running from a git checkout")
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True)
+    assert head.returncode == 0 and head.stdout.strip(), f"git rev-parse failed in {root}"
+    assert updates.running_id() == head.stdout.strip()[:12]
+    recorded = (updates.installed().get("commit") or "")[:12]
+    if recorded and recorded != head.stdout.strip()[:12]:
+        assert updates.running_id() != recorded  # it follows the code on disk, not the install record
