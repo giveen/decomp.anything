@@ -142,7 +142,7 @@ def _key(name: str) -> str:
 
 
 def _is_function(symbol: _Symbol) -> bool:
-    return symbol.section > 0 and (symbol.type & 0x20 or symbol.type == 0x20)  # IMAGE_SYM_DTYPE_FUNCTION
+    return symbol.section > 0 and bool(symbol.type & 0x20 or symbol.type == 0x20)  # IMAGE_SYM_DTYPE_FUNCTION
 
 
 def _defined_in(symbols: list[_Symbol], section: int) -> list[_Symbol]:
