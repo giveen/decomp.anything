@@ -68,7 +68,8 @@ class Unit:
 @functools.lru_cache(maxsize=64)
 def _git_env(root: Path) -> dict | None:
     """Commits need an identity: when git has none set up on this computer, commits are by decomp.wtf."""
-    res = subprocess.run(["git", "config", "user.email"], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    res = subprocess.run(["git", "config", "user.email"], cwd=root, capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
     if res.returncode == 0 and res.stdout.strip():
         return None
     who = {"GIT_AUTHOR_NAME": "decomp.wtf", "GIT_AUTHOR_EMAIL": "noreply@decomp.wtf"}
@@ -82,10 +83,8 @@ _CHECK = re.compile(r"^build (\S+[/\\]ok): check\b")  # dtk-template writes buil
 # A target the build couldn't make: ninja's "FAILED: out.o", make's "make: *** [Makefile:12: out.o] Error 1"
 _FAILED = re.compile(r"^FAILED: (.+)$|^make(?:\[\d+\])?: \*\*\* \[(?:[^\]]*?:\d+: )?([^\]]+)\] Error")
 # CodeWarrior's linker warns about every FORCEACTIVE symbol and unknown section: harmless, and thousands of lines
-_NOISE = re.compile(
-    r"^#{1,3}\s*(mwldeppc\.exe Linker Warning:|FORCEACTIVE symbol|(doesn't )?exist\.\s+Ignored\.|"
-    r"Section '\.note\.split' is unknown)"
-)
+_NOISE = re.compile(r"^#{1,3}\s*(mwldeppc\.exe Linker Warning:|FORCEACTIVE symbol|(doesn't )?exist\.\s+Ignored\.|"
+                    r"Section '\.note\.split' is unknown)")
 
 
 def _tool(name: str) -> str | None:
@@ -138,7 +137,6 @@ class ForkProject:
                 break
         else:
             return ""
-
         def heading(i: int) -> bool:  # markdown "# Title" or an underlined (setext/rst) title, not a badge row
             if "![" in lines[i] or "[!" in lines[i]:
                 return False
@@ -148,7 +146,7 @@ class ForkProject:
 
         wanted = re.compile(r"build|setup|set up|getting started|usage|install|requirements|prerequisite", re.IGNORECASE)
         start = next((i for i in range(len(lines)) if heading(i) and wanted.search(lines[i])), 0)
-        return "\n".join(lines[start : start + limit]).strip()
+        return "\n".join(lines[start:start + limit]).strip()
 
     def versions(self) -> list[str]:
         return sorted(p.parent.name for p in self.root.glob("config/*/config.yml"))
@@ -183,43 +181,24 @@ class ForkProject:
     def needs(self, version: str | None = None) -> dict:
         """What the user has to provide: {"what", "path" (None: set up by hand), "sha1", "help", "auto"}."""
         kind = self.kind()
-        manual = {
-            "what": "your copy of the game",
-            "path": None,
-            "sha1": None,
-            "auto": False,
-            "help": "This project has its own setup. Follow its README in a terminal, in the project folder; "
-            "once its build has produced objdiff.json, click Check again.",
-        }
+        manual = {"what": "your copy of the game", "path": None, "sha1": None, "auto": False,
+                  "help": "This project has its own setup. Follow its README in a terminal, in the project folder; "
+                          "once its build has produced objdiff.json, click Check again."}
         if kind == "manifest":
             g = self._must_manifest().get("game", {})
             path = self._inside(g.get("path", ""))
-            return {
-                "what": g.get("what", "your copy of the game"),
-                "path": path,
-                "sha1": g.get("sha1"),
-                "help": g.get("help", ""),
-                "auto": path is not None,
-            }
+            return {"what": g.get("what", "your copy of the game"), "path": path, "sha1": g.get("sha1"),
+                    "help": g.get("help", ""), "auto": path is not None}
         if kind == "dtk":
             v = version or (self.versions()[0] if self.versions() else "")
-            return {
-                "what": "your copy of the game's disc (ISO, GCM, RVZ, WIA, WBFS, CISO, NFS or GCZ)",
-                "path": f"orig/{v}/",
-                "sha1": None,
-                "auto": True,
-                "help": f"Version {v}. The build checks the disc's main executable against the project's hash.",
-            }
+            return {"what": "your copy of the game's disc (ISO, GCM, RVZ, WIA, WBFS, CISO, NFS or GCZ)",
+                    "path": f"orig/{v}/", "sha1": None, "auto": True,
+                    "help": f"Version {v}. The build checks the disc's main executable against the project's hash."}
         if kind == "configure":
             v = version or ""
             if v and (self.root / "orig" / v).is_dir():
-                return {
-                    "what": "your copy of the game (see the README for the exact file)",
-                    "path": f"orig/{v}/",
-                    "sha1": None,
-                    "auto": True,
-                    "help": "The build checks the game against the project's hashes.",
-                }
+                return {"what": "your copy of the game (see the README for the exact file)", "path": f"orig/{v}/",
+                        "sha1": None, "auto": True, "help": "The build checks the game against the project's hashes."}
             return manual
         if kind == "splat":
             splat = self._must_splat_yaml()
@@ -234,14 +213,10 @@ class ForkProject:
             path = self._inside(path) if path else None
             if path is None:
                 return manual
-            return {
-                "what": f"your copy of the game ({Path(path).name})",
-                "path": path,
-                "sha1": sha1.group(1).lower() if sha1 else None,
-                "auto": True,
-                "help": "Checked against the sha1 in the project's splat config. A PlayStation disc image works "
-                "too: the file is taken from it.",
-            }
+            return {"what": f"your copy of the game ({Path(path).name})", "path": path,
+                    "sha1": sha1.group(1).lower() if sha1 else None, "auto": True,
+                    "help": "Checked against the sha1 in the project's splat config. A PlayStation disc image works "
+                            "too: the file is taken from it."}
         return manual
 
     # ------------------------------------------------------------------ setup
@@ -256,10 +231,8 @@ class ForkProject:
         if need.get("sha1") and _sha1(src) != need["sha1"]:
             inner = self._from_disc(src.read_bytes(), Path(need["path"]).name) if src.stat().st_size < 1 << 30 else None
             if inner is None or hashlib.sha1(inner).hexdigest() != need["sha1"]:
-                raise ForkError(
-                    "that file isn't the version this project decompiles (its sha1 doesn't match the "
-                    "project's); check the README for the exact version"
-                )
+                raise ForkError("that file isn't the version this project decompiles (its sha1 doesn't match the "
+                                "project's); check the README for the exact version")
             dest = self.root / need["path"]
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(inner)
@@ -330,16 +303,8 @@ class ForkProject:
         cmd = [shutil.which(cmd[0], path=env["PATH"]) or cmd[0], *cmd[1:]]
         log("$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
         try:
-            proc = subprocess.Popen(
-                capped(cmd),
-                cwd=self.root,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                encoding="utf-8",
-            )
+            proc = subprocess.Popen(capped(cmd), cwd=self.root, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, errors="replace", encoding="utf-8")
         except FileNotFoundError:
             return False, f"{cmd[0]} isn't installed"
         out, seen, quiet = [], collections.Counter(), 0
@@ -348,7 +313,8 @@ class ForkProject:
                 line = line.rstrip()
                 out.append(line)
                 if failed is not None and (m := _FAILED.match(line)):
-                    failed.extend(t for t in (m.group(1) or m.group(2)).split() if t not in failed and not t.startswith("[code="))
+                    failed.extend(t for t in (m.group(1) or m.group(2)).split()
+                                  if t not in failed and not t.startswith("[code="))
                 seen[line] += 1
                 if seen[line] > 2 or _NOISE.match(line):  # the same line again, or CodeWarrior's linker chatter
                     quiet += 1
@@ -366,10 +332,8 @@ class ForkProject:
         if quiet:
             log(f"({quiet} repeated lines and linker warnings not shown)")
         if killed_for_memory(code):
-            out.append(
-                "stopped: it used more memory than decomp.wtf allows a single tool, so it was stopped "
-                "before it could slow down or freeze your computer"
-            )
+            out.append("stopped: it used more memory than decomp.wtf allows a single tool, so it was stopped "
+                       "before it could slow down or freeze your computer")
         return code == 0, "\n".join(out[-60:])
 
     def unpack_disc(self, version: str | None, log=print) -> int:
@@ -413,10 +377,8 @@ class ForkProject:
             log("compiling every source file, so objdiff can measure each one (some work in progress may not compile)")
             self.build_all(log=log)
         if not (self.root / "objdiff.json").exists():
-            raise ForkError(
-                "the project built, but has no objdiff.json, so decomp.wtf can't measure matches. "
-                "Some projects generate it with an extra step; check the README."
-            )
+            raise ForkError("the project built, but has no objdiff.json, so decomp.wtf can't measure matches. "
+                            "Some projects generate it with an extra step; check the README.")
 
     # ------------------------------------------------------------------ objdiff project
 
@@ -463,19 +425,10 @@ class ForkProject:
             meta = u.get("metadata") or {}
             t = u.get("target_path") or (str(Path(tdir) / u["path"]) if tdir and u.get("path") else None)
             b = u.get("base_path") or (str(Path(bdir) / u["path"]) if bdir and u.get("path") else None)
-            out.append(
-                Unit(
-                    u.get("name") or u.get("path") or "?",
-                    self.root / t if t else None,
-                    self.root / b if b else None,
-                    meta.get("source_path"),
-                    bool(meta.get("complete", u.get("complete", False))),
-                    u.get("scratch"),
-                    u.get("options") or None,
-                    u.get("symbol_mappings") or None,
-                    bool(meta.get("auto_generated")),
-                )
-            )
+            out.append(Unit(u.get("name") or u.get("path") or "?", self.root / t if t else None,
+                            self.root / b if b else None, meta.get("source_path"),
+                            bool(meta.get("complete", u.get("complete", False))), u.get("scratch"),
+                            u.get("options") or None, u.get("symbol_mappings") or None, bool(meta.get("auto_generated"))))
         return out
 
     def units(self) -> list[Unit]:
@@ -524,7 +477,8 @@ class ForkProject:
         make = cfg.get("custom_make") or "make"
         if (make == "ninja" or Path(make).name.startswith("ninja")) and self._all_source():
             # -k 0: keep going past work in progress that doesn't compile yet
-            return self.run([_tool(make) or make, *cfg.get("custom_args", []), "-k", "0", "all_source"], log=log, failed=failed)
+            return self.run([_tool(make) or make, *cfg.get("custom_args", []), "-k", "0", "all_source"], log=log,
+                            failed=failed)
         keep_going = ["-k"] if Path(make).name in ("make", "gmake", "mingw32-make") else []
         return self.run([_tool(make) or make, *cfg.get("custom_args", []), *keep_going], log=log, failed=failed)
 
@@ -533,15 +487,8 @@ class ForkProject:
 
     def diff(self, unit: Unit, symbol: str | None) -> objdiff.FunctionDiff:
         """One function's rows, or the whole unit's scores when symbol is None."""
-        return objdiff.diff(
-            unit.target,
-            unit.base,
-            symbol,
-            cwd=self.root,
-            options=self.diff_options(unit),
-            project=self.root if unit.mappings else None,
-            unit=unit.name,
-        )
+        return objdiff.diff(unit.target, unit.base, symbol, cwd=self.root, options=self.diff_options(unit),
+                            project=self.root if unit.mappings else None, unit=unit.name)
 
     # ------------------------------------------------------------------ linking (dtk-template projects)
     # A file whose code and data match is linked into the game: configure.py marks it Matching, the build then
@@ -589,7 +536,8 @@ class ForkProject:
         """configure.py (`text`) with these source files (NonMatching in it) marked as linked."""
         states = self._states_in(text)
         # a project that builds several versions links per version where it can say so
-        word = f'MatchingFor("{version}")' if version and len(self.versions()) > 1 and "def MatchingFor" in text else "Matching"
+        word = (f'MatchingFor("{version}")' if version and len(self.versions()) > 1 and "def MatchingFor" in text
+                else "Matching")
         spans = sorted((states[s][1], states[s][2]) for s in sources if s in states and states[s][0] == "NonMatching")
         for start, end in reversed(spans):
             text = text[:start] + word + text[end:]
@@ -613,9 +561,8 @@ class ForkProject:
         parts = set(Path(os.path.relpath(p, self.root.resolve())).parts)
         if write:
             if parts & FORBIDDEN_PARTS or not EDITABLE.search(p.name):
-                raise ForkError(
-                    "agents may only edit C/C++ source and header files, not the project's build setup, targets, assembly or tools"
-                )
+                raise ForkError("agents may only edit C/C++ source and header files, not the project's build setup, "
+                                "targets, assembly or tools")
         elif ".git" in parts:
             raise ForkError("that path isn't readable")
         return p
@@ -623,7 +570,6 @@ class ForkProject:
     def git(self, *args: str) -> tuple[bool, str]:
         if not (self.root / ".git").exists() or not shutil.which("git"):
             return False, "not a git checkout"
-        res = subprocess.run(
-            ["git", *args], cwd=self.root, capture_output=True, text=True, env=_git_env(self.root), encoding="utf-8", errors="replace"
-        )
+        res = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, env=_git_env(self.root),
+                             encoding="utf-8", errors="replace")
         return res.returncode == 0, (res.stdout + res.stderr).strip()

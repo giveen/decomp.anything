@@ -12,26 +12,15 @@ from pathlib import Path
 from .. import toolchains
 from ..network import NetworkError
 
-KIND_MARK = {
-    None: " ",
-    "DIFF_NONE": " ",
-    "DIFF_REPLACE": "|",
-    "DIFF_DELETE": "<",
-    "DIFF_INSERT": ">",
-    "DIFF_OP_MISMATCH": "|",
-    "DIFF_ARG_MISMATCH": "i",
-}
+KIND_MARK = {None: " ", "DIFF_NONE": " ", "DIFF_REPLACE": "|", "DIFF_DELETE": "<", "DIFF_INSERT": ">",
+             "DIFF_OP_MISMATCH": "|", "DIFF_ARG_MISMATCH": "i"}
 
 # How `objdiff-cli report generate` diffs (its base config, before the project's and unit's own options): progress
 # reports, decomp.dev and this app's sync count a function as matched by these rules, where a relocation's target
 # may have another name (the compiler's @91 for the original's lbl_802C2BD0). Every per-function diff uses them too,
 # so a match is a match everywhere; with objdiff's interactive defaults the same function would read 99.9%.
-REPORT_OPTIONS = {
-    "functionRelocDiffs": "none",
-    "combineDataSections": True,
-    "combineTextSections": True,
-    "ppc.calculatePoolRelocations": False,
-}
+REPORT_OPTIONS = {"functionRelocDiffs": "none", "combineDataSections": True, "combineTextSections": True,
+                  "ppc.calculatePoolRelocations": False}
 # Symbol names compilers make up for literals and pools, which never have to match the original's names.
 _GENERATED = re.compile(r"^(@\d+|\$LC\d+|_\$E\d+|\.\.\..*|@stringBase\d*|\.L.*)$")
 
@@ -51,9 +40,8 @@ def judge_options(project_options: dict | None = None, unit_options: dict | None
 
 
 def _run(args: list[str], cwd: Path, timeout: float = 600) -> str:
-    res = subprocess.run(
-        [_exe(), "--no-color", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace"
-    )
+    res = subprocess.run([_exe(), "--no-color", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                         encoding="utf-8", errors="replace")
     if res.returncode != 0:
         raise ObjdiffError((res.stderr or res.stdout).strip()[-1500:] or f"objdiff-cli exited with {res.returncode}")
     return res.stdout
@@ -104,10 +92,8 @@ class FunctionDiff:
         if not self.literals:
             return ""
         listing = "\n".join(f"- {m.describe()}" for m in self.literals[:6])
-        return (
-            "NOT A MATCH YET: every instruction matches, but constants it loads differ from the original's:\n"
-            f"{listing}\nWrite the literal with the original's value (float vs double, the exact digits)."
-        )
+        return ("NOT A MATCH YET: every instruction matches, but constants it loads differ from the original's:\n"
+                f"{listing}\nWrite the literal with the original's value (float vs double, the exact digits).")
 
     def target_asm(self) -> str:
         return "\n".join(t for _, t, _ in self.rows if t)
@@ -115,12 +101,8 @@ class FunctionDiff:
     def render(self, context: int = 2, max_rows: int = 60) -> str:
         from ..scoring import render_rows
 
-        return render_rows(
-            self.rows,
-            context,
-            max_rows,
-            legend="markers: |=different instruction i=operand differs <=missing (target only) >=extra (yours only)",
-        )
+        return render_rows(self.rows, context, max_rows, legend="markers: |=different instruction i=operand differs "
+                           "<=missing (target only) >=extra (yours only)")
 
 
 def _sym(obj: dict | None, name: str | None) -> dict | None:
@@ -160,15 +142,8 @@ def _renamed(left: dict | None, right: dict | None, lrows: list[dict], rrows: li
     return out
 
 
-def diff(
-    target: Path | None,
-    base: Path | None,
-    symbol: str | None,
-    cwd: Path,
-    options: dict | None = None,
-    project: Path | None = None,
-    unit: str | None = None,
-) -> FunctionDiff:
+def diff(target: Path | None, base: Path | None, symbol: str | None, cwd: Path, options: dict | None = None,
+         project: Path | None = None, unit: str | None = None) -> FunctionDiff:
     """Diff one function between the target (expected) and base (yours) objects; symbol None measures the whole
     unit (unit_scores) without one function's rows.
 
@@ -204,16 +179,11 @@ def diff(
         pct = 100.0 if all(m == " " for m, _, _ in rows) else 0.0
     built = {s.get("name") for s in (data.get("right") or {}).get("symbols", [])}
     funcs = [s for s in (data.get("left") or {}).get("symbols", []) if s.get("kind") == "SYMBOL_FUNCTION"]
-    scores = {s["name"]: (float(s["match_percent"]) if s.get("match_percent") is not None and s["name"] in built else None) for s in funcs}
+    scores = {s["name"]: (float(s["match_percent"]) if s.get("match_percent") is not None and s["name"] in built else None)
+              for s in funcs}
     order = [s["name"] for s in sorted(funcs, key=lambda s: int(s.get("address") or 0))]
-    ops = {
-        s["name"]: [
-            r["instruction"]["formatted"].split(None, 1)[0]
-            for r in s.get("instructions", [])
-            if r.get("instruction") and r["instruction"].get("formatted")
-        ]
-        for s in funcs
-    }
+    ops = {s["name"]: [r["instruction"]["formatted"].split(None, 1)[0] for r in s.get("instructions", [])
+                       if r.get("instruction") and r["instruction"].get("formatted")] for s in funcs}
     renamed = _renamed(data.get("left"), data.get("right"), lrows, rrows) if right is not None else []
     wrong = []
     if pct is not None and float(pct) >= 100.0 and symbol is not None and target is not None and base is not None and base.exists():
@@ -226,4 +196,5 @@ def diff(
                 insns.append((at, ins["formatted"].split(None, 1)[0]))
             at += int(ins.get("size") or 4)
         wrong = literals.mismatches(target, base, symbol, insns)
-    return FunctionDiff(symbol, float(pct) if pct is not None else None, rows, int(left.get("size", 0)), scores, order, ops, renamed, wrong)
+    return FunctionDiff(symbol, float(pct) if pct is not None else None, rows, int(left.get("size", 0)), scores, order, ops,
+                        renamed, wrong)
