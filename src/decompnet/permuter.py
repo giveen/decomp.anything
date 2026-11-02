@@ -11,11 +11,13 @@ Runs only GPL-licensed toolchains automatically; proprietary ones are used only 
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import random
 import re
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -310,7 +312,27 @@ def _log(msg: str) -> None:
     print(time.strftime("%H:%M:%S"), msg, flush=True)  # flush: the installer runs workers with output in a log file
 
 
+def _cleartext(server: str) -> str | None:
+    """Why sending your token and your code to this address unencrypted is a bad idea (None: no need to warn)."""
+    parts = urllib.parse.urlsplit(server)
+    host = parts.hostname or ""
+    if parts.scheme == "https" or not host:
+        return None
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:  # a name: this machine or the LAN, or somewhere out on the internet
+        if host == "localhost" or host.endswith((".local", ".lan", ".internal", ".home.arpa")):
+            return None
+        return f"{server} is not encrypted and not a local address"
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return None
+    return f"{server} is not encrypted and not a local address"
+
+
 def worker(server: str, token: str, minutes_per_job: float = 10, max_jobs: int = 0, log=_log) -> None:
+    risk = _cleartext(server)  # your agent token and everything you generate go in the request body
+    if risk:
+        log(f"warning: {risk}: your agent token and the code you write cross the wire in plain text")
     done = 0
     while not max_jobs or done < max_jobs:
         job = _api(server, token, "/api/jobs/next").get("job")
