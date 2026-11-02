@@ -106,6 +106,9 @@ def test_a_compiler_installed_off_path_is_found(tmp_path, monkeypatch):
 def test_system_compilers_are_not_downloaded(tc_root, monkeypatch):
     """A MinGW/clang-cl/gcc the computer provides can't be fetched: say so instead of trying to download a build."""
     monkeypatch.setattr(toolchains.shutil, "which", lambda _name: None)
+    # a Windows runner may well have MinGW in a standard install folder, which is not PATH: this test is about
+    # what happens when the tool is nowhere at all
+    monkeypatch.setattr(toolchains, "_windows_dirs", list)
     downloaded = []
     monkeypatch.setattr(toolchains, "_download", lambda *args: downloaded.append(args))
     with pytest.raises(toolchains.ToolchainError, match=r"not a download: x86_64-w64-mingw32-g\+\+ is not on PATH"):
@@ -200,3 +203,19 @@ def test_zst_archives_need_no_zstd_command(tmp_path, monkeypatch):
     toolchains._extract(archive, dest, "usr/lib32")
     assert (dest / "ld-linux.so.2").read_bytes() == b"\x7fELF"
     assert not list(tmp_path.glob("tmp*"))  # no leftovers
+
+
+def test_the_engines_rea_uses_can_be_installed_on_windows(monkeypatch):
+    """Windows is a supported host, so every engine we hand to REA needs a Windows answer: a native part, a
+    platform-agnostic JAR, or an interpreter we build. A tool with none of those only shows up as an Install
+    button that refuses once pressed, which is the same silence as a missing engine."""
+    monkeypatch.setattr(toolchains, "current_platform", lambda: "windows-x86_64")
+    for tid in ("wabt", "jadx-mcp", "pwntools", "mitmproxy", "apktool", "adb"):
+        tc = toolchains.get(tid)
+        assert tc.supported, tid
+        assert bool(tc.parts_for()) or bool(tc.pip) or bool(tc.git), tid
+    # a part with no `platforms` list is platform-agnostic and must not be filtered out on a Windows host
+    assert len(toolchains.get("jadx-mcp").parts_for()) == 1
+    assert len(toolchains.get("wabt").parts_for()) == 1
+    assert toolchains.get("wabt").parts_for()[0]["url"].endswith("windows-x64.tar.gz")
+    assert toolchains.get("adb").parts_for()[0]["url"].endswith("win.zip")

@@ -227,6 +227,7 @@ jobs:
           uv run --no-sync pytest -ra
           tests/test_platform.py tests/test_wsl_messages.py tests/test_hostenv.py
           tests/test_base_header.py tests/test_names.py
+          tests/test_toolchains.py tests/test_rea.py
           --junitxml=.ci-artifacts/pytest-windows.xml
           --basetemp=.ci-artifacts/tmp
       - name: Summarize tests and skipped coverage

@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -121,6 +122,11 @@ FOREIGN_ENGINES = {
 PRLIMIT_VAR = "prlimit (util-linux)"
 
 
+def _windows() -> bool:
+    """In a function so a POSIX test run can still check what we would choose on Windows."""
+    return os.name == "nt"
+
+
 def own_system(tid: str) -> str | None:
     """A tool the host provides, at the path we found it. Naming it is not a claim of ownership."""
     try:
@@ -169,7 +175,7 @@ def own_engine(tid: str, shape: str) -> str | None:
     if shape.startswith("path:"):  # a file inside our install: a wrapper we wrote, or adb inside platform-tools
         rel = shape.split(":", 1)[1]
         # on Windows the .bat wrapper and adb.exe both sit next to the extension-less file we also placed
-        names = [rel + ".exe", rel + ".bat", rel] if os.name == "nt" else [rel, rel + ".exe"]
+        names = [rel + ".exe", rel + ".bat", rel] if _windows() else [rel, rel + ".exe"]
         for name in names:
             if (home / name).exists():
                 return str(home / name)
@@ -210,11 +216,12 @@ def engines() -> list[dict]:
         rows.append({"tool": tid, "name": tid, "capability": capability, "variable": SYSTEM_ENGINES[tid],
                      "ready": path_ is not None, "path": path_, "set_by": "host" if path_ else None,
                      "fix": None if path_ else f"install {tid} with your package manager: we will point REA at it"})
-    limit = shutil.which("prlimit")
-    rows.append({"tool": "prlimit", "name": PRLIMIT_VAR, "variable": None,
-                 "capability": "resource limits around the firmware, sigrok, tshark and JavaScript lanes (Linux)",
-                 "ready": limit is not None, "path": limit, "set_by": "host" if limit else None,
-                 "fix": None if limit else "install util-linux: several REA lanes will not start a child without it"})
+    if sys.platform.startswith("linux"):  # util-linux is a Linux thing; on Windows there is nothing to install
+        limit = shutil.which("prlimit")
+        rows.append({"tool": "prlimit", "name": PRLIMIT_VAR, "variable": None,
+                     "capability": "resource limits around the firmware, sigrok, tshark and JavaScript lanes (Linux)",
+                     "ready": limit is not None, "path": limit, "set_by": "host" if limit else None,
+                     "fix": None if limit else "install util-linux: several REA lanes will not start a child without it"})
     for tid, (name, capability, var, why) in FOREIGN_ENGINES.items():
         set_by = "operator" if os.environ.get(var) else None
         rows.append({"tool": tid, "name": name, "capability": capability, "variable": var, "ready": set_by is not None,
@@ -318,7 +325,7 @@ def _settings() -> dict:
     if saved.get("command"):
         return out | {"command": list(saved["command"]), "env": dict(saved.get("env") or {}), "source": "saved"}
     if env:
-        return out | {"command": shlex.split(env), "source": "DECOMP_REA"}
+        return out | {"command": _split_command(env), "source": "DECOMP_REA"}
     found = shutil.which("rea") or shutil.which("rea-agents")
     if found:
         return out | {"command": [found, "mcp"], "source": "PATH"}
@@ -337,7 +344,7 @@ def save(command: list[str] | str, env: dict | None = None, provider: str = "ghi
     """Keep the console's REA settings (used by the agents' bridge too)."""
     if CONFIG is None:
         raise ReaError("decomp.wtf has no settings folder")
-    argv = shlex.split(command) if isinstance(command, str) else [str(a) for a in command]
+    argv = _split_command(command) if isinstance(command, str) else [str(a) for a in command]
     if provider and provider not in PROVIDERS:
         raise ReaError(f"provider must be one of {', '.join(PROVIDERS)}")
     clean = {str(k).strip(): str(v) for k, v in (env or {}).items() if str(k).strip()}
@@ -376,6 +383,10 @@ def _error(text: str) -> str:
 
 class Client:
     """A minimal MCP client: initialize, then tools/call by name."""
+
+    # the tool catalog is cached on the client for CACHE_TTL; declared so the attribute exists as a type, not just
+    # as something setattr'd onto an instance somewhere below
+    _agent_catalog: tuple[float, list[dict], Any]
 
     def __init__(self, argv: list[str] | None = None, timeout: float = 600, env: dict | None = None,
                  provider: str | None = None):
@@ -642,11 +653,47 @@ def search(binary: Path, query: str, symbols, timeout: float = 900) -> str:
     return "\n".join(rows) or f"REA found no string or procedure matching {query!r}."
 
 
+def _split_command(text: str, windows: bool | None = None) -> list[str]:
+    """Split a command line into an argv. shlex's POSIX rules treat a backslash as an escape, which turns a Windows
+    command like `D:\\a\\rea\\python.exe C:\\rea\\mcp.js` into `D:areapython.exe`, so a Windows path would arrive at
+    Popen mangled and REA would simply never start. Quoted spans are kept, quotes removed, on both platforms."""
+    if not (_windows() if windows is None else windows):
+        return shlex.split(text)
+    out: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    for ch in text:
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                buf.append(ch)
+        elif ch in "\"'":
+            quote = ch
+        elif ch.isspace():
+            if buf:
+                out.append("".join(buf))
+                buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
+def _dict(value) -> dict:
+    """REA's JSON is loose: a field that should be an object arrives as null, a list or a string often enough that
+    every reader needs the same guard. Saying it once keeps the guards honest instead of half-applied."""
+    return value if isinstance(value, dict) else {}
+
+
 def _addr_list(value, symbols) -> str:
     rows = value if isinstance(value, list) else value.get("addresses") or value.get("references") or []
     out = []
     for row in rows[:40]:
         addr = row.get("address") if isinstance(row, dict) else row
+        if addr is None:
+            continue
         try:
             at = int(addr, 0) if isinstance(addr, str) else int(addr)
         except (TypeError, ValueError):
@@ -838,16 +885,16 @@ def dossier(binary: Path, fn, timeout: float = 900, *, base: int = 0) -> dict | 
         return None
     if not isinstance(record, dict):
         return None
-    info = record.get("procedure") if isinstance(record.get("procedure"), dict) else {}
-    native = record.get("native_api") if isinstance(record.get("native_api"), dict) else {}
+    info = _dict(record.get("procedure"))
+    native = _dict(record.get("native_api"))
 
     def named(*keys) -> list[str]:
         out: list[str] = []
         for key in keys:
             for row in record.get(key) or ():
                 if isinstance(row, dict):
-                    symbol = row.get("symbol") if isinstance(row.get("symbol"), dict) else {}
-                    text = row.get("value") or row.get("name") or symbol.get("name") or ""
+                    entry = _dict(row)
+                    text = entry.get("value") or entry.get("name") or _dict(entry.get("symbol")).get("name") or ""
                 else:
                     text = row
                 text = str(text or "").strip()

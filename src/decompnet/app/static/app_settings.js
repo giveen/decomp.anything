@@ -1,3 +1,4 @@
+/* exported showToolsPage, showSettingsPage -- both are route handlers called from app.js */
 /* ------------------------------------------------------------------ project settings */
 async function renderProjectSettings() {
   const ov = S.ov;
