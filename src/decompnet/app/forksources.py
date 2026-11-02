@@ -15,6 +15,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from .. import elfobj
 from ..forks import dtksplits
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import STATE, ForkError, ForkProject
@@ -56,7 +57,7 @@ class ForkSourceMixin:
         except (OSError, AttributeError):
             return None
         sec = elf.get_section_by_name(".text")
-        tab = elf.get_section_by_name(".symtab")
+        tab = elfobj.symbol_table(elf)
         if sec is None or tab is None or not sec["sh_size"]:
             return None
         idx = next(i for i, x in enumerate(elf.iter_sections()) if x.name == ".text")
