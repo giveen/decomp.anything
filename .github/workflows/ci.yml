@@ -54,7 +54,7 @@ jobs:
           fetch-depth: 0
       - name: Refuse a commit that only moves text around
         env:
-          BASE: ${{{{ github.base_ref || 'main' }}}}
+          BASE: ${{ github.base_ref || 'main' }}
         run: python3 tools/ci/check_reformat.py "origin/${BASE}"
 
   types:
