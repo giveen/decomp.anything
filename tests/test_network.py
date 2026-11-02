@@ -171,7 +171,7 @@ def test_projects_need_a_lawful_basis(tmp_path):
     (proj / "project.toml").write_text(toml.replace('license = "CC0-1.0"\n', ""))
     with pytest.raises(ProjectRejected, match="license"):
         import_project(net.store, proj, log=lambda *_: None)
-    assert net.store.one("SELECT COUNT(*) AS n FROM projects")["n"] == 0
+    assert net.store.must_one("SELECT COUNT(*) AS n FROM projects")["n"] == 0
 
 
 def test_status_shows_legal_basis(net):
@@ -228,7 +228,7 @@ def test_give_ups_are_recounted_once_without_decomp_wtfs_own_expiries(tmp_path):
     assert {r["name"]: r["abandons"] for r in store.all("SELECT name, abandons FROM functions")} == {"f": 1, "g": 2}
     with store.tx() as tx:
         tx.execute("UPDATE functions SET abandons=7 WHERE name='f'")
-    assert Store(path).one("SELECT abandons FROM functions WHERE name='f'")["abandons"] == 7  # once only
+    assert Store(path).must_one("SELECT abandons FROM functions WHERE name='f'")["abandons"] == 7  # once only
 
 
 def test_every_new_session_starts_with_what_agents_learned(net, agents):
@@ -254,3 +254,39 @@ def test_big_functions_get_more_compiles_before_the_nudge_to_move_on(net, agents
     with net.store.tx() as db:
         db.execute("UPDATE functions SET n_insns=300 WHERE id=?", (fn["id"],))
     assert net.stall_note(fn["id"], alice.id) == ""  # a big one: not before 10
+
+
+def test_a_missing_row_is_said_where_it_is_missing(tmp_path):
+    """`Store.must_one` exists so that a row which has to be there fails with the query that found nothing, instead
+    of a None turning into a type error where a column of it is read."""
+    import pytest
+
+    from decompnet.app.engine import RomNetwork
+    from decompnet.store import StoreError
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    assert net.store.one("SELECT value FROM settings WHERE key='not-there'") is None  # the peeking form stays quiet
+    with pytest.raises(StoreError) as missing:
+        net.store.must_one("SELECT value FROM settings WHERE key='not-there'")
+    assert "SELECT value FROM settings" in str(missing.value)
+
+
+def test_a_project_without_a_header_says_so_before_anything_reads_it(tmp_path):
+    """`_must_context` is what compiles and exports go through: a project with no context.h yet fails as a
+    NetworkError that names the unit, not as a None subscripted somewhere inside the compiler."""
+    import pytest
+
+    from decompnet.app.engine import RomNetwork
+    from decompnet.network import NetworkError
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) "
+                         "VALUES('no-header','No Header','','mips',0,?,'{}')", (str(tmp_path),)).lastrowid
+    assert pid is not None  # an insert against an INTEGER PRIMARY KEY always knows its own id
+    assert net._context(pid) is None
+    for unit in ("", "src/main.c"):
+        with pytest.raises(NetworkError) as missing:
+            net._must_context(pid, unit)
+        assert "no context.h" in str(missing.value)
+        assert not unit or unit in str(missing.value)
