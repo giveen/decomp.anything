@@ -44,8 +44,11 @@ _SLOT_LAST_INCLUDES: dict[int, tuple[str, ...]] = {}
 def _workspace_root() -> Path:
     global _WORKSPACES_ROOT
     if _WORKSPACES_ROOT is None:
-        cand = (Path(f"/dev/shm/decompnet-{os.getuid()}") if Path("/dev/shm").is_dir()
-                else Path(tempfile.gettempdir()) / f"decompnet-{os.getuid()}")
+        cand = (
+            Path(f"/dev/shm/decompnet-{os.getuid()}")
+            if Path("/dev/shm").is_dir()
+            else Path(tempfile.gettempdir()) / f"decompnet-{os.getuid()}"
+        )
         cand.mkdir(parents=True, exist_ok=True)
         _WORKSPACES_ROOT = cand
     return _WORKSPACES_ROOT
@@ -70,6 +73,7 @@ def _cache_store(key: tuple, res: CompileResult) -> None:
         if len(shard) > _CACHE_PER_SHARD:
             shard.popitem(last=False)
 
+
 _COMMENTS_AND_STRINGS = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.DOTALL)
 _FORBIDDEN = [
     (re.compile(r"\b(__)?asm(__)?\b"), "inline assembly is not allowed: matches must come from C"),
@@ -90,7 +94,7 @@ def check_source(source: str) -> None:
     if len(source.encode()) > MAX_SOURCE_BYTES:
         raise SourceRejected(f"source too large (max {MAX_SOURCE_BYTES} bytes)")
     spliced = re.sub(r"\\\r?\n", "", source)
-    cleaned = re.sub(r'//[^\n]*|/\*.*?\*/', " ", spliced, flags=re.DOTALL)
+    cleaned = re.sub(r"//[^\n]*|/\*.*?\*/", " ", spliced, flags=re.DOTALL)
     for inc in _INCLUDE.findall(cleaned):
         if inc.startswith(("/", "\\")) or ":" in inc or ".." in inc.replace("\\", "/").split("/"):
             raise SourceRejected(f"include path not allowed: {inc}")
@@ -144,17 +148,59 @@ def _wrap(cfg: CompilerConfig, work: Path, argv: list[str]) -> list[str]:
     if mode == "docker":
         if not cfg.image:
             raise RuntimeError("sandbox = 'docker' needs compiler.image")
-        return ["docker", "run", "--rm", "--network", "none", "--memory", "512m", "--pids-limit", "64",
-                "-v", f"{work}:/work", "-w", "/work", cfg.image, *argv]
+        return [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--memory",
+            "512m",
+            "--pids-limit",
+            "64",
+            "-v",
+            f"{work}:/work",
+            "-w",
+            "/work",
+            cfg.image,
+            *argv,
+        ]
     if mode == "bwrap":
         # /tmp first, so read-only mounts of paths that live under /tmp are not hidden by it.
-        cmd = ["bwrap", "--tmpfs", "/tmp", "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib64", "/lib64",
-               "--symlink", "usr/bin", "/bin", "--proc", "/proc", "--dev", "/dev"]
+        cmd = [
+            "bwrap",
+            "--tmpfs",
+            "/tmp",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+        ]
         if cfg.runtime32:
             # i386 binaries hardcode /lib/ld-linux.so.2; give them a private /lib with the pinned loader,
             # and point the loader at the pinned 32-bit libraries. 64-bit tools ignore those libraries.
-            cmd += ["--dir", "/lib", "--ro-bind", f"{cfg.runtime32}/ld-linux.so.2", "/lib/ld-linux.so.2",
-                    "--ro-bind", cfg.runtime32, "/opt/rt32", "--setenv", "LD_LIBRARY_PATH", "/opt/rt32"]
+            cmd += [
+                "--dir",
+                "/lib",
+                "--ro-bind",
+                f"{cfg.runtime32}/ld-linux.so.2",
+                "/lib/ld-linux.so.2",
+                "--ro-bind",
+                cfg.runtime32,
+                "/opt/rt32",
+                "--setenv",
+                "LD_LIBRARY_PATH",
+                "/opt/rt32",
+            ]
         else:
             cmd += ["--symlink", "usr/lib", "/lib"]
         for p in cfg.ro_paths:
@@ -170,17 +216,24 @@ def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd:
         return wsl.run(argv, cwd or work, timeout, **stage)
     # in the work folder, never in the app's own: KMC GCC's assembler (binutils 2.6) can't read its input when the
     # current directory is / ("Bad file descriptor"), which it is for decomp.wtf started by a service or in Docker
-    return subprocess.run(_wrap(cfg, work, argv), cwd=cwd or work, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=timeout)
+    return subprocess.run(
+        _wrap(cfg, work, argv), cwd=cwd or work, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
+    )
 
 
-def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 300, *,
-           inputs: list[str] | None = None, outputs: list[str] | None = None) -> subprocess.CompletedProcess:
+def run_in(
+    cfg: CompilerConfig,
+    work: Path,
+    argv: list[str],
+    timeout: float = 300,
+    *,
+    inputs: list[str] | None = None,
+    outputs: list[str] | None = None,
+) -> subprocess.CompletedProcess:
     """Run a toolchain command inside `work` (the sandbox's /work), e.g. to build a whole exported project.
     Paths in `argv` must be relative to `work`. In WSL, naming the files it reads (`inputs`) and writes (`outputs`)
     lets old 32-bit compilers work on a copy in WSL's own file system, which they need (see wsl.run)."""
-    return _exec(cfg, Path(work), argv, timeout, cwd=Path(work),
-                 **({} if outputs is None else {"inputs": inputs, "outputs": outputs}))
+    return _exec(cfg, Path(work), argv, timeout, cwd=Path(work), **({} if outputs is None else {"inputs": inputs, "outputs": outputs}))
 
 
 def clear_compile_cache() -> None:
@@ -225,8 +278,7 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         # LF on every platform: to old GCCs a backslash before CRLF doesn't continue a line
         (inc / "context.h").write_text(context_header, encoding="utf-8", newline="\n")
 
-        (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8",
-                                     newline="\n")
+        (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8", newline="\n")
 
         obj = work / "func.o"
         if obj.exists():
@@ -244,8 +296,9 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         argv = [expand(a) for a in cfg.cmd]
         try:
             with _SLOTS:
-                proc = _exec(cfg, work, argv, cfg.timeout,
-                             **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) == "wsl" else {}))
+                proc = _exec(
+                    cfg, work, argv, cfg.timeout, **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) == "wsl" else {})
+                )
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
         log = (proc.stdout + proc.stderr).replace(root + "/", "")

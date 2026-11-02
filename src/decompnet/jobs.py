@@ -27,7 +27,8 @@ def next_job(net: Network, agent: Agent) -> dict | None:
            JOIN projects p ON p.id = f.project_id
            WHERE f.status = 'open' AND f.best_score > 0 AND f.n_insns > 0 AND f.target IS NOT NULL AND f.best_source IS NOT NULL
              AND f.id NOT IN (SELECT function_id FROM claims)
-           ORDER BY CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC LIMIT 12""")
+           ORDER BY CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC LIMIT 12"""
+    )
     rows = [r for r in rows if json.loads(r["config"]).get("compiler", {}).get("toolchain")]
     if not rows:
         return None
@@ -43,13 +44,23 @@ def next_job(net: Network, agent: Agent) -> dict | None:
                     break
                 includes[str(f.relative_to(base))] = f.read_text(errors="replace", encoding="utf-8")
     return {
-        "project": fn["slug"], "function": fn["name"], "unit": fn["unit"] or None,
-        "toolchain": cfg["toolchain"], "flags": cfg.get("flags"), "cmd": cfg.get("cmd"),
+        "project": fn["slug"],
+        "function": fn["name"],
+        "unit": fn["unit"] or None,
+        "toolchain": cfg["toolchain"],
+        "flags": cfg.get("flags"),
+        "cmd": cfg.get("cmd"),
         "context": net._must_context(fn["project_id"], fn["unit"])["header"],
         "include_files": includes,
-        "source": fn["best_source"], "best_score": fn["best_score"], "max_score": fn["n_insns"] * 100,
-        "target": {"arch": fn["arch"], "big_endian": bool(fn["big_endian"]),
-                   "code": base64.b64encode(fn["target"]).decode(), "relocs": json.loads(fn["relocs"])},
+        "source": fn["best_source"],
+        "best_score": fn["best_score"],
+        "max_score": fn["n_insns"] * 100,
+        "target": {
+            "arch": fn["arch"],
+            "big_endian": bool(fn["big_endian"]),
+            "code": base64.b64encode(fn["target"]).decode(),
+            "relocs": json.loads(fn["relocs"]),
+        },
     }
 
 
@@ -69,8 +80,9 @@ def submit(net: Network, agent: Agent, project: str, function: str, source: str)
     cand = None
     if res.obj is not None:  # it compiled: this is what the coordinator's own compiler made
         try:
-            cand = coffobj.extract_function(res.obj, fn["name"]) if coffobj.is_coff(res.obj) else \
-                elfobj.extract_function(res.obj, fn["name"])
+            cand = (
+                coffobj.extract_function(res.obj, fn["name"]) if coffobj.is_coff(res.obj) else elfobj.extract_function(res.obj, fn["name"])
+            )
         except Exception:  # noqa: BLE001
             cand = None
     if cand is None:
@@ -81,5 +93,4 @@ def submit(net: Network, agent: Agent, project: str, function: str, source: str)
     net._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="permuter")
     if d.bytes_match:
         net.add_note(agent, proj["slug"], "matched by donated compute (permuter)", fn["name"])
-    return {"accepted": True, "score": d.score, "improved": before is None or d.score < before,
-            "matched": d.bytes_match}
+    return {"accepted": True, "score": d.score, "improved": before is None or d.score < before, "matched": d.bytes_match}

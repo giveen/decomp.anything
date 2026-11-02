@@ -8,7 +8,6 @@ the engine's locks and is committed one file at a time (see forkengine.py)."""
 # A type checker reads one part at a time, so a self.<name> owned by another part (or by the engine itself) looks
 # unknown. ForkEngine is one class at runtime; tests/test_fork_parts.py proves every name resolves there.
 
-
 from __future__ import annotations
 
 import hashlib
@@ -44,8 +43,10 @@ class ForkCreateMixin:
             local = Path(repo).expanduser()
             if local.is_dir() and (local / ".git").exists():  # a checkout on this computer
                 return {"repo": str(local.resolve()), **policy.check(str(local.resolve()))}
-            raise NetworkError("give a GitHub/GitLab/Codeberg repository URL (https://github.com/owner/repo) "
-                               "or the path of a git checkout on this computer")
+            raise NetworkError(
+                "give a GitHub/GitLab/Codeberg repository URL (https://github.com/owner/repo) "
+                "or the path of a git checkout on this computer"
+            )
         return {"repo": m.group(1), **policy.check(m.group(1))}
 
     def clone(self, repo: str, *, name: str = "", platform: str = "", version: str | None = None, log=print) -> str:
@@ -65,8 +66,13 @@ class ForkCreateMixin:
         slug = self._free_slug(base)
         dest = self.net.workspace / slug
         log(f"cloning {url}")
-        res = subprocess.run(["git", "clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules", url, str(dest)],
-                             capture_output=True, text=True, encoding="utf-8", errors="replace")
+        res = subprocess.run(
+            ["git", "clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules", url, str(dest)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         if res.returncode != 0:
             shutil.rmtree(dest, ignore_errors=True)
             raise NetworkError(f"git clone failed: {res.stderr.strip()[-400:]}")
@@ -75,8 +81,15 @@ class ForkCreateMixin:
         kind = fp.kind()
         versions = fp.versions()
         version = version if version in versions else (versions[0] if versions else version)
-        cfg = {"kind": "fork", "repo_url": url, "platform": platform, "version": version, "fork_kind": kind,
-               "ready": False, "legal": {"basis": "personal-copy", "license": "the project's own license"}}
+        cfg = {
+            "kind": "fork",
+            "repo_url": url,
+            "platform": platform,
+            "version": version,
+            "fork_kind": kind,
+            "ready": False,
+            "legal": {"basis": "personal-copy", "license": "the project's own license"},
+        }
         self._register(slug, name or url.rstrip("/").split("/")[-1], f"fork of {url}", dest, cfg, f"cloned {url}")
         log(f"cloned into {dest} ({kind} project)")
         return slug
@@ -89,10 +102,14 @@ class ForkCreateMixin:
 
     def _register(self, slug: str, title: str, description: str, root: Path, cfg: dict, event: str) -> None:
         with self.net.store.tx() as db:
-            pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
-                             (slug, title, description, "", 0, str(root), json.dumps(cfg))).lastrowid
-            db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
-                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, "", None, "projects keep their headers in the tree", time.time(), ""))
+            pid = db.execute(
+                "INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                (slug, title, description, "", 0, str(root), json.dumps(cfg)),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) VALUES(?,?,?,?,?,?,?)",
+                (pid, 1, "", None, "projects keep their headers in the tree", time.time(), ""),
+            )
             self.net._event(db, pid, None, "fork", event)
 
     def create_scratch(self, game: Path, *, compiler: str | None = None, log=print) -> str:
@@ -114,21 +131,42 @@ class ForkCreateMixin:
         except BaseException:
             shutil.rmtree(dest, ignore_errors=True)
             raise
-        cfg = {"kind": "fork", "origin": "scratch", "repo_url": None, "platform": facts["platform"],
-               "version": facts["id"], "fork_kind": "manifest", "ready": False, "compiler": facts["compiler"],
-               "program_sha1": sha1,
-               "legal": {"basis": "personal-copy", "license": "personal use only",
-                         "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
-                         "confirmed_at": time.time()}}
-        self._register(slug, facts["title"], f"{catalog.PLATFORMS[facts['platform']]} game {facts['id']}, from scratch",
-                       dest, cfg, f"started {facts['id']} from scratch")
+        cfg = {
+            "kind": "fork",
+            "origin": "scratch",
+            "repo_url": None,
+            "platform": facts["platform"],
+            "version": facts["id"],
+            "fork_kind": "manifest",
+            "ready": False,
+            "compiler": facts["compiler"],
+            "program_sha1": sha1,
+            "legal": {
+                "basis": "personal-copy",
+                "license": "personal use only",
+                "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
+                "confirmed_at": time.time(),
+            },
+        }
+        self._register(
+            slug,
+            facts["title"],
+            f"{catalog.PLATFORMS[facts['platform']]} game {facts['id']}, from scratch",
+            dest,
+            cfg,
+            f"started {facts['id']} from scratch",
+        )
         self.check(slug, log=log)
         return slug
 
     def needs(self, slug: str) -> dict:
         _, fp, cfg = self.get(slug)
-        return fp.needs(cfg.get("version")) | {"kind": fp.kind(), "versions": fp.versions(),
-                                                "version": cfg.get("version"), "readme": fp.readme()}
+        return fp.needs(cfg.get("version")) | {
+            "kind": fp.kind(),
+            "versions": fp.versions(),
+            "version": cfg.get("version"),
+            "readme": fp.readme(),
+        }
 
     def setup(self, slug: str, game: bytes | Path | None, filename: str = "", log=print, move: bool = False) -> dict:
         """Add the user's game (bytes, or a file on disk) and run the project's setup, then measure it."""
@@ -170,8 +208,9 @@ class ForkCreateMixin:
             cfg["version"] = gid
             self._save_cfg(proj, cfg)
         elif all(re.fullmatch(r"[A-Z0-9]{6}", v) for v in versions):
-            raise NetworkError(f"this disc is {gid}, but the project decompiles {', '.join(versions)}: "
-                               "pick your copy of one of those versions")
+            raise NetworkError(
+                f"this disc is {gid}, but the project decompiles {', '.join(versions)}: pick your copy of one of those versions"
+            )
 
     def check_rom(self, slug: str, log=print) -> dict:
         """A DS game started from scratch: rebuild its ROM and compare it with the user's copy (scratch_dsd.check_rom);
@@ -186,9 +225,14 @@ class ForkCreateMixin:
             else:
                 ok, tail = fp.verify(log=log)
                 diff = scratch_dtk._differing(fp.root, manifest["version"], tail) or []
-                result = {"identical": ok, "detail": "identical" if ok else
-                          f"{len(diff)} files differ: {', '.join(diff[:8])}" if diff
-                          else (tail.strip().splitlines() or ["the build failed"])[-1][-300:]}
+                result = {
+                    "identical": ok,
+                    "detail": "identical"
+                    if ok
+                    else f"{len(diff)} files differ: {', '.join(diff[:8])}"
+                    if diff
+                    else (tail.strip().splitlines() or ["the build failed"])[-1][-300:],
+                }
         manifest["rebuild"] = result | {"t": time.time()}
         (fp.root / ".decomp.wtf.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return result
@@ -197,8 +241,9 @@ class ForkCreateMixin:
         """After a manual setup (or to refresh): pick the project up once it has an objdiff.json."""
         proj, fp, cfg = self.get(slug)
         if not (fp.root / "objdiff.json").exists():
-            raise NetworkError("no objdiff.json yet. The project's build creates it (often `python configure.py` "
-                               "or `make`); see its README")
+            raise NetworkError(
+                "no objdiff.json yet. The project's build creates it (often `python configure.py` or `make`); see its README"
+            )
         cfg["ready"] = True
         self._save_cfg(proj, cfg)
         measures = self.sync(slug, log=log)
@@ -216,8 +261,9 @@ class ForkCreateMixin:
             raise NetworkError(f"objdiff couldn't measure the project: {e}") from None
         raise NetworkError("objdiff gave no report")  # only reached if the lock's holder swallows the read
 
-    def sync(self, slug: str, log=print, rep: dict | None = None, broken: Collection[str] = frozenset(),
-             agent: Agent | None = None) -> dict:
+    def sync(
+        self, slug: str, log=print, rep: dict | None = None, broken: Collection[str] = frozenset(), agent: Agent | None = None
+    ) -> dict:
         """Measure the whole project with objdiff (or take a report just made) and update every function's state.
         Functions in `broken` units (sources that don't build) don't count as matched. Functions that match now and
         didn't before are recorded as matches (credited to `agent`, whose change it was)."""
@@ -282,19 +328,24 @@ class ForkCreateMixin:
                     while name in used:
                         name += "'"
                     used.add(name)
-                    db.execute("INSERT INTO functions(project_id,name,size,n_insns,status,best_score,unit,vram,meta,asm) "
-                               "VALUES(?,?,?,?,?,?,?,?,?,?)", (proj["id"], name, size, n, status, score, uname,
-                                                              int(vram) if vram else None, json.dumps(meta), ""))
+                    db.execute(
+                        "INSERT INTO functions(project_id,name,size,n_insns,status,best_score,unit,vram,meta,asm) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (proj["id"], name, size, n, status, score, uname, int(vram) if vram else None, json.dumps(meta), ""),
+                    )
                 else:
                     if status != "matched" and old["best_source"] and old["best_score"] is not None:
                         score = old["best_score"] if score is None else min(score, old["best_score"])
-                    db.execute("UPDATE functions SET size=?, n_insns=?, status=?, best_score=?, meta=? WHERE id=?",
-                               (size, n, status, score, json.dumps(meta), old["id"]))
+                    db.execute(
+                        "UPDATE functions SET size=?, n_insns=?, status=?, best_score=?, meta=? WHERE id=?",
+                        (size, n, status, score, json.dumps(meta), old["id"]),
+                    )
                     if status == "matched" and old["status"] != "matched":
                         if uname not in texts:
                             try:
-                                texts[uname] = (fp.root / u.source).read_text(errors="replace",
-                                                                              encoding="utf-8") if u and u.source else None
+                                texts[uname] = (
+                                    (fp.root / u.source).read_text(errors="replace", encoding="utf-8") if u and u.source else None
+                                )
                             except OSError:
                                 texts[uname] = None
                         self._matched(db, proj, old, agent, texts[uname])
@@ -304,10 +355,13 @@ class ForkCreateMixin:
                 # regenerated differently and every function moves, so ask in chunks.
                 with_history = set()
                 for i in range(0, len(gone), 500):
-                    chunk = gone[i:i + 500]
-                    with_history |= {r["function_id"] for r in db.execute(
-                        f"SELECT DISTINCT function_id FROM attempts WHERE function_id IN ({','.join('?' * len(chunk))})",
-                        chunk)}
+                    chunk = gone[i : i + 500]
+                    with_history |= {
+                        r["function_id"]
+                        for r in db.execute(
+                            f"SELECT DISTINCT function_id FROM attempts WHERE function_id IN ({','.join('?' * len(chunk))})", chunk
+                        )
+                    }
                 for fid in gone:
                     if fid in with_history:
                         db.execute("UPDATE functions SET status='nosource' WHERE id=?", (fid,))
@@ -317,12 +371,13 @@ class ForkCreateMixin:
                         db.execute("DELETE FROM functions WHERE id=?", (fid,))
             m = rep.get("measures", {})
             self.net._event(db, proj["id"], None, "sync", f"{float(m.get('matched_code_percent', 0)):.2f}% of code matches")
-        log(f"{m.get('matched_functions', 0)}/{m.get('total_functions', 0)} functions match, "
-            f"{float(m.get('matched_code_percent', 0)):.2f}% of code")
+        log(
+            f"{m.get('matched_functions', 0)}/{m.get('total_functions', 0)} functions match, "
+            f"{float(m.get('matched_code_percent', 0)):.2f}% of code"
+        )
         cfg["measures"] = m
         cfg["uncovered"] = self._count_uncovered(rep)
         self._save_cfg(proj, cfg)
         if cfg.get("ready"):
             self.start_indexing(slug)
         return m
-
