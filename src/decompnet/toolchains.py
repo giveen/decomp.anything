@@ -55,6 +55,11 @@ class Toolchain:
     commit: str = ""
     binary_name: str = ""  # main executable of a tool, without .exe
     npm: str = ""  # a package@version installed with npm (rea-agents)
+    pip: str = ""  # a package==version installed into its own uv venv (pwntools wants its own interpreter)
+    # {"script": name, "jar": file}: a wrapper we write, because some tools ship only as a JAR while the engine
+    # asks for a command. REA's own remediation says it wants "an absolute apktool launcher (the upstream wrapper
+    # or a java -jar script)" -- a bare .jar is neither, so pointing REA at the JAR would fail in a tool call.
+    launcher: dict | None = None
     pip_extra: list[str] = field(default_factory=list)  # extra requirements for a git tool's environment
     requires_java: int = 0  # minimum Java version (Ghidra)
     system: bool = False  # a compiler already on the host (MinGW, MSVC under wine), not a downloaded package
@@ -79,7 +84,8 @@ class Toolchain:
     @property
     def supported(self) -> bool:
         """Whether this toolchain can be installed on this computer (on Windows, Linux ones through WSL 2)."""
-        return self.system or bool(self.git) or bool(self.npm) or bool(self.parts_for()) or self.via_wsl
+        return (self.system or bool(self.git) or bool(self.npm) or bool(self.pip) or bool(self.parts_for())
+                or self.via_wsl)
 
 
 def current_platform() -> str:
@@ -356,7 +362,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     if tc.system:
         raise _system_missing(tc)
     parts = tc.linux_parts() if linux else tc.parts_for()
-    if not parts and not tc.git and not tc.npm:
+    if not parts and not tc.git and not tc.npm and not tc.pip:
         why = unsupported_cpu()
         raise ToolchainError(f"{tid} ({tc.name}) has no build for this computer ({current_platform()})"
                              + (f": {why}" if why else ""))
@@ -378,6 +384,8 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
             _install_git_tool(tc, dest, log)
         if tc.npm:
             _install_npm_tool(tc, dest, log)
+        if tc.pip:
+            _install_pip_tool(tc, dest, log)
         downloads = root() / ".downloads"
         downloads.mkdir(parents=True, exist_ok=True)
         for part in parts:
@@ -400,6 +408,8 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
                         if f.is_file():
                             os.chmod(f, 0o755)
             pinned.append({"url": part["url"], "sha256": digest})
+        if tc.launcher:
+            _write_launcher(tc, dest, log)
         if linux and "runtime-i386" in tc.requires:  # WSL systems rarely have a 32-bit loader: bring ours
             n = wsl.wrap_i386(dest, wsl.path(path("runtime-i386", linux=True)))
             log(f"  {n} 32-bit programs start through the pinned 32-bit runtime")
@@ -420,6 +430,15 @@ def venv_bin(venv: Path, name: str) -> Path:
     return venv / "Scripts" / f"{name}.exe" if sys.platform == "win32" else venv / "bin" / name
 
 
+def _venv_with(uv: str, tc: Toolchain, dest: Path, log, spec: str, what: str) -> None:
+    """One pinned Python spec in its own venv. Tools that need Python stay out of the app's venv and off the host:
+    REA points at these interpreters directly (REA_PWNTOOLS_PYTHON), so the isolation is also the interface."""
+    log(f"  creating an isolated environment for {what}")
+    subprocess.run([uv, "venv", "--quiet", "--python", "3.12", str(dest / "venv")], check=True)
+    subprocess.run([uv, "pip", "install", "--quiet", "--python", str(venv_bin(dest / "venv", "python")), spec,
+                    *tc.pip_extra], check=True)
+
+
 def _install_git_tool(tc: Toolchain, dest: Path, log) -> None:
     uv = shutil.which("uv")
     if not uv:
@@ -429,10 +448,33 @@ def _install_git_tool(tc: Toolchain, dest: Path, log) -> None:
         spec = f"{tc.id} @ {tc.git.removesuffix('.git')}/archive/{tc.commit}.zip"
     else:
         spec = f"{tc.id} @ git+{tc.git}@{tc.commit}"
-    log(f"  creating an isolated environment for {tc.git} @ {tc.commit[:10]}")
-    subprocess.run([uv, "venv", "--quiet", "--python", "3.12", str(dest / "venv")], check=True)
-    subprocess.run([uv, "pip", "install", "--quiet", "--python", str(venv_bin(dest / "venv", "python")), spec, *tc.pip_extra],
-                   check=True)
+    _venv_with(uv, tc, dest, log, spec, f"{tc.git} @ {tc.commit[:10]}")
+
+
+def _write_launcher(tc: Toolchain, dest: Path, log) -> None:
+    """Make a JAR-only tool the command an engine asks for. Both variants are written: the shell script for a
+    POSIX host, the .bat for a Windows one, so the registry entry stays one entry per tool."""
+    spec = tc.launcher or {}
+    name = str(spec.get("script") or tc.id)
+    jar = str(spec.get("jar") or "")
+    if not (dest / jar).exists():
+        raise ToolchainError(f"{tc.id}: the launcher wants {jar!r}, which this install did not place")
+    bindir = dest / "bin"
+    bindir.mkdir(exist_ok=True)
+    sh = bindir / name
+    sh.write_text(f'#!/bin/sh\n# written by decomp.anything so {tc.name} is a command, not a JAR path\n'
+                  f'exec java -jar "$(dirname "$0")/../{jar}" "$@"\n', encoding="utf-8")
+    os.chmod(sh, 0o755)
+    (bindir / f"{name}.bat").write_text(f'@echo off\r\nrem written by decomp.anything so {tc.name} is a command\r\n'
+                                        f'java -jar "%~dp0..\\{jar}" %*\r\n', encoding="utf-8")
+    log(f"  {name}: launcher for {jar} written to {bindir}")
+
+
+def _install_pip_tool(tc: Toolchain, dest: Path, log) -> None:
+    uv = shutil.which("uv")
+    if not uv:
+        raise ToolchainError(f"{tc.id} needs `uv` to create its isolated environment")
+    _venv_with(uv, tc, dest, log, tc.pip, tc.pip)
 
 
 def _install_npm_tool(tc: Toolchain, dest: Path, log) -> None:

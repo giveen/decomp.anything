@@ -293,6 +293,9 @@ function rcSettings(open) {
     ${(st.readiness || []).length ? `<p class="small">Native engines: ${(st.readiness || [])
       .map((r) => `${esc(r.provider)} ${r.ready ? "ready" : "not ready"}`).join(", ")}.
       ${(st.readiness || []).filter((r) => !r.ready).map((r) => esc(r.fix || "")).filter(Boolean).join(" ")}</p>` : ""}
+    ${(st.engines || []).length ? `<p class="small">Analysis engines we can install for it: ${(st.engines || [])
+      .map((e) => `${esc(e.name)} ${e.ready ? "ready" : "not installed"}`).join(", ")}.
+      ${(st.engines || []).filter((e) => !e.ready && e.fix).map((e) => esc(e.fix)).join("; ")}.</p>` : ""}
     ${running ? `<p class="small">Running command: <code>${esc((running.command || []).map(quote).join(" "))}</code></p>` : ""}
     <div class="row">
       <label class="grow">Command<input class="rc-input" id="rcSetCmd" value="${esc((s.command || []).map(quote).join(" "))}" placeholder="npx -y ${esc(st.package || "rea-agents")} mcp"></label>

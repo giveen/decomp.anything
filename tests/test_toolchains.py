@@ -21,7 +21,23 @@ def test_registry_is_pinned_and_labelled():
     for tc in reg.values():
         assert tc.license and tc.source, tc.id
         if not tc.proprietary:  # everything we install by default is verified against a pinned hash
-            assert all(p["sha256"] for p in tc.parts) or tc.commit or tc.npm, tc.id
+            assert all(p["sha256"] for p in tc.parts) or tc.commit or tc.npm or tc.system, tc.id
+            # a venv tool has no archive to hash, so the version has to be pinned in the spec itself
+            if tc.pip:
+                assert "==" in tc.pip or "@" in tc.pip, f"{tc.id}: unpinned python spec {tc.pip!r}"
+            # nothing at all to install is only honest for a tool we detect on the host
+            assert tc.system or tc.git or tc.npm or tc.pip or tc.parts or tc.via_wsl, tc.id
+    assert reg["llvm-tools"].binary_name == "llvm-pdbutil"  # this key was once silently relocated by an insertion
+    for tid in ("apktool", "adb"):  # engines REA will not fetch itself
+        assert reg[tid].parts and all(p["sha256"] for p in reg[tid].parts), tid
+    assert reg["apktool"].requires_java == 8
+    assert (apk := reg["apktool"].launcher) and apk["jar"] == "apktool_3.0.3.jar"
+    assert reg["adb"].binary_name == "adb" and len(reg["adb"].parts) == 2
+    for tid in ("wabt", "jadx-mcp", "pwntools", "mitmproxy"):  # engines REA will not fetch itself
+        assert reg[tid].kind == "tool" and not reg[tid].system, tid
+    assert all(p["sha256"] for p in reg["wabt"].parts) and len(reg["wabt"].parts) == 3
+    assert len(reg["jadx-mcp"].parts) == 1 and reg["jadx-mcp"].requires_java == 17
+    assert reg["pwntools"].pip.startswith("pwntools==") and reg["mitmproxy"].pip.startswith("mitmproxy==")
     assert reg["ido-7.1"].proprietary and not reg["gcc-2.7.2-kmc"].proprietary
     assert reg["mingwxx-x86_64"].download.startswith("https://") and reg["clang-clxx-x86_64"].download.startswith("https://")
     assert {"msvc-x86", "msvcxx-x86", "msvc-x86_64", "msvcxx-x86_64"} <= set(reg)
@@ -133,6 +149,24 @@ def test_install_verifies_checksums(tc_root, monkeypatch):
     with pytest.raises(toolchains.ToolchainError, match="checksum mismatch"):
         toolchains.install("fake", log=lambda *_: None)
     assert not toolchains.path("fake").exists()
+
+
+def test_a_jar_only_tool_gets_the_command_the_engine_asks_for(tc_root, monkeypatch):
+    """REA's own remediation asks for "an absolute apktool launcher (the upstream wrapper or a java -jar script)".
+    A bare .jar on disk is neither, so pointing REA at the download would fail inside a tool call; the install has
+    to write the wrapper. A pasted table header once moved llvm-tools' binary_name into the entry below it and
+    TOML parsed happily, which is why the registry test pins that key too."""
+    jar = tc_root / "apktool_9.9.9.jar"
+    jar.write_bytes(b"PK")
+    digest = hashlib.sha256(jar.read_bytes()).hexdigest()
+    fake = toolchains.Toolchain(id="apk", name="Apk", license="Apache-2.0", source="test",
+                                parts=[{"url": jar.as_uri(), "sha256": digest, "binary": "apktool_9.9.9.jar"}],
+                                launcher={"script": "apktool", "jar": "apktool_9.9.9.jar"})
+    monkeypatch.setattr(toolchains, "registry", lambda: {"apk": fake})
+    toolchains.install("apk", log=lambda *_: None)
+    sh = toolchains.path("apk") / "bin" / "apktool"
+    assert sh.exists() and os.access(sh, os.X_OK) and "java -jar" in sh.read_text(encoding="utf-8")
+    assert "java -jar" in (toolchains.path("apk") / "bin" / "apktool.bat").read_text(encoding="utf-8")
 
 
 def test_install_records_a_manifest(tc_root, monkeypatch):

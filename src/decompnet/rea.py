@@ -62,7 +62,33 @@ ANALYSIS_ALLOWED = (ALLOWED - {"open_binary", "close_binary"}) | {
 # Compilers & tools used to be invisible to REA unless the operator also typed GHIDRA_INSTALL_DIR by hand, so a
 # pinned, sha256-verified Ghidra sat on disk while every native tool reported `not_configured` -- measured on a
 # machine that had it. We seed what we installed ourselves; a value the operator set always wins.
+#
+# REA's own policy is that it never downloads an engine during an analysis operation, so an engine it supports
+# stays missing unless something installs it -- and an engine we installed stays invisible unless we name it. The
+# second half of that sentence is the whole point of this table: variable -> (toolchain id, shape), where shape is
+# what REA expects to read: an install directory, a bin directory, a JAR, an interpreter, or a command in a venv.
 OWN_PROVIDER_ENV = {"ghidra": ("GHIDRA_INSTALL_DIR", "ghidra")}
+OWN_ENGINES = {
+    "GHIDRA_INSTALL_DIR": ("ghidra", "dir"),
+    "REA_WABT_BIN_DIRECTORY": ("wabt", "bindir"),
+    "REA_JADX_MCP_JAR": ("jadx-mcp", "jar"),
+    "REA_PWNTOOLS_PYTHON": ("pwntools", "venvpython"),
+    "REA_MITMDUMP_COMMAND": ("mitmproxy", "venvbin:mitmdump"),
+    "REA_APKTOOL_COMMAND": ("apktool", "path:bin/apktool"),
+    "REA_ADB_PATH": ("adb", "path:platform-tools/adb"),
+}
+
+# The same engines as capability lanes, for the console: a missing Android decompiler should read as "install
+# jadx-mcp", not as "this tool cannot do APKs".
+ENGINE_LANES = {
+    "ghidra": ("Ghidra", "native decompilation for almost any CPU"),
+    "wabt": ("WABT", "WebAssembly modules: wasm2wat, wasm-decompile"),
+    "jadx-mcp": ("jadx-headless-mcp", "Android APK code: Java and Kotlin read from DEX"),
+    "pwntools": ("pwntools", "ELF segment and stack-canary layout"),
+    "mitmproxy": ("mitmproxy", "live HTTPS capture for browser and native clients"),
+    "apktool": ("apktool", "Android APK resources and AndroidManifest"),
+    "adb": ("adb", "a connected Android device: install, pull, logcat"),
+}
 
 # Providers we cannot supply: they are configured outside decomp.anything, and saying so beats a silent absence.
 FOREIGN_PROVIDERS = {
@@ -73,29 +99,68 @@ FOREIGN_PROVIDERS = {
 
 def own_install(tid: str) -> str | None:
     """An analysis tool decomp.anything installed itself, at the path REA would want."""
+    return own_engine(tid, "dir")
+
+
+def own_engine(tid: str, shape: str) -> str | None:
+    """The path REA would want for an engine we installed, or None while it is missing or its layout is wrong.
+    A half-install is never offered as ready: an unusable path is worse than an obvious absence."""
     try:
         if toolchains.installed(tid) is None:
             return None
         home = toolchains.path(tid)
     except (toolchains.ToolchainError, OSError):
         return None
-    # Ghidra's own layout is the proof, and it is exactly what REA's diagnostics look for
-    if (home / "support" / "analyzeHeadless").exists() or (home / "support" / "analyzeHeadless.bat").exists():
-        return str(home)
+    if shape == "dir":
+        # Ghidra's own layout is the proof, and it is exactly what REA's diagnostics look for
+        if (home / "support" / "analyzeHeadless").exists() or (home / "support" / "analyzeHeadless.bat").exists():
+            return str(home)
+        return None
+    if shape == "bindir":
+        return str(home / "bin") if (home / "bin").is_dir() else None
+    if shape == "jar":
+        jars = sorted(home.glob("*.jar"))
+        return str(jars[0]) if jars else None
+    if shape == "venvpython":
+        exe = toolchains.venv_bin(home / "venv", "python")
+        return str(exe) if exe.exists() else None
+    if shape.startswith("venvbin:"):  # a console script inside our own venv, e.g. mitmdump
+        exe = toolchains.venv_bin(home / "venv", shape.split(":", 1)[1])
+        return str(exe) if exe.exists() else None
+    if shape.startswith("path:"):  # a file inside our install: a wrapper we wrote, or adb inside platform-tools
+        rel = shape.split(":", 1)[1]
+        # on Windows the .bat wrapper and adb.exe both sit next to the extension-less file we also placed
+        names = [rel + ".exe", rel + ".bat", rel] if os.name == "nt" else [rel, rel + ".exe"]
+        for name in names:
+            if (home / name).exists():
+                return str(home / name)
+        return None
     return None
 
 
 def provider_env() -> dict:
-    """Environment additions for providers we installed. Empty when we have nothing to offer or the operator set
+    """Environment additions for engines we installed. Empty when we have nothing to offer or the operator set
     the variable for the whole session, which still wins."""
     out = {}
-    for _provider, (var, tid) in OWN_PROVIDER_ENV.items():
-        if not var or os.environ.get(var):
+    for var, (tid, shape) in OWN_ENGINES.items():
+        if os.environ.get(var):
             continue
-        found = own_install(tid)
+        found = own_engine(tid, shape)
         if found:
             out[var] = found
     return out
+
+
+def engines() -> list[dict]:
+    """Each engine we can install, what it opens, and whether REA can use it right now."""
+    rows = []
+    for tid, (name, capability) in ENGINE_LANES.items():
+        var, shape = next((k, v[1]) for k, v in OWN_ENGINES.items() if v[0] == tid)
+        path_ = own_engine(tid, shape)
+        rows.append({"tool": tid, "name": name, "capability": capability, "variable": var, "ready": path_ is not None,
+                     "path": path_, "set_by": "decomp.anything" if path_ else ("operator" if os.environ.get(var) else None),
+                     "fix": None if path_ or os.environ.get(var) else f"decompnet toolchain install {tid}"})
+    return rows
 
 
 def readiness() -> list[dict]:
@@ -110,7 +175,7 @@ def readiness() -> list[dict]:
     rows = []
     for provider in PROVIDERS:
         var, tid = OWN_PROVIDER_ENV.get(provider, FOREIGN_PROVIDERS.get(provider, ("", "")))
-        we_supply = provider in OWN_PROVIDER_ENV and own_install(tid) is not None
+        we_supply = provider in OWN_PROVIDER_ENV and own_engine(tid, "dir") is not None
         set_by = "decomp.anything" if we_supply and not os.environ.get(var) else (
             "operator" if os.environ.get(var) else ("saved settings" if var in saved else None))
         if provider == "rizin":  # no variable: REA finds it on PATH
