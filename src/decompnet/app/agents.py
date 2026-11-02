@@ -57,6 +57,16 @@ from .agenttools import (
 )
 from .engine import RomNetwork
 
+# Set in every agent CLI's environment unless the operator set it first. Reaching the vendor's model is the point of
+# running these tools; reporting *usage* back home is optional, and each CLI has its own switch for it. Off by
+# default here, and setdefault keeps a choice the operator already made in the shell that started the app.
+TELEMETRY_OFF = {
+    "DISABLE_TELEMETRY": "1",                        # opencode and the Codex CLI's usage reporting
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",  # Claude Code: stats and version checks beyond the model call
+    "OTEL_SDK_DISABLED": "true",                     # any CLI instrumented with OpenTelemetry
+    "DISABLE_AUTOUPDATER": "1",                      # no CLI replacing its own binary mid-session (cf. cloudflared --no-autoupdate)
+}
+
 __all__ = [
     "AGY_ALLOW",
     "ALIASES",
@@ -458,6 +468,8 @@ class Manager:
         if not exe:
             raise RuntimeError(f"{k.name} is not installed")
         env = dict(os.environ)
+        for name, value in TELEMETRY_OFF.items():
+            env.setdefault(name, value)  # the model call is the service; the optional usage reporting isn't ours to enable
         if WIN and (path := search_path()):
             env["PATH"] = path  # the agent finds node (and what it needs) even when installed after the app
         # An agent that only loads the MCP servers in the user's own settings (Antigravity CLI since 1.1.3 ignores a
