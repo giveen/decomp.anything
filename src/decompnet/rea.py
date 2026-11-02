@@ -90,6 +90,45 @@ ENGINE_LANES = {
     "adb": ("adb", "a connected Android device: install, pull, logcat"),
 }
 
+# Tools the host already provides. Finding one and saying nothing would repeat the Ghidra lesson in a different
+# suit: REA reads its own environment, so a pcap reader that exists in /usr/bin is invisible until named.
+SYSTEM_ENGINES = {
+    "sigrok-cli": "REA_SIGROK_COMMAND",
+    "tshark": "REA_TSHARK_COMMAND",
+    "capinfos": "REA_CAPINFOS_COMMAND",
+    "gdb": "REA_GDB_COMMAND",
+}
+
+SYSTEM_LANES = {
+    "sigrok-cli": "decoded logic-analyser traces (UART, SPI, I2C)",
+    "tshark": "reading pcap and pcapng captures",
+    "capinfos": "a capture's shape before it is opened",
+    "gdb": "observing a live native target instead of reading it statically",
+}
+
+# Engines we will never download. Commercial software on a coordinator is the operator's own licensing decision,
+# so the useful thing left is to say what to run and which variable points REA at it.
+FOREIGN_ENGINES = {
+    "jeb": ("JEB", "commercial Android decompiler",
+            "REA_JEB_MCP_URL", "JEB is commercial: run it yourself and point REA_JEB_MCP_URL at its MCP server."),
+    "ida": ("IDA Pro", "native disassembly and decompilation through its MCP adapter",
+            "REA_IDA_MCP_CONFIG", "IDA Pro needs its own MCP adapter (mrexodia/ida-pro-mcp); "
+                                  "decomp.anything cannot install it."),
+}
+
+# Four of REA's *_PRLIMIT_COMMAND variables make util-linux a quiet prerequisite of whole lanes. Absent, the
+# symptom is a lane refusing to start a child process, which reads as a REA bug rather than a missing package.
+PRLIMIT_VAR = "prlimit (util-linux)"
+
+
+def own_system(tid: str) -> str | None:
+    """A tool the host provides, at the path we found it. Naming it is not a claim of ownership."""
+    try:
+        found = toolchains.system_binary(toolchains.get(tid))
+    except (toolchains.ToolchainError, OSError):
+        return None
+    return str(found) if found else None
+
 # Providers we cannot supply: they are configured outside decomp.anything, and saying so beats a silent absence.
 FOREIGN_PROVIDERS = {
     "hopper": ("HOPPER_LAUNCHER_PATH", "Hopper is macOS: install it there and point HOPPER_LAUNCHER_PATH at it."),
@@ -148,6 +187,12 @@ def provider_env() -> dict:
         found = own_engine(tid, shape)
         if found:
             out[var] = found
+    for tid, var in SYSTEM_ENGINES.items():
+        if os.environ.get(var):
+            continue
+        found = own_system(tid)
+        if found:
+            out[var] = found
     return out
 
 
@@ -160,6 +205,20 @@ def engines() -> list[dict]:
         rows.append({"tool": tid, "name": name, "capability": capability, "variable": var, "ready": path_ is not None,
                      "path": path_, "set_by": "decomp.anything" if path_ else ("operator" if os.environ.get(var) else None),
                      "fix": None if path_ or os.environ.get(var) else f"decompnet toolchain install {tid}"})
+    for tid, capability in SYSTEM_LANES.items():
+        path_ = own_system(tid)
+        rows.append({"tool": tid, "name": tid, "capability": capability, "variable": SYSTEM_ENGINES[tid],
+                     "ready": path_ is not None, "path": path_, "set_by": "host" if path_ else None,
+                     "fix": None if path_ else f"install {tid} with your package manager: we will point REA at it"})
+    limit = shutil.which("prlimit")
+    rows.append({"tool": "prlimit", "name": PRLIMIT_VAR, "variable": None,
+                 "capability": "resource limits around the firmware, sigrok, tshark and JavaScript lanes (Linux)",
+                 "ready": limit is not None, "path": limit, "set_by": "host" if limit else None,
+                 "fix": None if limit else "install util-linux: several REA lanes will not start a child without it"})
+    for tid, (name, capability, var, why) in FOREIGN_ENGINES.items():
+        set_by = "operator" if os.environ.get(var) else None
+        rows.append({"tool": tid, "name": name, "capability": capability, "variable": var, "ready": set_by is not None,
+                     "path": os.environ.get(var) or None, "set_by": set_by, "fix": None if set_by else why})
     return rows
 
 

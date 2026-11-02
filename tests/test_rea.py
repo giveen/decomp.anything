@@ -648,6 +648,13 @@ def test_agent_discovery_round_trips_the_actual_mcp_catalog(fake):
         client.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_host_tools(monkeypatch):
+    """What the operator's machine happens to have installed is not what these tests are about. A host gdb, tshark
+    or capinfos would otherwise appear in provider_env() and break assertions about what we ourselves provide."""
+    monkeypatch.setattr(rea.toolchains, "system_binary", lambda tc: None)
+
+
 def _fake_ghidra(monkeypatch, tmp_path):
     """A Ghidra that decomp.anything installed: our layout, with the headless script REA looks for."""
     home = tmp_path / "toolchains" / "ghidra"
@@ -711,14 +718,21 @@ def test_an_engine_we_did_not_install_names_the_lane_it_keeps_shut(monkeypatch, 
     rows = {row["tool"]: row for row in rea.engines()}
     assert {"ghidra", "wabt", "jadx-mcp", "pwntools", "mitmproxy", "apktool", "adb"} <= set(rows)
     assert rows["jadx-mcp"]["capability"].lower().startswith("android")
-    for tid, row in rows.items():
+    ours = {tid for _var, (tid, _shape) in rea.OWN_ENGINES.items()}
+    for tid in ours:
+        row = rows[tid]
         assert not row["ready"] and row["set_by"] is None, tid
         assert row["fix"] == f"decompnet toolchain install {tid}", tid
+    # the rows we add for other people's software must not pretend to own it
+    for tid in rea.SYSTEM_LANES:
+        assert rows[tid]["fix"].startswith("install "), tid
+    assert rows["prlimit"]["name"].startswith("prlimit")
 
 
 def test_an_installed_engine_shows_its_lane_as_ready(monkeypatch, tmp_path):
     homes = _fake_engines(monkeypatch, tmp_path)
-    rows = {row["tool"]: row for row in rea.engines() if row["tool"] != "ghidra"}
+    ours = {tid for _var, (tid, _shape) in rea.OWN_ENGINES.items()} - {"ghidra"}
+    rows = {row["tool"]: row for row in rea.engines() if row["tool"] in ours}
     for tid, row in rows.items():
         assert row["ready"] and row["set_by"] == "decomp.anything" and row["fix"] is None, tid
     assert rows["wabt"]["path"] == str(homes["wabt"] / "bin")
@@ -733,13 +747,41 @@ def test_an_unpack_but_wrong_layout_engine_is_not_offered(monkeypatch, tmp_path)
     shutil.rmtree(homes["adb"] / "platform-tools")
     env = rea.provider_env()
     assert "REA_WABT_BIN_DIRECTORY" not in env and "REA_JADX_MCP_JAR" not in env and "REA_ADB_PATH" not in env
-    assert {row["tool"] for row in rea.engines() if row["ready"]} == {"pwntools", "mitmproxy", "apktool"}
+    ours = {tid for _var, (tid, _shape) in rea.OWN_ENGINES.items()}
+    assert {row["tool"] for row in rea.engines() if row["ready"] and row["tool"] in ours} == \
+           {"pwntools", "mitmproxy", "apktool"}
 
 
 def test_an_engine_the_operator_pointed_at_themselves_is_left_alone(monkeypatch, tmp_path):
     _fake_engines(monkeypatch, tmp_path)
     monkeypatch.setenv("REA_WABT_BIN_DIRECTORY", "/opt/wabt/bin")
     assert "REA_WABT_BIN_DIRECTORY" not in rea.provider_env(), "our install must not shadow a deliberate choice"
+
+
+def test_a_tool_the_host_provides_is_still_named_to_rea(monkeypatch, tmp_path):
+    """Detection without naming is the Ghidra bug again: the binary is there, REA's environment says otherwise."""
+    monkeypatch.setattr(rea.toolchains, "system_binary",
+                        lambda tc: Path("/usr/bin") / tc.binary_name if tc.id == "tshark" else None)
+    # and nothing of ours is installed on this machine for the purposes of this test, or the real Ghidra in
+    # ~/.local/share/decompnet turns an assertion about tshark into one about the laptop
+    monkeypatch.setattr(rea.toolchains, "installed", lambda tid, linux=None: None)
+    assert rea.provider_env() == {"REA_TSHARK_COMMAND": "/usr/bin/tshark"}
+    row = next(r for r in rea.engines() if r["tool"] == "tshark")
+    assert row["ready"] and row["set_by"] == "host" and row["fix"] is None
+    absent = next(r for r in rea.engines() if r["tool"] == "sigrok-cli")
+    assert not absent["ready"] and "package manager" in absent["fix"]
+
+
+def test_a_proprietary_engine_says_who_has_to_supply_it(monkeypatch, tmp_path):
+    """JEB and IDA are never downloaded by us, so the row's job is to name the variable and stop pretending."""
+    for var in ("REA_JEB_MCP_URL", "REA_IDA_MCP_CONFIG"):
+        monkeypatch.delenv(var, raising=False)
+    rows = {row["tool"]: row for row in rea.engines()}
+    assert not rows["jeb"]["ready"] and "commercial" in rows["jeb"]["fix"]
+    assert not rows["ida"]["ready"] and "mrexodia/ida-pro-mcp" in rows["ida"]["fix"]
+    monkeypatch.setenv("REA_JEB_MCP_URL", "http://127.0.0.1:9000/mcp")
+    ready = next(r for r in rea.engines() if r["tool"] == "jeb")
+    assert ready["ready"] and ready["set_by"] == "operator" and ready["fix"] is None
 
 
 def test_a_ghidra_we_installed_is_pointed_at_without_being_asked(monkeypatch, tmp_path):
