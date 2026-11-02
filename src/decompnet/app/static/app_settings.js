@@ -325,7 +325,26 @@ function renderAgentsPage() {
 $("agRefresh").onclick = showAgentsPage;
 
 /* ------------------------------------------------------------------ compilers & tools page */
-const TOOL_GROUPS = [["", "All"], ["N64", "N64"], ["PS1", "PS1"], ["PS2", "PS2"], ["GBA", "GBA"], ["cw", "GameCube, Wii, DS"], ["tool", "Tools"]];
+// Compilers are grouped by the console they target. Everything else used to share one "Tools" tab, which is how a
+// decompiler, an Android packager and a packet-capture reader ended up in the same list of thirty: the registry's
+// `kind` field says "tool" for all of them. These sets say what each one is actually for.
+//
+// An id missing from TOOL_KIND falls into "Other" rather than disappearing, and "All" always shows everything, so
+// adding a toolchain to the TOML can never make a card invisible.
+// Order matters: the consoles first, then what the other tools are for. A group the data has but this list does
+// not name still gets a tab (see renderTools), so a new toolchain can never become unreachable.
+const TOOL_GROUPS = [["N64", "N64"], ["PS1", "PS1"], ["PS2", "PS2"], ["GBA", "GBA"], ["cw", "GameCube, Wii, DS"],
+                     ["analysis", "Analysis"], ["build", "Decomp tooling"], ["android", "Android"],
+                     ["captures", "Captures"], ["debug", "Debug"], ["service", "Services"]];
+const TOOL_KIND = {};
+const put = (kind, ids) => ids.forEach((id) => { TOOL_KIND[id] = kind; });
+put("analysis", ["rea", "ghidra", "rizin", "m2c", "wabt", "detect-it-easy", "objdiff-cli", "luvdis", "dsd"]);
+put("build", ["dtk", "dtk-template", "wibo", "coddog", "maspsx", "sjiswrap", "binutils-mips", "arm-gnu", "upx",
+              "runtime-i386", "gc-wii-binutils"]);
+put("android", ["jadx-mcp", "apktool", "adb"]);
+put("captures", ["sigrok-cli", "tshark", "capinfos", "mitmproxy"]);
+put("debug", ["gdb", "pwntools", "java", "llvm-tools"]);
+put("service", ["cloudflared"]);
 let toolFilter = "";
 async function showToolsPage() {
   show("toolsPage");
@@ -334,9 +353,37 @@ async function showToolsPage() {
 }
 function renderTools() {
   const all = S.st.toolchains;
-  const group = (t) => (t.kind === "compiler" ? (t.platform || "") : /^mwcc/.test(t.id) ? "cw" : "tool");
-  $("toolChips").innerHTML = TOOL_GROUPS.map(([k, label]) => `<button class="chip ${toolFilter === k ? "on" : ""}" data-g="${k}" type="button">${label} <span>${k ? all.filter((t) => group(t) === k).length : all.length}</span></button>`).join("");
-  $("toolChips").querySelectorAll("[data-g]").forEach((b) => { b.onclick = () => { toolFilter = b.dataset.g; renderTools(); }; });
+  // A platform is the console it builds for, and it is the reliable signal: several registry entries carry a
+  // platform without `kind = "compiler"` (gcc-2.7.2-kmc and both IDO versions among them), which is how they used
+  // to end up in the one "Tools" list beside the Android tools. Everything else is grouped by purpose.
+  const group = (t) => {
+    if (/^mwcc/.test(t.id) || t.id === "gc-wii-binutils") return "cw";
+    if (t.platform) return t.platform;
+    return TOOL_KIND[t.id] || "other";
+  };
+  const counts = new Map();
+  all.forEach((t) => counts.set(group(t), (counts.get(group(t)) || 0) + 1));
+  const named = TOOL_GROUPS.map(([k]) => k);
+  const tabs = [["", "All"],
+    ...TOOL_GROUPS.filter(([k]) => counts.has(k)),
+    // anything the data has that the list above does not name, under its own name, so nothing is unreachable
+    ...[...counts.keys()].filter((k) => k && !named.includes(k) && k !== "other").sort().map((k) => [k, k]),
+    ...(counts.has("other") ? [["other", "Other"]] : [])];
+  if (toolFilter && !tabs.some(([k]) => k === toolFilter)) toolFilter = "";  // the active tab stopped existing
+  const chips = document.createDocumentFragment();
+  tabs.forEach(([k, label]) => {
+    const b = document.createElement("button");
+    b.className = `chip ${toolFilter === k ? "on" : ""}`;
+    b.dataset.g = k;
+    b.type = "button";
+    b.append(label, " ");
+    const n = document.createElement("span");
+    n.textContent = String(k ? (counts.get(k) || 0) : all.length);
+    b.append(n);
+    b.onclick = () => { toolFilter = b.dataset.g; renderTools(); };
+    chips.append(b);
+  });
+  $("toolChips").replaceChildren(chips);
   const rows = all.filter((t) => !toolFilter || group(t) === toolFilter);
   $("toolGrid").innerHTML = rows.map((t) => `<div class="tool-card ${t.installed ? "ok" : ""}">
       <div class="tc-top"><b>${esc(t.name)}</b>${t.license === "proprietary" ? `<span class="chip-s warn">proprietary</span>` : ""}${t.platform ? `<span class="chip-s">${esc(t.platform)}</span>` : ""}${t.wsl ? `<span class="chip-s" title="A Linux program: on Windows it runs inside WSL 2">WSL 2</span>` : ""}</div>
