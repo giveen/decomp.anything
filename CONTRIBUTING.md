@@ -111,3 +111,16 @@ Install the hook once per clone:
 ```sh
 git config core.hooksPath tools/git-hooks
 ```
+
+### `.pi-lens.json` turns the editor formatter off, on purpose
+
+`format.enabled` is `false` here. pi-lens's auto-format lane runs a detected formatter over files it touches and
+defers the rewrite to `agent_end`, so a session can end with wrapping changes in files whose author changed no
+behaviour — it put them into three pull requests before anyone noticed.
+
+The measured culprit on this repo was `ruff format` at 140 columns with `skip-magic-trailing-comma = true`: the right
+width, but joining constructs this codebase deliberately keeps exploded, which is why a churned file *loses* lines.
+Wrapping here is hand-maintained (see above), so the lane stays off.
+
+`tools/ci/check_reformat.py` is the backstop for whatever else reformats: it refuses a commit whose Python changes
+parse to the same syntax tree *and* keep the same comments.
