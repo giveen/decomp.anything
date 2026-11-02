@@ -59,21 +59,21 @@ CREATE TABLE IF NOT EXISTS draft_tries(
 
 # Columns added after the first release; applied in place to existing databases.
 MIGRATIONS = [
-    ("agents", "trusted", "INTEGER NOT NULL DEFAULT 0"),      # operator-vetted (CLI) vs. self-registered
-    ("agents", "origin", "TEXT"),                              # cli | web
-    ("agents", "terms_accepted_at", "REAL"),                   # evidence of accepting the terms
-    ("functions", "fingerprint", "TEXT"),                      # one-way match fingerprint (hash-only projects)
-    ("attempts", "via", "TEXT"),                               # agent | permuter
-    ("functions", "unit", "TEXT NOT NULL DEFAULT ''"),         # source file (translation unit) it came from
+    ("agents", "trusted", "INTEGER NOT NULL DEFAULT 0"),  # operator-vetted (CLI) vs. self-registered
+    ("agents", "origin", "TEXT"),  # cli | web
+    ("agents", "terms_accepted_at", "REAL"),  # evidence of accepting the terms
+    ("functions", "fingerprint", "TEXT"),  # one-way match fingerprint (hash-only projects)
+    ("attempts", "via", "TEXT"),  # agent | permuter
+    ("functions", "unit", "TEXT NOT NULL DEFAULT ''"),  # source file (translation unit) it came from
     ("context_versions", "unit", "TEXT NOT NULL DEFAULT ''"),  # '' = project-wide header, else per-unit header
-    ("functions", "vram", "INTEGER"),                          # ROM projects: load address of the function
-    ("functions", "rom_offset", "INTEGER"),                    # ROM projects: where its bytes are in the ROM
-    ("functions", "meta", "TEXT"),                             # forks: symbol, demangled name, source file
-    ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),      # claim order: >0 matching it matches that many twins
-    ("functions", "hits", "INTEGER NOT NULL DEFAULT 0"),       # runtime coverage: times this function was seen
-    ("functions", "trace_at", "REAL"),                         # last trace import that touched it
-    ("functions", "changed_at", "REAL"),                       # rooms: when its name or boundary last changed
-    ("symbols", "changed_at", "REAL"),                         # rooms: when the name at this address last changed
+    ("functions", "vram", "INTEGER"),  # ROM projects: load address of the function
+    ("functions", "rom_offset", "INTEGER"),  # ROM projects: where its bytes are in the ROM
+    ("functions", "meta", "TEXT"),  # forks: symbol, demangled name, source file
+    ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),  # claim order: >0 matching it matches that many twins
+    ("functions", "hits", "INTEGER NOT NULL DEFAULT 0"),  # runtime coverage: times this function was seen
+    ("functions", "trace_at", "REAL"),  # last trace import that touched it
+    ("functions", "changed_at", "REAL"),  # rooms: when its name or boundary last changed
+    ("symbols", "changed_at", "REAL"),  # rooms: when the name at this address last changed
 ]
 
 
@@ -98,8 +98,9 @@ class Store:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_changed ON symbols(project_id, changed_at)")
         # the progress the GUI asks for every second (totals, the map's "anything new?"), answered from this narrow
         # index instead of reading every function's assembly and sources: 31 ms -> about 2 for 36,000 functions
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_progress ON functions(project_id, status, size, "
-                          "attempts, best_score, matched_at)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_functions_progress ON functions(project_id, status, size, attempts, best_score, matched_at)"
+        )
         # agents created before `origin` existed were all minted by the operator on the CLI
         self.conn.execute("UPDATE agents SET trusted = 1, origin = 'cli' WHERE origin IS NULL")
         # removing a project left its symbols behind before 0.10.3, and the next import (which may get the same id)

@@ -44,8 +44,10 @@ def test_branch_update(monkeypatch):
     updates.record("branch", "cross-platform", have)
     answers = {
         "commits/cross-platform": {"sha": head, "commit": {"message": "Newest\n\nbody", "committer": {"date": "2026-10-14"}}},
-        f"compare/{have}...{head}": {"status": "ahead", "commits": [{"commit": {"message": "Older one"}},
-                                                                   {"commit": {"message": "Newest\n\nbody"}}]},
+        f"compare/{have}...{head}": {
+            "status": "ahead",
+            "commits": [{"commit": {"message": "Older one"}}, {"commit": {"message": "Newest\n\nbody"}}],
+        },
     }
     monkeypatch.setattr(updates, "_json", lambda url: next(v for k, v in answers.items() if url.endswith(k)))
     monkeypatch.setattr(updates, "_branch_version", lambda repo, sha: "0.10.0")
@@ -62,6 +64,7 @@ def test_branch_update(monkeypatch):
         if "compare" in url:
             raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
         return answers["commits/cross-platform"]
+
     monkeypatch.setattr(updates, "_json", unknown)
     found = updates.check()
     assert found["available"] and found["notes"] == ["Newest"]
@@ -73,6 +76,7 @@ def test_branch_update(monkeypatch):
 def test_offline_check_says_why(monkeypatch):
     def offline(url, timeout=15):
         raise urllib.error.URLError("no network")
+
     monkeypatch.setattr(updates, "_get", offline)
     found = updates.check()
     assert not found["available"] and "couldn't check" in found["error"]
@@ -85,14 +89,20 @@ def test_install_runs_uv_then_the_new_setup(tmp_path, monkeypatch):
     bindir.mkdir()
     (bindir / "decomp").write_text(f'#!/bin/sh\necho "decomp $*" >> "{calls}"\necho "tools ok"\n')
     uv = tmp_path / "uv"
-    uv.write_text(f'#!/bin/sh\nif [ "$1 $2" = "tool dir" ]; then echo "{bindir}"; exit 0; fi\n'
-                  f'echo "uv $*" >> "{calls}"\necho "Installed 1 executable: decomp"\n')
+    uv.write_text(
+        f'#!/bin/sh\nif [ "$1 $2" = "tool dir" ]; then echo "{bindir}"; exit 0; fi\n'
+        f'echo "uv $*" >> "{calls}"\necho "Installed 1 executable: decomp"\n'
+    )
     for f in (uv, bindir / "decomp"):
         f.chmod(f.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setattr(updates, "uv", lambda: str(uv))
     updates.record("branch", "cross-platform", "1" * 40)
-    found = {"current": updates.installed(), "available": True, "latest": {"version": "0.10.0", "commit": "2" * 40},
-             "spec": "decompnet @ https://github.com/giveen/decomp.anything/archive/" + "2" * 40 + ".tar.gz"}
+    found = {
+        "current": updates.installed(),
+        "available": True,
+        "latest": {"version": "0.10.0", "commit": "2" * 40},
+        "spec": "decompnet @ https://github.com/giveen/decomp.anything/archive/" + "2" * 40 + ".tar.gz",
+    }
     said = []
     updates.install(found, log=said.append)
     ran = calls.read_text().splitlines()
@@ -134,17 +144,29 @@ def test_update_api(tmp_path, monkeypatch):
     from decompnet.app.engine import RomNetwork
     from decompnet.app.server import build
 
-    monkeypatch.setattr(updates, "check", lambda: {"current": updates.installed(), "available": False, "latest": None,
-                                                   "notes": [], "link": None, "error": None, "checked": 1e12,
-                                                   "can_apply": True, "why_not": ""})
-    monkeypatch.setattr(rea_updates, "check", lambda: {"current": {"version": "6.7.0"}, "available": False,
-                                                     "latest": None, "checked": 1e12, "error": None})
+    monkeypatch.setattr(
+        updates,
+        "check",
+        lambda: {
+            "current": updates.installed(),
+            "available": False,
+            "latest": None,
+            "notes": [],
+            "link": None,
+            "error": None,
+            "checked": 1e12,
+            "can_apply": True,
+            "why_not": "",
+        },
+    )
+    monkeypatch.setattr(
+        rea_updates, "check", lambda: {"current": {"version": "6.7.0"}, "available": False, "latest": None, "checked": 1e12, "error": None}
+    )
     home = tmp_path / "home"
     (home / ".decomp").mkdir(parents=True)
     net = RomNetwork(home / ".decomp" / "decomp.db", home)
     mcp, _manager, security = build(net, home / ".decomp", 6498, "sec")
-    client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
-                        base_url="http://127.0.0.1:6498")
+    client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"), base_url="http://127.0.0.1:6498")
     assert client.get("/api/update").status_code == 401  # the GUI's secret, as everywhere
     client.cookies.set("decomp_live", "sec")
     monkeypatch.setenv("DECOMP_UPDATES", "on")

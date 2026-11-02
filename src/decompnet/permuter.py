@@ -27,8 +27,22 @@ from .elfobj import FunctionObj, Reloc
 from .project import compiler_config
 
 TYPES_32 = [
-    "int", "unsigned", "unsigned int", "long", "unsigned long", "s32", "u32", "uInt", "uLong",
-    "short", "unsigned short", "s16", "u16", "s8", "u8", "float",
+    "int",
+    "unsigned",
+    "unsigned int",
+    "long",
+    "unsigned long",
+    "s32",
+    "u32",
+    "uInt",
+    "uLong",
+    "short",
+    "unsigned short",
+    "s16",
+    "u16",
+    "s8",
+    "u8",
+    "float",
 ]
 CASTS = ["(int)", "(unsigned)", "(s32)", "(u32)", "(uInt)", "(uLong)", "(short)", "(unsigned short)"]
 _DECL = re.compile(r"^(\s+)(register\s+)?((?:unsigned\s+|signed\s+)?\w+)(\s*\**\s*)(\w+)(\s*(?:=[^;]*)?;)\s*$")
@@ -45,9 +59,15 @@ def _body_bounds(lines: list[str]) -> tuple[int, int]:
 
 def _swap_statements(lines, rng):
     lo, hi = _body_bounds(lines)
-    pairs = [i for i in range(lo, hi - 1) if _STMT.match(lines[i]) and _STMT.match(lines[i + 1])
-             and not _CONTROL.search(lines[i] + lines[i + 1]) and not _DECL.match(lines[i])
-             and lines[i][:len(lines[i]) - len(lines[i].lstrip())] == lines[i + 1][:len(lines[i + 1]) - len(lines[i + 1].lstrip())]]
+    pairs = [
+        i
+        for i in range(lo, hi - 1)
+        if _STMT.match(lines[i])
+        and _STMT.match(lines[i + 1])
+        and not _CONTROL.search(lines[i] + lines[i + 1])
+        and not _DECL.match(lines[i])
+        and lines[i][: len(lines[i]) - len(lines[i].lstrip())] == lines[i + 1][: len(lines[i + 1]) - len(lines[i + 1].lstrip())]
+    ]
     if not pairs:
         return None
     i = rng.choice(pairs)
@@ -72,8 +92,7 @@ def _shuffle_declarations(lines, rng):
 
 def _retype_local(lines, rng):
     lo, hi = _body_bounds(lines)
-    cands = [(i, m) for i in range(lo, hi)
-             if (m := _DECL.match(lines[i])) and m.group(3) in TYPES_32 and not m.group(4).strip()]
+    cands = [(i, m) for i in range(lo, hi) if (m := _DECL.match(lines[i])) and m.group(3) in TYPES_32 and not m.group(4).strip()]
     if not cands:
         return None
     i, m = rng.choice(cands)  # the match that made it a candidate, not a second look at the line
@@ -117,20 +136,24 @@ def _rewrite(lines, rng):
     i, rx, fn = rng.choice(options)
     matches = list(rx.finditer(lines[i]))
     m = rng.choice(matches)
-    lines[i] = lines[i][:m.start()] + fn(m) + lines[i][m.end():]
+    lines[i] = lines[i][: m.start()] + fn(m) + lines[i][m.end() :]
     return lines
 
 
 def _add_cast(lines, rng):
     lo, hi = _body_bounds(lines)
-    cands = [(i, m) for i in range(lo, hi) if not _DECL.match(lines[i]) and "=" in lines[i]
-             # rvalues only: never cast an assignment target, a call, or the base of a member/array access
-             for m in re.finditer(r"(?<=[=(,+\-*/&|^ ])(\w+)\b(?!\s*(?:\(|=(?!=)|\+\+|--|\[|\.|->|[-+*/&|^]=))",
-                                  lines[i]) if not m.group(1).isdigit()]
+    cands = [
+        (i, m)
+        for i in range(lo, hi)
+        if not _DECL.match(lines[i]) and "=" in lines[i]
+        # rvalues only: never cast an assignment target, a call, or the base of a member/array access
+        for m in re.finditer(r"(?<=[=(,+\-*/&|^ ])(\w+)\b(?!\s*(?:\(|=(?!=)|\+\+|--|\[|\.|->|[-+*/&|^]=))", lines[i])
+        if not m.group(1).isdigit()
+    ]
     if not cands:
         return None
     i, m = rng.choice(cands)
-    lines[i] = lines[i][:m.start()] + rng.choice(CASTS) + lines[i][m.start():]
+    lines[i] = lines[i][: m.start()] + rng.choice(CASTS) + lines[i][m.start() :]
     return lines
 
 
@@ -206,6 +229,7 @@ def _mutate_array_vs_pointer(lines, rng):
         lines[i] = _ARR_INDEX.sub(r"*(\1 + \2)", line, count=1)
         return lines
     if _DEREF_PTR.search(line):
+
         def _repl(m: re.Match) -> str:
             ptr = m.group(1)
             off = m.group(2).strip()
@@ -219,8 +243,15 @@ def _mutate_array_vs_pointer(lines, rng):
 
 
 MUTATIONS = [
-    _swap_statements, _shuffle_declarations, _retype_local, _toggle_register,
-    _rewrite, _rewrite, _add_cast, _mutate_ifelse_to_ternary, _mutate_while_and_dowhile,
+    _swap_statements,
+    _shuffle_declarations,
+    _retype_local,
+    _toggle_register,
+    _rewrite,
+    _rewrite,
+    _add_cast,
+    _mutate_ifelse_to_ternary,
+    _mutate_while_and_dowhile,
     _mutate_array_vs_pointer,
 ]
 
@@ -256,8 +287,9 @@ class LocalScorer:
         compiler.update({k: job[k] for k in ("cmd", "flags") if job.get(k)})
         self.cc = compiler_config(inc, {"compiler": compiler})
         t = job["target"]
-        self.target = FunctionObj(job["function"], t["arch"], t["big_endian"], base64.b64decode(t["code"]),
-                                  [Reloc.from_json(r) for r in t["relocs"]])
+        self.target = FunctionObj(
+            job["function"], t["arch"], t["big_endian"], base64.b64decode(t["code"]), [Reloc.from_json(r) for r in t["relocs"]]
+        )
         self.context, self.name = job["context"], job["function"]
 
     def score(self, source: str) -> int | None:
@@ -265,8 +297,7 @@ class LocalScorer:
         if res.obj is None:  # it didn't compile here: nothing to score
             return None
         try:
-            cand = coffobj.extract_function(res.obj, self.name) if coffobj.is_coff(res.obj) else \
-                elfobj.extract_function(res.obj, self.name)
+            cand = coffobj.extract_function(res.obj, self.name) if coffobj.is_coff(res.obj) else elfobj.extract_function(res.obj, self.name)
         except Exception:  # noqa: BLE001
             return None
         return scoring.diff(self.target, cand).score if cand else None
@@ -301,9 +332,11 @@ def search(job: dict, seconds: float, on_improvement, log=print, seed: int | Non
 
 
 def _api(server: str, token: str, path: str, payload: dict | None = None) -> dict:
-    req = urllib.request.Request(server.rstrip("/") + path, data=json.dumps(payload).encode() if payload else None,
-                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
-                                          "User-Agent": "decompnet-worker"})
+    req = urllib.request.Request(
+        server.rstrip("/") + path,
+        data=json.dumps(payload).encode() if payload else None,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "decompnet-worker"},
+    )
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.load(r)
 
@@ -346,8 +379,9 @@ def worker(server: str, token: str, minutes_per_job: float = 10, max_jobs: int =
         def report(score: int, source: str, submitted=submitted, job=job) -> None:
             # `submitted`/`job` are bound as defaults: this loop's job, not the next one's
             if score < submitted["best"]:
-                verdict = _api(server, token, "/api/jobs/submit",
-                               {"project": job["project"], "function": job["function"], "source": source})
+                verdict = _api(
+                    server, token, "/api/jobs/submit", {"project": job["project"], "function": job["function"], "source": source}
+                )
                 log(f"  submitted score {score}: coordinator says {verdict}")
                 if verdict.get("accepted"):
                     submitted["best"] = verdict.get("score", score)

@@ -104,7 +104,7 @@ def _mips_reloc_names(relocs) -> dict[int, str]:
             out[r.offset] = r.symbol
         elif r.type in (5, 6):  # R_MIPS_HI16 / R_MIPS_LO16
             if r.type == 5:
-                pair = next((x for x in relocs[k + 1:] if x.type == 6 and x.symbol == r.symbol), None)
+                pair = next((x for x in relocs[k + 1 :] if x.type == 6 and x.symbol == r.symbol), None)
                 hi, lo = r.addend, pair.addend if pair else 0
             else:
                 pair = next((x for x in reversed(relocs[:k]) if x.type == 5 and x.symbol == r.symbol), None)
@@ -120,10 +120,10 @@ def _mips_reloc_names(relocs) -> dict[int, str]:
 def _mips_symbolize(ops: str, name: str) -> str:
     mem = re.search(r"(-?0x[0-9a-f]+|-?\d+)?\((\$\w+)\)$", ops)
     if name.startswith("%") and mem:  # load/store: offset(base)
-        return f"{ops[:mem.start()]}{name}({mem.group(2)})"
+        return f"{ops[: mem.start()]}{name}({mem.group(2)})"
     nums = list(re.finditer(r"-?0x[0-9a-f]+|\b\d+\b", ops))
     if nums:
-        return ops[: nums[-1].start()] + name + ops[nums[-1].end():]
+        return ops[: nums[-1].start()] + name + ops[nums[-1].end() :]
     return f"{ops}, {name}" if ops else name
 
 
@@ -133,7 +133,7 @@ def _symbolize(ins, ops: str, rel_at: int, target: str, arch: str) -> str:
         if ins.disp_size and ins.disp_offset == rel_at and "[" in ops:
             lb, rb = ops.index("["), ops.index("]")
             inner = re.sub(r"\s*[+-]\s*(0x[0-9a-f]+|\d+)$", "", ops[lb + 1 : rb])
-            return f"{ops[:lb + 1]}{inner} + {target}{ops[rb:]}"
+            return f"{ops[: lb + 1]}{inner} + {target}{ops[rb:]}"
         if ins.imm_size and ins.imm_offset == rel_at:
             outside = re.sub(r"\[.*?\]", lambda m: " " * len(m.group()), ops)
             nums = list(re.finditer(r"-?0x[0-9a-f]+|\b\d+\b", outside))
@@ -179,14 +179,11 @@ class DiffResult:
         return render_rows(self.rows, context, max_rows)
 
 
-MARKERS = {"<": "missing", ">": "extra", "|": "different", "o": "reordered", "r": "regalloc", "s": "stack",
-           "i": "operand"}
-LEGEND = ("markers: r=regalloc s=stack-offset i=operand |=different insn <=missing (target only) >=extra (yours only) "
-          "o=reordered")
+MARKERS = {"<": "missing", ">": "extra", "|": "different", "o": "reordered", "r": "regalloc", "s": "stack", "i": "operand"}
+LEGEND = "markers: r=regalloc s=stack-offset i=operand |=different insn <=missing (target only) >=extra (yours only) o=reordered"
 
 
-def render_rows(rows: list[tuple[str, str, str]], context: int = 2, max_rows: int = 60, run: int = 6,
-                legend: str = LEGEND) -> str:
+def render_rows(rows: list[tuple[str, str, str]], context: int = 2, max_rows: int = 60, run: int = 6, legend: str = LEGEND) -> str:
     counts = Counter(m for m, _, _ in rows if m != " ")
     summary = ", ".join(f"{n} {MARKERS.get(m, m)}" for m, n in counts.most_common())
     width = min(max((len(t) for _, t, _ in rows), default=10) + 2, 44)
@@ -207,15 +204,15 @@ def render_rows(rows: list[tuple[str, str, str]], context: int = 2, max_rows: in
             j += 1
         if j - i + 1 > run:  # a long run of one kind: its start and end, and how much is in between
             for a in (i, i + 1):
-                lines.append(f" {m} {rows[a][1][:width - 1]:<{width}}| {rows[a][2]}")
+                lines.append(f" {m} {rows[a][1][: width - 1]:<{width}}| {rows[a][2]}")
             lines.append(f"   ... {j - i - 2} more {MARKERS[m]} ({'target only' if m == '<' else 'yours only'}) ...")
-            lines.append(f" {m} {rows[j][1][:width - 1]:<{width}}| {rows[j][2]}")
+            lines.append(f" {m} {rows[j][1][: width - 1]:<{width}}| {rows[j][2]}")
             prev = j
             while k < len(order) and order[k] <= j:
                 k += 1
         else:
             m, t, c = rows[i]
-            lines.append(f" {m} {t[:width - 1]:<{width}}| {c}")
+            lines.append(f" {m} {t[: width - 1]:<{width}}| {c}")
             prev = i
             k += 1
         if len(lines) >= max_rows and k < len(order):
@@ -237,7 +234,7 @@ def compact_asm(text: str) -> str:
     for line in text.splitlines():
         m = _SPLAT_PREFIX.match(line)
         if m:
-            op, _, args = line[m.end():].strip().partition(" ")
+            op, _, args = line[m.end() :].strip().partition(" ")
             line = f"  {op} {args.strip()}" if args.strip() else f"  {op}"
             line = re.sub(r",\s+", ", ", line)
         out.append(line)
@@ -308,6 +305,7 @@ def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:
         score = 0
     return DiffResult(score=score, max_score=max_score, rows=rows, bytes_match=bytes_match)
 
+
 # ------------------------------------------------------------------ what a miss probably means
 
 _WIDTHS = ("byte", "word", "dword", "qword")
@@ -353,30 +351,44 @@ def hypotheses(result: DiffResult) -> list[str]:
     counts = Counter(marker for marker, _, _ in result.rows)
     out: list[str] = []
     if counts["s"]:
-        out.append(f"{counts['s']} instruction(s) differ only by a stack offset: a local or struct field is a different "
-                   "size or in a different order (check the struct's field types and padding before the logic)")
+        out.append(
+            f"{counts['s']} instruction(s) differ only by a stack offset: a local or struct field is a different "
+            "size or in a different order (check the struct's field types and padding before the logic)"
+        )
     if counts["i"]:
         sample = next((t for marker, t, _ in result.rows if marker == "i"), "")
-        out.append(f"{counts['i']} instruction(s) keep the opcode but change a constant/offset"
-                   + (f" (e.g. `{sample[:60]}`)" if sample else "")
-                   + ": an enum value, a field index or a size is wrong")
+        out.append(
+            f"{counts['i']} instruction(s) keep the opcode but change a constant/offset"
+            + (f" (e.g. `{sample[:60]}`)" if sample else "")
+            + ": an enum value, a field index or a size is wrong"
+        )
     if counts["|"]:
         rows = [(t, c) for marker, t, c in result.rows if marker == "|"]
         hint = next((h for h in (_shape_hint(t, c) for t, c in rows[:6]) if h), "")
-        out.append(f"{len(rows)} instruction(s) compile differently" + (f": {hint}" if hint
-                   else f" (e.g. `{rows[0][0][:48]}` vs `{rows[0][1][:48]}`)"))
+        out.append(
+            f"{len(rows)} instruction(s) compile differently"
+            + (f": {hint}" if hint else f" (e.g. `{rows[0][0][:48]}` vs `{rows[0][1][:48]}`)")
+        )
     if counts["r"]:
-        out.append(f"{counts['r']} instruction(s) differ only in which register holds the value: the original kept it "
-                   "in a local (or reused one) where you made a new temporary - try assigning the intermediate to a "
-                   "local, or drop one")
+        out.append(
+            f"{counts['r']} instruction(s) differ only in which register holds the value: the original kept it "
+            "in a local (or reused one) where you made a new temporary - try assigning the intermediate to a "
+            "local, or drop one"
+        )
     if counts["o"]:
-        out.append(f"{counts['o']} row(s) are the same instructions in another order: the original evaluated them in a "
-                   "different sequence (swap the two statements, or split the expression)")
+        out.append(
+            f"{counts['o']} row(s) are the same instructions in another order: the original evaluated them in a "
+            "different sequence (swap the two statements, or split the expression)"
+        )
     missing, extra = counts["<"], counts[">"]
     if extra > missing + 2:
-        out.append(f"yours is {extra - missing} instruction(s) longer: something the original did once is done twice, "
-                   "or it inlined a callee you call")
+        out.append(
+            f"yours is {extra - missing} instruction(s) longer: something the original did once is done twice, "
+            "or it inlined a callee you call"
+        )
     elif missing > extra + 2:
-        out.append(f"yours is {missing - extra} instruction(s) shorter: work the original does is missing "
-                   "(a call, a side effect, or a value it recomputes)")
+        out.append(
+            f"yours is {missing - extra} instruction(s) shorter: work the original does is missing "
+            "(a call, a side effect, or a value it recomputes)"
+        )
     return out[:5]

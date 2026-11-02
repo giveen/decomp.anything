@@ -40,13 +40,18 @@ COOKIE = "decomp_live"
 MAX_DISC = 16 * 1024 * 1024 * 1024  # dual-layer DVD and then some
 
 
-
 def _analyze_instead(error: Exception) -> bool:
     """A file this app can't split as a game or match as a program: REA can still open it as a project."""
     text = str(error)
-    return any(phrase in text for phrase in (
-        "isn't a ROM, disc or game program", "isn't for x86/x86-64 Linux", "isn't for x86/x86-64 matching",
-        "too big for a ROM and isn't a disc image"))
+    return any(
+        phrase in text
+        for phrase in (
+            "isn't a ROM, disc or game program",
+            "isn't for x86/x86-64 Linux",
+            "isn't for x86/x86-64 matching",
+            "too big for a ROM and isn't a disc image",
+        )
+    )
 
 
 def file_log(path: Path) -> logging.Logger:
@@ -70,7 +75,7 @@ def _tool_of(cmd) -> str:
     """The program a command ran (past a systemd-run wrapper), by name."""
     argv = [str(a) for a in cmd] if isinstance(cmd, (list, tuple)) else str(cmd).split()
     if "--" in argv and Path(argv[0]).name.startswith("systemd-run"):
-        argv = argv[argv.index("--") + 1:]
+        argv = argv[argv.index("--") + 1 :]
     return Path(argv[0]).name if argv else "a tool"
 
 
@@ -78,8 +83,10 @@ def job_error(e: BaseException, log_path: Path | None = None) -> str:
     """What to tell the user when a job fails: why, in words, for every kind of failure."""
     if isinstance(e, subprocess.TimeoutExpired):
         mins = max(1, round((e.timeout or 0) / 60))
-        return (f"{_tool_of(e.cmd)} took longer than {mins} minute{'s' if mins != 1 else ''} and was stopped. "
-                "A very big game can need more: please report it, with the log")
+        return (
+            f"{_tool_of(e.cmd)} took longer than {mins} minute{'s' if mins != 1 else ''} and was stopped. "
+            "A very big game can need more: please report it, with the log"
+        )
     if isinstance(e, subprocess.CalledProcessError):
         said = e.stderr or e.output or ""  # what the command said, so the error shows why
         said = (said.decode("utf-8", "replace") if isinstance(said, bytes) else said).strip()
@@ -89,8 +96,7 @@ def job_error(e: BaseException, log_path: Path | None = None) -> str:
     if isinstance(e, (NetworkError, RomError, toolchains.ToolchainError, ValueError, RuntimeError, OSError)):
         return str(e) or type(e).__name__
     where = f" (the log: {hostenv.shown_path(log_path)})" if log_path else ""
-    return (f"something went wrong inside decomp.anything ({type(e).__name__}: {e}). That's a bug: please report it with "
-            f"the log{where}")
+    return f"something went wrong inside decomp.anything ({type(e).__name__}: {e}). That's a bug: please report it with the log{where}"
 
 
 class Jobs:
@@ -144,6 +150,7 @@ class Jobs:
                     raise
             finally:
                 event.set()  # state is already final here, so a waiter always reads the real outcome
+
         threading.Thread(target=run, daemon=True, name=f"job-{kind}").start()
         return jid
 
@@ -188,12 +195,16 @@ class Settings:
                 try:
                     numbers[k] = int(str(data[k] or "").strip() or 0)
                 except ValueError:
-                    raise ValueError("the context size is a number of tokens, like 16384" if k == "context_tokens"
-                                     else "the session limit is a number, like 1") from None
+                    raise ValueError(
+                        "the context size is a number of tokens, like 16384"
+                        if k == "context_tokens"
+                        else "the session limit is a number, like 1"
+                    ) from None
         with self._lock:
             eid = str(data.get("id") or "")
-            current: dict[str, Any] | None = next((e for e in self.data.get("endpoints") or []
-                                                   if isinstance(e, dict) and e.get("id") == eid), None)
+            current: dict[str, Any] | None = next(
+                (e for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id") == eid), None
+            )
             if current is None:  # ids are never reused: a session resumed later can't end up on another machine
                 ids = {e["id"] for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id")}
                 n = max(int(self.data.get("endpoint_seq") or 0), len(ids)) + 1
@@ -229,18 +240,30 @@ class Settings:
             return out
 
         eps = [masked(e) for e in self.endpoints()]
-        return {"endpoints": eps, "api": eps[0] if eps else {},
-                "per_session": self.data.get("per_session", agents.PER_SESSION), "last_project": self.data.get("last_project"),
-                "autopilot": self.data.get("autopilot", True), "budget_usd": self.data.get("budget_usd") or 0,
-                "auto_update": bool(self.data.get("auto_update")), "check_updates": self.data.get("check_updates", True) is not False,
-                "auto_update_rea": bool(self.data.get("auto_update_rea")),
-                "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
+        return {
+            "endpoints": eps,
+            "api": eps[0] if eps else {},
+            "per_session": self.data.get("per_session", agents.PER_SESSION),
+            "last_project": self.data.get("last_project"),
+            "autopilot": self.data.get("autopilot", True),
+            "budget_usd": self.data.get("budget_usd") or 0,
+            "auto_update": bool(self.data.get("auto_update")),
+            "check_updates": self.data.get("check_updates", True) is not False,
+            "auto_update_rea": bool(self.data.get("auto_update_rea")),
+            "launcher": _launcher(self.data.get("launcher") or {}),
+            "recent_models": self.data.get("recent_models") or {},
+        }
 
 
 def _session_options(entry: dict) -> dict:
     """What a built-in agent session needs from its endpoint."""
-    out = {"endpoint": entry.get("id") or "", "provider": entry["provider"], "base_url": entry["base_url"],
-           "model": entry["model"], "provider_name": entry["name"]}
+    out = {
+        "endpoint": entry.get("id") or "",
+        "provider": entry["provider"],
+        "base_url": entry["base_url"],
+        "model": entry["model"],
+        "provider_name": entry["name"],
+    }
     return out | {k: entry[k] for k in ("api_key", "context_tokens") if entry.get(k)}
 
 
@@ -264,8 +287,17 @@ def _spread(settings: Settings, manager, picked: list[str], count: int, given: d
         if found is None:
             raise ValueError("an endpoint you picked isn't saved any more: pick again")
         eps.append(found)
-    busy = {e["id"]: sum(1 for x in manager.sessions.values() if x.kind == "api" and x.options.get("endpoint") == e["id"]
-                         and x.state in ("starting", "working", "waiting") and not x.stop.is_set()) for e in eps}
+    busy = {
+        e["id"]: sum(
+            1
+            for x in manager.sessions.values()
+            if x.kind == "api"
+            and x.options.get("endpoint") == e["id"]
+            and x.state in ("starting", "working", "waiting")
+            and not x.stop.is_set()
+        )
+        for e in eps
+    }
     plan = {e["id"]: 0 for e in eps}
     for _ in range(count):
         room = [e for e in eps if not e.get("max_sessions") or busy[e["id"]] + plan[e["id"]] < int(e["max_sessions"])]
@@ -346,8 +378,9 @@ class ServerContext:
 
     def with_project(self, fn):
         """A route that works on one project: the slug from the body or the query, and its errors as JSON."""
+
         async def handler(request: Request):
-            if (bad := self.guard(request, write=request.method == "POST")):
+            if bad := self.guard(request, write=request.method == "POST"):
                 return bad
             data = await self.body(request) if request.method == "POST" else {}
             slug = data.get("slug") or request.query_params.get("slug", "")
@@ -355,6 +388,7 @@ class ServerContext:
                 return JSONResponse(await self.call(lambda: fn(slug, request, data)))
             except (NetworkError, ValueError, toolchains.ToolchainError, OSError) as e:
                 return self.fail(e)
+
         return handler
 
     # --- who is asking, and what several route groups start -----------------------------------------------------

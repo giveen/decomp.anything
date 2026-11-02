@@ -34,16 +34,23 @@ def main(argv: list[str]) -> int:
     print(f"pyright: {found} error(s) across {files} file(s); baseline allows {allowed}")
     if found == allowed:
         return 0
-    by_file = Counter(d.get("file", "?").split("/decomp.wtf/")[-1] for d in report.get("generalDiagnostics", [])
-                      if d.get("severity") == "error")
+    by_file = Counter(
+        d.get("file", "?").split("/decomp.wtf/")[-1] for d in report.get("generalDiagnostics", []) if d.get("severity") == "error"
+    )
     for path, n in by_file.most_common(15):
         print(f"  {n:4d}  {path}")
     if found > allowed:
-        print(f"FAIL: {found - allowed} more type error(s) than the baseline. Fix them, or make the case for raising "
-              f"{BASELINE.relative_to(BASELINE.parents[1])} in the PR description.", file=sys.stderr)
+        print(
+            f"FAIL: {found - allowed} more type error(s) than the baseline. Fix them, or make the case for raising "
+            f"{BASELINE.relative_to(BASELINE.parents[1])} in the PR description.",
+            file=sys.stderr,
+        )
         return 1
-    print(f"FAIL: {allowed - found} fewer than the baseline: that is good news, so set the baseline to {found} and "
-          "commit it, or the next branch gets those findings back.", file=sys.stderr)
+    print(
+        f"FAIL: {allowed - found} fewer than the baseline: that is good news, so set the baseline to {found} and "
+        "commit it, or the next branch gets those findings back.",
+        file=sys.stderr,
+    )
     return 1
 
 

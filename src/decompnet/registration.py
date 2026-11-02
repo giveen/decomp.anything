@@ -29,12 +29,21 @@ IP_RETENTION = 7 * 86400
 
 
 class Registrar:
-    def __init__(self, net: Network, *, secret: str | None = None, hostnames: set[str] | None = None,
-                 per_ip_per_day: int = 3, global_per_day: int = 200, verify=None):
+    def __init__(
+        self,
+        net: Network,
+        *,
+        secret: str | None = None,
+        hostnames: set[str] | None = None,
+        per_ip_per_day: int = 3,
+        global_per_day: int = 200,
+        verify=None,
+    ):
         self.net = net
         self.secret = secret if secret is not None else os.environ.get("TURNSTILE_SECRET", "")
-        self.hostnames = hostnames if hostnames is not None else {
-            h.strip() for h in os.environ.get("TURNSTILE_HOSTNAMES", "").split(",") if h.strip()}
+        self.hostnames = (
+            hostnames if hostnames is not None else {h.strip() for h in os.environ.get("TURNSTILE_HOSTNAMES", "").split(",") if h.strip()}
+        )
         self.per_ip_per_day = per_ip_per_day
         self.global_per_day = global_per_day
         self._verify = verify or self._siteverify
@@ -56,8 +65,9 @@ class Registrar:
         # The visitor's address stays on this machine: the daily limits are keyed on the salted hash we keep
         # locally, and Cloudflare's `remoteip` is optional for Siteverify, so there is no reason to forward it.
         body = {"secret": self.secret, "response": token}
-        req = urllib.request.Request(SITEVERIFY, data=urllib.parse.urlencode(body).encode(),
-                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        req = urllib.request.Request(
+            SITEVERIFY, data=urllib.parse.urlencode(body).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.load(r)
 
@@ -75,8 +85,7 @@ class Registrar:
             result = self._verify(token, ip)
         except Exception:  # noqa: BLE001 network error or non-JSON: fail closed
             raise NetworkError("could not verify the bot check; try again") from None
-        if not (result.get("success") is True and result.get("action") == EXPECTED_ACTION
-                and result.get("hostname") in self.hostnames):
+        if not (result.get("success") is True and result.get("action") == EXPECTED_ACTION and result.get("hostname") in self.hostnames):
             raise NetworkError("the bot check failed; reload the page and try again")
 
         now = time.time()
@@ -86,8 +95,10 @@ class Registrar:
             today = now - 86400
             if db.execute("SELECT COUNT(*) AS n FROM registrations WHERE created_at > ?", (today,)).fetchone()["n"] >= self.global_per_day:
                 raise NetworkError("the network has taken all the new agents it can today; try again tomorrow")
-            if db.execute("SELECT COUNT(*) AS n FROM registrations WHERE ip_hash=? AND created_at > ?",
-                          (ip_hash, today)).fetchone()["n"] >= self.per_ip_per_day:
+            if (
+                db.execute("SELECT COUNT(*) AS n FROM registrations WHERE ip_hash=? AND created_at > ?", (ip_hash, today)).fetchone()["n"]
+                >= self.per_ip_per_day
+            ):
                 raise NetworkError("too many new agents from your connection today; try again tomorrow")
 
         name = str(payload.get("name", "")).strip()
