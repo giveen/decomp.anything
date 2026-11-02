@@ -675,6 +675,13 @@ def _fake_engines(monkeypatch, tmp_path):
         script = rea.toolchains.venv_bin(home / "venv", exe)
         script.parent.mkdir(parents=True)
         script.write_text("", encoding="utf-8")
+    apk = homes["apktool"] = tmp_path / "apktool"  # the wrapper we write, not the JAR it runs
+    (apk / "bin").mkdir(parents=True)
+    (apk / "bin" / "apktool").write_text("#!/bin/sh\n", encoding="utf-8")
+    (apk / "apktool_3.0.3.jar").write_bytes(b"PK")
+    adb = homes["adb"] = tmp_path / "adb"  # Google's archive keeps its own top-level directory
+    (adb / "platform-tools").mkdir(parents=True)
+    (adb / "platform-tools" / "adb").write_text("x", encoding="utf-8")
     monkeypatch.setattr(rea.toolchains, "installed",
                         lambda tid, linux=None: {"id": tid} if tid in homes else None)
     monkeypatch.setattr(rea.toolchains, "path", lambda tid, linux=None: homes[tid])
@@ -691,7 +698,9 @@ def test_every_engine_we_installed_is_named_to_rea(monkeypatch, tmp_path):
         "REA_WABT_BIN_DIRECTORY": str(homes["wabt"] / "bin"),
         "REA_JADX_MCP_JAR": str(homes["jadx-mcp"] / "jadx-headless-mcp-0.7.1-all.jar"),
         "REA_PWNTOOLS_PYTHON": str(rea.toolchains.venv_bin(homes["pwntools"] / "venv", "python")),
-        "REA_MITMDUMP_COMMAND": str(rea.toolchains.venv_bin(homes["mitmproxy"] / "venv", "mitmdump"))}
+        "REA_MITMDUMP_COMMAND": str(rea.toolchains.venv_bin(homes["mitmproxy"] / "venv", "mitmdump")),
+        "REA_APKTOOL_COMMAND": str(homes["apktool"] / "bin" / "apktool"),
+        "REA_ADB_PATH": str(homes["adb"] / "platform-tools" / "adb")}
 
 
 def test_an_engine_we_did_not_install_names_the_lane_it_keeps_shut(monkeypatch, tmp_path):
@@ -700,7 +709,7 @@ def test_an_engine_we_did_not_install_names_the_lane_it_keeps_shut(monkeypatch, 
     for var in rea.OWN_ENGINES:
         monkeypatch.delenv(var, raising=False)
     rows = {row["tool"]: row for row in rea.engines()}
-    assert {"ghidra", "wabt", "jadx-mcp", "pwntools", "mitmproxy"} <= set(rows)
+    assert {"ghidra", "wabt", "jadx-mcp", "pwntools", "mitmproxy", "apktool", "adb"} <= set(rows)
     assert rows["jadx-mcp"]["capability"].lower().startswith("android")
     for tid, row in rows.items():
         assert not row["ready"] and row["set_by"] is None, tid
@@ -721,9 +730,10 @@ def test_an_unpack_but_wrong_layout_engine_is_not_offered(monkeypatch, tmp_path)
     homes = _fake_engines(monkeypatch, tmp_path)
     shutil.rmtree(homes["wabt"] / "bin")
     (homes["jadx-mcp"] / "jadx-headless-mcp-0.7.1-all.jar").unlink()
+    shutil.rmtree(homes["adb"] / "platform-tools")
     env = rea.provider_env()
-    assert "REA_WABT_BIN_DIRECTORY" not in env and "REA_JADX_MCP_JAR" not in env
-    assert {row["tool"] for row in rea.engines() if row["ready"]} == {"pwntools", "mitmproxy"}
+    assert "REA_WABT_BIN_DIRECTORY" not in env and "REA_JADX_MCP_JAR" not in env and "REA_ADB_PATH" not in env
+    assert {row["tool"] for row in rea.engines() if row["ready"]} == {"pwntools", "mitmproxy", "apktool"}
 
 
 def test_an_engine_the_operator_pointed_at_themselves_is_left_alone(monkeypatch, tmp_path):

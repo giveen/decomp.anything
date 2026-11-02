@@ -415,6 +415,7 @@ description = "Reads PDB debug symbols for Windows programs. Optional: install L
 system = true
 download = "https://github.com/llvm/llvm-project/releases/latest"
 cmd = ["llvm-pdbutil"]
+binary_name = "llvm-pdbutil"
 
 # REA's policy is that it never downloads an engine during an analysis operation, so an analysis engine it can
 # use stays absent unless something installs it. These are the engines we install ourselves; rea.py names them
@@ -458,7 +459,30 @@ license = "MIT"
 source = "mitmproxy 12.3.1 (PyPI)"
 description = "The proxy the RE console captures live HTTPS with when a browser or native network client is the target. Optional; installs mitmdump in an isolated Python environment."
 pip = "mitmproxy==12.3.1"
-binary_name = "llvm-pdbutil"
+
+[apktool]
+name = "apktool"
+kind = "tool"
+license = "Apache-2.0"
+source = "iBotPeaches/Apktool 3.0.3"
+description = "Decodes an APK's resources and AndroidManifest.xml back to editable form, which is where a layout or string that never reached the code lives. Needs Java 8 or newer; we write the command wrapper the RE console asks for."
+requires_java = 8
+parts = [
+  { url = "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar", sha256 = "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423", binary = "apktool_3.0.3.jar" },
+]
+launcher = { script = "apktool", jar = "apktool_3.0.3.jar" }
+
+[adb]
+name = "Android Debug Bridge (platform-tools)"
+kind = "tool"
+license = "Apache-2.0"
+source = "Google platform-tools 37.0.1"
+description = "Talks to a connected Android device or emulator: install a build, pull its files, read logcat. Google's own platform-tools archive, pinned; the digest matches the sha1 Google publishes for this exact file."
+binary_name = "adb"
+parts = [
+  { url = "https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip", sha256 = "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1", platforms = ["linux-x86_64"] },
+  { url = "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip", sha256 = "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99", platforms = ["windows-x86_64"] },
+]
 
 [ghidra]
 name = "Ghidra"

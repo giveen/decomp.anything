@@ -74,6 +74,8 @@ OWN_ENGINES = {
     "REA_JADX_MCP_JAR": ("jadx-mcp", "jar"),
     "REA_PWNTOOLS_PYTHON": ("pwntools", "venvpython"),
     "REA_MITMDUMP_COMMAND": ("mitmproxy", "venvbin:mitmdump"),
+    "REA_APKTOOL_COMMAND": ("apktool", "path:bin/apktool"),
+    "REA_ADB_PATH": ("adb", "path:platform-tools/adb"),
 }
 
 # The same engines as capability lanes, for the console: a missing Android decompiler should read as "install
@@ -84,6 +86,8 @@ ENGINE_LANES = {
     "jadx-mcp": ("jadx-headless-mcp", "Android APK code: Java and Kotlin read from DEX"),
     "pwntools": ("pwntools", "ELF segment and stack-canary layout"),
     "mitmproxy": ("mitmproxy", "live HTTPS capture for browser and native clients"),
+    "apktool": ("apktool", "Android APK resources and AndroidManifest"),
+    "adb": ("adb", "a connected Android device: install, pull, logcat"),
 }
 
 # Providers we cannot supply: they are configured outside decomp.anything, and saying so beats a silent absence.
@@ -123,6 +127,14 @@ def own_engine(tid: str, shape: str) -> str | None:
     if shape.startswith("venvbin:"):  # a console script inside our own venv, e.g. mitmdump
         exe = toolchains.venv_bin(home / "venv", shape.split(":", 1)[1])
         return str(exe) if exe.exists() else None
+    if shape.startswith("path:"):  # a file inside our install: a wrapper we wrote, or adb inside platform-tools
+        rel = shape.split(":", 1)[1]
+        # on Windows the .bat wrapper and adb.exe both sit next to the extension-less file we also placed
+        names = [rel + ".exe", rel + ".bat", rel] if os.name == "nt" else [rel, rel + ".exe"]
+        for name in names:
+            if (home / name).exists():
+                return str(home / name)
+        return None
     return None
 
 
