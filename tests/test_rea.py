@@ -840,3 +840,36 @@ def test_a_saved_engine_path_beats_the_one_we_would_supply(monkeypatch, fake, tm
     monkeypatch.setenv("DECOMP_REA", " ".join(fake))
     assert rea.settings()["env"]["GHIDRA_INSTALL_DIR"] == "/opt/other-ghidra"
     assert home.exists()
+
+
+def test_windows_gets_the_wrapper_and_the_exe_it_can_actually_run(monkeypatch, tmp_path):
+    """On Windows there is no bin/apktool and no bare adb: the launcher is a .bat and adb is adb.exe. A POSIX run
+    can still check which file we would choose, which is the part of Windows support no Linux leg can otherwise
+    prove."""
+    homes = _fake_engines(monkeypatch, tmp_path)
+    (homes["apktool"] / "bin" / "apktool").unlink()  # the shell wrapper is not what a Windows host has
+    (homes["apktool"] / "bin" / "apktool.bat").write_text("@echo off\r\n", encoding="utf-8")
+    (homes["adb"] / "platform-tools" / "adb").unlink()
+    (homes["adb"] / "platform-tools" / "adb.exe").write_text("", encoding="utf-8")
+    monkeypatch.setattr(rea, "_windows", lambda: True)
+    env = rea.provider_env()
+    assert env["REA_APKTOOL_COMMAND"].endswith("apktool.bat")
+    assert env["REA_ADB_PATH"].endswith("adb.exe")
+    # With both spellings present, POSIX must prefer the bare name. The .exe fallback stays on purpose: an
+    # installer that only left adb.exe behind should still work, so this asserts preference, not exclusion.
+    (homes["adb"] / "platform-tools" / "adb").write_text("x", encoding="utf-8")
+    (homes["apktool"] / "bin" / "apktool").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(rea, "_windows", lambda: False)
+    posix = rea.provider_env()
+    assert posix["REA_ADB_PATH"].endswith("/adb") and posix["REA_APKTOOL_COMMAND"].endswith("/apktool")
+
+
+def test_prlimit_is_only_offered_where_it_exists(monkeypatch):
+    """util-linux is a Linux package. Telling a Windows operator to install it made a fix hint that could not be
+    followed, for a lane that does not use it there."""
+    monkeypatch.setattr(rea.sys, "platform", "win32")
+    assert not any(row["tool"] == "prlimit" for row in rea.engines())
+    monkeypatch.setattr(rea.sys, "platform", "darwin")
+    assert not any(row["tool"] == "prlimit" for row in rea.engines())
+    monkeypatch.setattr(rea.sys, "platform", "linux")
+    assert any(row["tool"] == "prlimit" for row in rea.engines())

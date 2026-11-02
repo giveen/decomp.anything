@@ -200,3 +200,19 @@ def test_zst_archives_need_no_zstd_command(tmp_path, monkeypatch):
     toolchains._extract(archive, dest, "usr/lib32")
     assert (dest / "ld-linux.so.2").read_bytes() == b"\x7fELF"
     assert not list(tmp_path.glob("tmp*"))  # no leftovers
+
+
+def test_the_engines_rea_uses_can_be_installed_on_windows(monkeypatch):
+    """Windows is a supported host, so every engine we hand to REA needs a Windows answer: a native part, a
+    platform-agnostic JAR, or an interpreter we build. A tool with none of those only shows up as an Install
+    button that refuses once pressed, which is the same silence as a missing engine."""
+    monkeypatch.setattr(toolchains, "current_platform", lambda: "windows-x86_64")
+    for tid in ("wabt", "jadx-mcp", "pwntools", "mitmproxy", "apktool", "adb"):
+        tc = toolchains.get(tid)
+        assert tc.supported, tid
+        assert bool(tc.parts_for()) or bool(tc.pip) or bool(tc.git), tid
+    # a part with no `platforms` list is platform-agnostic and must not be filtered out on a Windows host
+    assert len(toolchains.get("jadx-mcp").parts_for()) == 1
+    assert len(toolchains.get("wabt").parts_for()) == 1
+    assert toolchains.get("wabt").parts_for()[0]["url"].endswith("windows-x64.tar.gz")
+    assert toolchains.get("adb").parts_for()[0]["url"].endswith("win.zip")
