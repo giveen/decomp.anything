@@ -472,6 +472,64 @@ parts = [
 ]
 launcher = { script = "apktool", jar = "apktool_3.0.3.jar" }
 
+# Tools the computer provides and we can only find out about. They are not downloads, so the honest part of the
+# card is where to get one; we still name the binary to REA once it exists, because REA only sees what it is told
+# about and a pcap reader sitting in /usr/bin is invisible to a registry entry.
+[sigrok-cli]
+name = "sigrok"
+kind = "tool"
+license = "GPL-3.0-or-later"
+source = "system sigrok-cli"
+description = "Decodes recorded logic-analyser traces (UART, SPI, I2C and the rest) for the RE console. Optional: install sigrok-cli with your package manager (apt install sigrok-cli, dnf install sigrok-cli, pacman -S sigrok-cli)."
+system = true
+download = "https://sigrok.org/wiki/Downloads"
+cmd = ["sigrok-cli"]
+binary_name = "sigrok-cli"
+
+[tshark]
+name = "tshark"
+kind = "tool"
+license = "GPL-2.0-or-later"
+source = "system tshark (Wireshark)"
+description = "Reads pcap and pcapng captures the console is asked to analyse, and summarises them before anything is opened. Optional: part of Wireshark (apt install tshark, dnf install wireshark-cli)."
+system = true
+download = "https://www.wireshark.org/download.html"
+cmd = ["tshark"]
+binary_name = "tshark"
+
+[capinfos]
+name = "capinfos"
+kind = "tool"
+license = "GPL-2.0-or-later"
+source = "system capinfos (Wireshark)"
+description = "Prints a capture's shape - packet count, timespan, link layer - so a huge pcap is not paged through blindly. Optional: comes with tshark."
+system = true
+download = "https://www.wireshark.org/download.html"
+cmd = ["capinfos"]
+binary_name = "capinfos"
+
+[gdb]
+name = "GDB"
+kind = "tool"
+license = "GPL-3.0-or-later"
+source = "system gdb"
+description = "The debugger the console drives when a native target has to be observed rather than read statically. Optional: install gdb with your package manager."
+system = true
+download = "https://www.sourceware.org/gdb/download/"
+cmd = ["gdb"]
+binary_name = "gdb"
+
+[java]
+name = "Java runtime"
+kind = "tool"
+license = "GPL-2.0-with-classpath-exception"
+source = "system java"
+description = "Not an analysis engine, but Ghidra, jadx and apktool are all Java programs: without a runtime on PATH none of them start, and the reason looks like a broken engine. Install a JDK (Adoptium Temurin is the usual choice); Ghidra wants 21 or newer."
+system = true
+download = "https://adoptium.net/"
+cmd = ["java"]
+binary_name = "java"
+
 [adb]
 name = "Android Debug Bridge (platform-tools)"
 kind = "tool"
