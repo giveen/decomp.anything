@@ -52,10 +52,10 @@ class Registrar:
             db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('ip_salt', ?)", (salt,))
         return self.net.store.must_one("SELECT value FROM settings WHERE key='ip_salt'")["value"]
 
-    def _siteverify(self, token: str, ip: str | None) -> dict:
+    def _siteverify(self, token: str, ip: str | None) -> dict:  # `ip`: the injected `verify` gets it; we don't send it
+        # The visitor's address stays on this machine: the daily limits are keyed on the salted hash we keep
+        # locally, and Cloudflare's `remoteip` is optional for Siteverify, so there is no reason to forward it.
         body = {"secret": self.secret, "response": token}
-        if ip:
-            body["remoteip"] = ip
         req = urllib.request.Request(SITEVERIFY, data=urllib.parse.urlencode(body).encode(),
                                      headers={"Content-Type": "application/x-www-form-urlencoded"})
         with urllib.request.urlopen(req, timeout=10) as r:

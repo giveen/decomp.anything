@@ -100,3 +100,33 @@ def test_tools_require_a_valid_token(server):
     assert res.is_error and "invalid API token" in text(res)
     res = anyio.run(call, url, None, "list_projects", {})
     assert res.is_error and "missing API token" in text(res)
+
+
+def test_siteverify_does_not_forward_the_visitors_address(monkeypatch):
+    """The bot check is verified with no personal data leaving: the per-IP daily limit uses the salted hash this
+    store keeps, so the request to Cloudflare carries the token and our secret, and no address."""
+    import urllib.parse
+
+    from decompnet import registration
+
+    sent = {}
+
+    class Fake:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b'{"success": true, "action": "signup", "hostname": "localhost"}'
+
+    def fake_urlopen(req, timeout=None):
+        sent["body"] = urllib.parse.parse_qs(req.data.decode())
+        return Fake()
+
+    monkeypatch.setattr(registration.urllib.request, "urlopen", fake_urlopen)
+    reg = registration.Registrar(None, secret="s3cret", hostnames={"localhost"})
+    assert reg._siteverify("tok", "203.0.113.9")["success"] is True
+    assert "remoteip" not in sent["body"], f"the visitor's address was sent: {sorted(sent['body'])}"
+    assert sent["body"]["response"] == ["tok"] and sent["body"]["secret"] == ["s3cret"]
