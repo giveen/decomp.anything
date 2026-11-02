@@ -70,3 +70,13 @@ select = [
 [tool.pytest.ini_options]
 # the room tests drive the room server through Starlette's TestClient, which warns about the timeouts real clients use
 filterwarnings = ["ignore:You should not use the 'timeout' argument with the TestClient"]
+
+[tool.pyright]
+# The gate: everything the app itself is made of. Third-party packages here ship no typing information
+# (pyelftools, spimdisasm, rabbitizer, capstone, splat64, mcp), so an unresolved import is their gap, not a defect
+# in this repository: reporting it would hide the findings that are ours to fix.
+include = ["src/decompnet"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
