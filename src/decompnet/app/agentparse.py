@@ -16,9 +16,8 @@ from .agenttools import AGY_ALLOW, agy_settings
 def _tool_name(name: str) -> str:
     for prefix in ("mcp__decomp__", "mcp_decomp_", "decomp_agent.", "decomp_agent__", "decomp__", "decomp_", "decomp."):
         if name.startswith(prefix):
-            return name[len(prefix) :]
+            return name[len(prefix):]
     return name
-
 
 def _args_brief(args) -> str:
     if not isinstance(args, dict):
@@ -33,7 +32,6 @@ def _args_brief(args) -> str:
             parts.append(str(v))
     return ", ".join(parts)
 
-
 def _error_text(err) -> str:
     """The message in an agent's error object, whatever its shape (opencode nests it under data)."""
     if isinstance(err, dict):
@@ -44,7 +42,6 @@ def _error_text(err) -> str:
             return f"{name}: {msg}"
         return str(msg or name or json.dumps(err)[:300])
     return str(err or "")
-
 
 def _parse_agy(obj: dict, state: dict) -> list[tuple[str, str]]:
     """Antigravity CLI's stream-json: step_update events (text arrives in deltas, gathered per step) and a result."""
@@ -72,14 +69,9 @@ def _parse_agy(obj: dict, state: dict) -> list[tuple[str, str]]:
             out.append(("usage", json.dumps({"tokens": usage["total_tokens"]})))
         denied = [d for d in res.get("denied_actions") or [] if isinstance(d, dict)]
         if any(d.get("action") == "mcp" for d in denied):
-            out.append(
-                (
-                    "error",
-                    f"Antigravity refused decomp.anything's tools: a background run can't ask you for permission. "
-                    f'Allow them once: add "{AGY_ALLOW}" to "permissions": {{"allow": [...]}} in '
-                    f"{agy_settings()} (only decomp.anything's tools; shell, files and the web keep asking).",
-                )
-            )
+            out.append(("error", f"Antigravity refused decomp.anything's tools: a background run can't ask you for permission. "
+                                 f"Allow them once: add \"{AGY_ALLOW}\" to \"permissions\": {{\"allow\": [...]}} in "
+                                 f"{agy_settings()} (only decomp.anything's tools; shell, files and the web keep asking)."))
         if res.get("status") not in (None, "SUCCESS"):
             out.append(("error", str(res.get("error") or f"session ended: {res.get('status')}")[:400]))
         else:
@@ -88,7 +80,6 @@ def _parse_agy(obj: dict, state: dict) -> list[tuple[str, str]]:
     elif ev == "error":
         out.append(("error", _error_text(obj.get("error") or obj.get("message"))[:400]))
     return out
-
 
 def clean_stderr(kind: str, line: str) -> str:
     """One line of an agent's stderr as worth showing, or "" for noise."""
@@ -105,7 +96,6 @@ def clean_stderr(kind: str, line: str) -> str:
         except ValueError:
             return line
     return line
-
 
 def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[str, str]]:
     """(type, text) items for the live feed from one line of agent output: text, think, tool, info, error, usage.
@@ -181,3 +171,4 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
         if isinstance(part.get("cost"), (int, float)) and part["cost"]:
             out.append(("usage", json.dumps({"usd": part["cost"]})))
     return [(k, v) for k, v in out if v]
+

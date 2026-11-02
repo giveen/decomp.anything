@@ -66,23 +66,15 @@ def _next_linker(compiler: str, log_tail: str) -> str | None:
     if not (crashed or differs):
         return None
     family = NEWER_LINKERS.get(compiler.split("/", 1)[0], [])
-    later = family[family.index(compiler) + 1 :] if compiler in family else []
+    later = family[family.index(compiler) + 1:] if compiler in family else []
     base = Path(toolchains.path("mwcc"))
     return next((v for v in later if (base / v / "mwldeppc.exe").exists()), None)
 
 
 def _use_linker(root: Path, game_id: str, compiler: str, sources: list[str], rels: bool) -> None:
     cfg = root / "config" / game_id / "config.yml"
-    cfg.write_text(
-        re.sub(
-            r"^mw_comment_version: \d+$",
-            f"mw_comment_version: {comment_version(compiler)}",
-            cfg.read_text(encoding="utf-8"),
-            count=1,
-            flags=re.MULTILINE,
-        ),
-        encoding="utf-8",
-    )
+    cfg.write_text(re.sub(r"^mw_comment_version: \d+$", f"mw_comment_version: {comment_version(compiler)}",
+                          cfg.read_text(encoding="utf-8"), count=1, flags=re.MULTILINE), encoding="utf-8")
     _write_configure(root, game_id, compiler, sources, rels)
 
 
@@ -119,14 +111,8 @@ def _dtk() -> str:
 def _vfs_read(disc: Path, inner: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="decompwtf-disc-") as tmp:
         out = Path(tmp) / Path(inner).name
-        res = subprocess.run(
-            capped([_dtk(), "vfs", "cp", f"{disc}:{inner}", str(out)]),
-            capture_output=True,
-            text=True,
-            timeout=600,
-            encoding="utf-8",
-            errors="replace",
-        )
+        res = subprocess.run(capped([_dtk(), "vfs", "cp", f"{disc}:{inner}", str(out)]), capture_output=True, text=True,
+                             timeout=600, encoding="utf-8", errors="replace")
         if res.returncode != 0 or not out.exists():
             raise ForkError(f"couldn't read {inner} from the disc image: {(res.stderr or res.stdout).strip()[-300:]}")
         return out.read_bytes()
@@ -151,28 +137,16 @@ def vfs_copy(disc: Path, inner: list[str], dest: Path) -> None:
     """Copy files (paths inside the disc, like files/dll/m699Dll.rel) out of a disc image into `dest`."""
     dest.mkdir(parents=True, exist_ok=True)
     for i in range(0, len(inner), 64):
-        res = subprocess.run(
-            capped([_dtk(), "vfs", "cp", "-q", *[f"{disc}:{x}" for x in inner[i : i + 64]], f"{dest}{os.sep}"]),
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            encoding="utf-8",
-            errors="replace",
-        )
+        res = subprocess.run(capped([_dtk(), "vfs", "cp", "-q", *[f"{disc}:{x}" for x in inner[i:i + 64]], f"{dest}{os.sep}"]),
+                             capture_output=True, text=True, timeout=1800, encoding="utf-8", errors="replace")
         if res.returncode != 0:
             raise ForkError(f"couldn't copy files out of the disc image: {(res.stderr or res.stdout).strip()[-400:]}")
 
 
 def vfs_list(disc: Path) -> list[str]:
     """Every file in a disc image (paths like files/dll/m302Dll.rel)."""
-    res = subprocess.run(
-        capped([_dtk(), "vfs", "ls", "-r", "-s", f"{disc}:"]),
-        capture_output=True,
-        text=True,
-        timeout=600,
-        encoding="utf-8",
-        errors="replace",
-    )
+    res = subprocess.run(capped([_dtk(), "vfs", "ls", "-r", "-s", f"{disc}:"]), capture_output=True, text=True,
+                         timeout=600, encoding="utf-8", errors="replace")
     if res.returncode != 0:
         raise ForkError(f"couldn't list the disc image's files: {(res.stderr or res.stdout).strip()[-300:]}")
     return [line.strip() for line in res.stdout.splitlines() if line.strip() and not line.strip().endswith("/")]
@@ -192,7 +166,7 @@ def rel_imports(data: bytes) -> set[int]:
     if len(data) < 0x30:
         return set()
     table, size = struct.unpack(">II", data[0x28:0x30])
-    return {struct.unpack(">I", data[at : at + 4])[0] for at in range(table, min(table + size, len(data) - 7), 8)}
+    return {struct.unpack(">I", data[at:at + 4])[0] for at in range(table, min(table + size, len(data) - 7), 8)}
 
 
 def is_compressed_rel(data: bytes) -> bool:
@@ -263,22 +237,11 @@ def tool_args() -> list[str]:
         if tid != "wibo" or toolchains.get("wibo").supported:
             toolchains.ensure(tid, log=lambda *_: None)
     if toolchains.installed("mwcc") is None:
-        raise ForkError(
-            "GameCube and Wii games are built with CodeWarrior, which is proprietary: install it in Setup "
-            "(Metrowerks CodeWarrior) if you accept that, then try again"
-        )
-    args = [
-        "--dtk",
-        str(toolchains.binary("dtk")),
-        "--binutils",
-        str(toolchains.path("gc-wii-binutils")),
-        "--compilers",
-        str(toolchains.path("mwcc")),
-        "--objdiff",
-        str(toolchains.binary("objdiff-cli")),
-        "--sjiswrap",
-        str(toolchains.binary("sjiswrap")),
-    ]
+        raise ForkError("GameCube and Wii games are built with CodeWarrior, which is proprietary: install it in Setup "
+                        "(Metrowerks CodeWarrior) if you accept that, then try again")
+    args = ["--dtk", str(toolchains.binary("dtk")), "--binutils", str(toolchains.path("gc-wii-binutils")),
+            "--compilers", str(toolchains.path("mwcc")), "--objdiff", str(toolchains.binary("objdiff-cli")),
+            "--sjiswrap", str(toolchains.binary("sjiswrap"))]
     if toolchains.get("wibo").supported and os.name != "nt":  # configure.py has --wrapper only off Windows
         args += ["--wrapper", str(toolchains.binary("wibo"))]
     return args
@@ -313,7 +276,6 @@ typedef int BOOL;
 def _libs_block(compiler: str, sources: list[str], rels: bool = False) -> str:
     """The program's source files, and the REL modules' (auto/<module>/...: compiled without small data, as RELs
     are, since a module can't reach the program's small data sections)."""
-
     def lib(name: str, cflags: str, files: list[str]) -> str:
         objects = "".join(f'            Object({"Matching" if s == REL_EMPTY else "NonMatching"}, "{s}"),\n' for s in files)
         return f'''    {{
@@ -325,7 +287,6 @@ def _libs_block(compiler: str, sources: list[str], rels: bool = False) -> str:
 {objects}        ],
     }},
 '''
-
     main = [s for s in sources if s.count("/") == 1]
     modules = ([REL_EMPTY] if rels else []) + [s for s in sources if s.count("/") > 1]
     return "config.libs = [\n" + lib("game", "cflags_base", main) + (lib("modules", "cflags_rel", modules) if modules else "") + "]\n\n\n"
@@ -334,7 +295,7 @@ def _libs_block(compiler: str, sources: list[str], rels: bool = False) -> str:
 def _write_configure(root: Path, game_id: str, compiler: str, sources: list[str], rels: bool = False) -> None:
     p = root / "configure.py"
     s = p.read_text(encoding="utf-8")
-    s = re.sub(r"VERSIONS = \[\n.*?\n\]", f'VERSIONS = [\n    "{game_id}",  # 0\n]', s, count=1, flags=re.DOTALL)
+    s = re.sub(r'VERSIONS = \[\n.*?\n\]', f'VERSIONS = [\n    "{game_id}",  # 0\n]', s, count=1, flags=re.DOTALL)
     s = re.sub(r'^config\.linker_version = ".*"$', f'config.linker_version = "{compiler}"', s, count=1, flags=re.MULTILINE)
     if "config.shift_jis = False" not in s:  # sources are plain C (turn it back on for Japanese string literals)
         s = s.replace(f'config.linker_version = "{compiler}"', f'config.linker_version = "{compiler}"\nconfig.shift_jis = False', 1)
@@ -370,14 +331,8 @@ def _unique_sections(root: Path, game_id: str) -> list[str]:
 
 
 # CodeWarrior's REL modules keep their sections at fixed indices; dtk calls one it can't place ".section<i>"
-REL_SECTIONS = {
-    1: (".text", "code"),
-    2: (".ctors", "rodata"),
-    3: (".dtors", "rodata"),
-    4: (".rodata", "rodata"),
-    5: (".data", "data"),
-    6: (".bss", "bss"),
-}
+REL_SECTIONS = {1: (".text", "code"), 2: (".ctors", "rodata"), 3: (".dtors", "rodata"), 4: (".rodata", "rodata"),
+                5: (".data", "data"), 6: (".bss", "bss")}
 
 
 def _standard_module_sections(root: Path, game_id: str) -> list[str]:
@@ -419,13 +374,14 @@ def _unique_in(path: Path) -> list[str]:
     lines = m.group(1).rstrip("\n").split("\n")
     # one pass over the section lines: each one's place, its name, and what dtk wrote after it (a line it can't
     # read has no name, so it never takes part in a rename)
-    secs = [(i, name, rest) for i, line in enumerate(lines) if (hit := _SECTION_LINE.match(line)) and (name := hit[1]) and (rest := hit[2])]
+    secs = [(i, name, rest) for i, line in enumerate(lines)
+            if (hit := _SECTION_LINE.match(line)) and (name := hit[1]) and (rest := hit[2])]
     names: list[str | None] = [None] * len(lines)
     for i, name, _ in secs:
         names[i] = name
     renamed = []
     for i, name, rest in secs:
-        if names.count(name) > 1 and name in names[i + 1 :]:
+        if names.count(name) > 1 and name in names[i + 1:]:
             new, k = f"{name}{i}", i  # letters and digits only: dtk reads no other section names in symbols.txt
             while new in names:
                 k += 1
@@ -464,15 +420,8 @@ def _differing(root: Path, game_id: str, log_tail: str) -> list[str] | None:
         return None
     if any(e != f"build/{game_id}/ok" for e in re.findall(r"^FAILED: (?:\[code=\d+\] )?(\S+)", log_tail, re.MULTILINE)):
         return None  # another step failed (what's on disk may be from an earlier build)
-    res = subprocess.run(
-        capped([_dtk(), "shasum", "-c", f"config/{game_id}/build.sha1"]),
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        encoding="utf-8",
-        errors="replace",
-    )
+    res = subprocess.run(capped([_dtk(), "shasum", "-c", f"config/{game_id}/build.sha1"]), cwd=root, capture_output=True,
+                         text=True, timeout=600, encoding="utf-8", errors="replace")
     lines = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in (res.stdout + res.stderr).splitlines()]
     results = [re.match(r"^(\S+\.(?:dol|rel)): (OK|FAILED)$", ln) for ln in lines]
     if any(m is None for m, ln in zip(results, lines, strict=False) if re.search(r"\.(dol|rel)\b", ln)):
@@ -530,10 +479,10 @@ _MISSING_FUNCTION = re.compile(r"Failed to find function symbol @ \d+:0x([0-9A-F
 
 def _dol_read(dol: bytes, address: int, size: int) -> bytes:
     """`size` bytes of the program at `address` (empty when no section of the file holds them)."""
-    offs, addrs, sizes = (struct.unpack(">18I", dol[k : k + 72]) for k in (0, 72, 144))
+    offs, addrs, sizes = (struct.unpack(">18I", dol[k:k + 72]) for k in (0, 72, 144))
     for o, a, n in zip(offs, addrs, sizes, strict=False):
         if n and a <= address and address + size <= a + n:
-            return dol[o + address - a : o + address - a + size]
+            return dol[o + address - a:o + address - a + size]
     return b""
 
 
@@ -545,7 +494,7 @@ def _exception_table_size(dol: bytes, address: int, sections: list[tuple[str, in
             continue
         table = _dol_read(dol, start, size)
         for at in range(0, len(table) - 11, 12):
-            fn, length, _ = struct.unpack(">III", table[at : at + 12])
+            fn, length, _ = struct.unpack(">III", table[at:at + 12])
             if fn == address and 0 < length < 0x100000:
                 return length
     return None
@@ -578,19 +527,11 @@ def _dtk_sections(dol: bytes) -> list[tuple[str, int, int]]:
     """(name, address, size) of the program's sections, named as dtk names them."""
     with tempfile.TemporaryDirectory(prefix="decompwtf-dol-") as tmp:
         (Path(tmp) / "main.dol").write_bytes(dol)
-        res = subprocess.run(
-            capped([_dtk(), "dol", "info", str(Path(tmp) / "main.dol")]),
-            capture_output=True,
-            text=True,
-            timeout=600,
-            encoding="utf-8",
-            errors="replace",
-        )
+        res = subprocess.run(capped([_dtk(), "dol", "info", str(Path(tmp) / "main.dol")]), capture_output=True,
+                             text=True, timeout=600, encoding="utf-8", errors="replace")
     table = res.stdout.split("Sections:", 1)[-1].split("\n\n", 1)[0]
-    return [
-        (m.group(1), int(m.group(2), 16), int(m.group(3), 16))
-        for m in re.finditer(r"^[ \t]*(\S+) \| 0x([0-9A-Fa-f]+)\s*\| 0x([0-9A-Fa-f]+)\s*\|", table, re.MULTILINE)
-    ]
+    return [(m.group(1), int(m.group(2), 16), int(m.group(3), 16))
+            for m in re.finditer(r"^[ \t]*(\S+) \| 0x([0-9A-Fa-f]+)\s*\| 0x([0-9A-Fa-f]+)\s*\|", table, re.MULTILINE)]
 
 
 def _code_units(root: Path, game_id: str) -> list[tuple[str | None, int, int, str]]:
@@ -600,7 +541,8 @@ def _code_units(root: Path, game_id: str) -> list[tuple[str | None, int, int, st
 
     cfg = json.loads((root / "build" / game_id / "config.json").read_text(encoding="utf-8"))
     out = []
-    for module, units in [(None, cfg.get("units") or []), *[(m.get("name"), m.get("units") or []) for m in (cfg.get("modules") or [])]]:
+    for module, units in [(None, cfg.get("units") or []),
+                          *[(m.get("name"), m.get("units") or []) for m in (cfg.get("modules") or [])]]:
         for unit in units:
             m = re.match(r"auto_\d+_([0-9A-F]{8})_(\w+)$", unit.get("name", ""))
             if not m or m.group(2) != "text":
@@ -629,7 +571,7 @@ def _drop_module(root: Path, game_id: str, log_tail: str) -> list[str] | None:
     if m.group(1) not in blocks:
         return None
     names = [m.group(1)]
-    if need := re.search(r"Failed to locate module (\d+)", log_tail):
+    if (need := re.search(r"Failed to locate module (\d+)", log_tail)):
         ob = re.search(r"^object_base:\s*(\S+)", text, re.MULTILINE)
         base = root / ob.group(1) if ob else root
         for name, block in blocks.items():
@@ -646,17 +588,14 @@ def _drop_module(root: Path, game_id: str, log_tail: str) -> list[str] | None:
     why = m.group(0)[8:].strip() + (f" ({need.group(0)})" if need and need.group(0) not in m.group(0) else "")
     for name in names:
         block = blocks[name]
-        left_out = f"# left out: decomp-toolkit can't analyse it ({why})\n" + "".join(f"# {ln}\n" for ln in block.group(0).splitlines())
+        left_out = f"# left out: decomp-toolkit can't analyse it ({why})\n" \
+            + "".join(f"# {ln}\n" for ln in block.group(0).splitlines())
         text = text.replace(block.group(0), left_out, 1)
     cfg.write_text(text, encoding="utf-8")
     sha = root / "config" / game_id / "build.sha1"
     if sha.exists():
-        sha.write_text(
-            "".join(
-                ln for ln in sha.read_text(encoding="utf-8").splitlines(keepends=True) if not any(f"/{n}/{n}.rel" in ln for n in names)
-            ),
-            encoding="utf-8",
-        )
+        sha.write_text("".join(ln for ln in sha.read_text(encoding="utf-8").splitlines(keepends=True)
+                               if not any(f"/{n}/{n}.rel" in ln for n in names)), encoding="utf-8")
     return names
 
 
@@ -685,16 +624,13 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     if modules:
         log(f"{len(modules)} REL modules on the disc: analysed with the program")
     if packed:
-        log(
-            f"{len(packed)} more modules are compressed (Sega's SaCompGC: {', '.join(Path(p).name for p in packed[:4])}"
+        log(f"{len(packed)} more modules are compressed (Sega's SaCompGC: {', '.join(Path(p).name for p in packed[:4])}"
             f"{', ...' if len(packed) > 4 else ''}): decomp.wtf can't read those yet, so they and the modules that need "
-            "them aren't decompiled"
-        )
+            "them aren't decompiled")
     # Modules that are never loaded together may share an id (Mario Party's minigames all do): a reference to
     # "module 1" then can't be resolved, and each links against the program only, as the community's projects set it
     shared_ids = len({m[3] for m in modules}) < len(modules)
-    (config / "config.yml").write_text(
-        f"""# Made by decomp.wtf. See config.example.yml for every option.
+    (config / "config.yml").write_text(f"""# Made by decomp.wtf. See config.example.yml for every option.
 object_base: orig/{gid}
 object: sys/main.dol
 hash: {sha1}
@@ -704,29 +640,15 @@ mw_comment_version: {comment_version(compiler)}
 detect_objects: true
 detect_strings: true
 write_asm: true
-"""
-        + (
-            "modules:\n"
-            + "".join(
-                f"""- object: {path}
+""" + ("modules:\n" + "".join(f"""- object: {path}
   hash: {rel_sha1}
   symbols: config/{gid}/rels/{name}/symbols.txt
   splits: config/{gid}/rels/{name}/splits.txt
-"""
-                + ("  links: []\n" if shared_ids else "")
-                for name, path, rel_sha1, _ in modules
-            )
-            if modules
-            else ""
-        ),
-        encoding="utf-8",
-    )
+""" + ("  links: []\n" if shared_ids else "") for name, path, rel_sha1, _ in modules) if modules else ""), encoding="utf-8")
     for name, *_ in modules:
         (config / "rels" / name).mkdir(parents=True, exist_ok=True)
-    (config / "build.sha1").write_text(
-        f"{sha1}  build/{gid}/main.dol\n" + "".join(f"{rel_sha1}  build/{gid}/{name}/{name}.rel\n" for name, _, rel_sha1, _ in modules),
-        encoding="utf-8",
-    )
+    (config / "build.sha1").write_text(f"{sha1}  build/{gid}/main.dol\n" + "".join(
+        f"{rel_sha1}  build/{gid}/{name}/{name}.rel\n" for name, _, rel_sha1, _ in modules), encoding="utf-8")
     (root / "include").mkdir(exist_ok=True)
     (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     _write_configure(root, gid, compiler, [], rels=bool(modules))
@@ -740,38 +662,25 @@ write_asm: true
             break
         if _name_entry(root, gid, info["dol"]):
             log("the program's entry point is __start (CodeWarrior links from it)")
-        elif hint := _overlap_hint(root, gid, tail):
+        elif (hint := _overlap_hint(root, gid, tail)):
             log(f"code at {hint} is hand-written, with branch targets of its own: analysing again")
-        elif renamed := _unique_sections(root, gid):
+        elif (renamed := _unique_sections(root, gid)):
             log(f"the program has sections of its own (named {', '.join(renamed)} here): analysing again")
-        elif named := _standard_module_sections(root, gid):
-            log(
-                f"named module sections decomp-toolkit couldn't ({', '.join(named[:4])}{', ...' if len(named) > 4 else ''}): "
-                "analysing again"
-            )
-        elif declared := _declare_function(root, gid, info["dol"], tail):
-            log(
-                f"the program's exception table has a function decomp-toolkit's analysis stopped short of (a zeroed "
-                f"word inside its code): declared {declared[0]} ({declared[1]} bytes), analysing again"
-            )
-        elif dropped := _drop_module(root, gid, tail):
+        elif (named := _standard_module_sections(root, gid)):
+            log(f"named module sections decomp-toolkit couldn't ({', '.join(named[:4])}{', ...' if len(named) > 4 else ''}): "
+                "analysing again")
+        elif (declared := _declare_function(root, gid, info["dol"], tail)):
+            log(f"the program's exception table has a function decomp-toolkit's analysis stopped short of (a zeroed "
+                f"word inside its code): declared {declared[0]} ({declared[1]} bytes), analysing again")
+        elif (dropped := _drop_module(root, gid, tail)):
             need = re.search(r"Failed to locate module (\d+)", tail)
-            what = (
-                f"the module {dropped[0]}"
-                if len(dropped) == 1
-                else f"{len(dropped)} modules ({', '.join(dropped[:4])}{', ...' if len(dropped) > 4 else ''})"
-            )
-            log(
-                f"left out {what}: decomp-toolkit can't analyse "
-                + (
-                    f"them without module {need.group(1)}, which isn't among the modules decomp.wtf could read"
-                    + (" (the disc keeps some compressed)" if packed else "")
-                    if need
-                    else "it"
-                )
-                + " (the community's decomps of games like this leave such modules out too); the game keeps your copy's"
-            )
-        elif newer := _next_linker(compiler, tail):
+            what = (f"the module {dropped[0]}" if len(dropped) == 1 else
+                    f"{len(dropped)} modules ({', '.join(dropped[:4])}{', ...' if len(dropped) > 4 else ''})")
+            log(f"left out {what}: decomp-toolkit can't analyse "
+                + (f"them without module {need.group(1)}, which isn't among the modules decomp.wtf could read"
+                   + (" (the disc keeps some compressed)" if packed else "") if need else "it")
+                + " (the community's decomps of games like this leave such modules out too); the game keeps your copy's")
+        elif (newer := _next_linker(compiler, tail)):
             if (diff := _differing(root, gid, tail)) is not None and (closest is None or len(diff) < closest[0]):
                 closest = (len(diff), compiler)
             log(f"CodeWarrior's {compiler} linker can't link this game into its bytes: trying {newer}")
@@ -790,10 +699,8 @@ write_asm: true
     if not ok and diff is None:
         raise ForkError(f"the first build failed:\n{tail[-1500:]}")
     if diff:  # decompiling works per function; the whole game doesn't rebuild into its bytes yet (link order...)
-        log(
-            f"note: {len(diff)} of the game's files don't rebuild byte for byte yet ({', '.join(diff[:5])}"
-            f"{', ...' if len(diff) > 5 else ''}). Decompiling works anyway: every function is compared with your copy's."
-        )
+        log(f"note: {len(diff)} of the game's files don't rebuild byte for byte yet ({', '.join(diff[:5])}"
+            f"{', ...' if len(diff) > 5 else ''}). Decompiling works anyway: every function is compared with your copy's.")
 
     units = _code_units(root, gid)
     sources = []
@@ -808,9 +715,8 @@ write_asm: true
         src = root / "src" / name
         src.parent.mkdir(parents=True, exist_ok=True)
         where = "" if module is None else f" of {module}"
-        src.write_text(
-            f'/* Functions from 0x{start:08X} to 0x{end:08X}{where}, found by decomp-toolkit. */\n#include "common.h"\n', encoding="utf-8"
-        )
+        src.write_text(f'/* Functions from 0x{start:08X} to 0x{end:08X}{where}, found by decomp-toolkit. */\n'
+                       f'#include "common.h"\n', encoding="utf-8")
     for module, text in splits.items():
         (config / "splits.txt" if module is None else config / "rels" / module / "splits.txt").write_text(text, encoding="utf-8")
     _write_configure(root, gid, compiler, sources, rels=bool(modules))
@@ -821,36 +727,21 @@ write_asm: true
     if ok or not diff:  # not ok got here only with something to report (the check above raised otherwise)
         rebuild = {"identical": True, "detail": "identical"}
     else:
-        rebuild = {"identical": False, "detail": f"{len(diff)} files differ: {', '.join(diff[:8])}{', ...' if len(diff) > 8 else ''}"}
+        rebuild = {"identical": False,
+                   "detail": f"{len(diff)} files differ: {', '.join(diff[:8])}{', ...' if len(diff) > 8 else ''}"}
 
-    (root / ".decomp.wtf.json").write_text(
-        json.dumps(
-            {
-                "created": "from scratch",
-                "platform": platform,
-                "version": gid,
-                "compiler": compiler,
-                "game": {
-                    "what": "your copy of the game",
-                    "path": f"orig/{gid}/" + ("sys/main.dol" if info["kind"] == "dol" else game.name),
-                    "sha1": hashlib.sha1((orig / "sys" / "main.dol").read_bytes()).hexdigest() if info["kind"] == "dol" else None,
-                },
-                # a project that doesn't rebuild identically yet builds what decompiling needs (not its checksum step)
-                "setup": [
-                    ["python", "configure.py", *tool_args()],
-                    ["ninja"] if ok else ["ninja", "all_source", f"build/{gid}/report.json"],
-                ],
-                "rebuild": rebuild,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    (root / ".decomp.wtf.json").write_text(json.dumps({
+        "created": "from scratch", "platform": platform, "version": gid, "compiler": compiler,
+        "game": {"what": "your copy of the game", "path": f"orig/{gid}/" + ("sys/main.dol" if info["kind"] == "dol" else game.name),
+                 "sha1": hashlib.sha1((orig / "sys" / "main.dol").read_bytes()).hexdigest() if info["kind"] == "dol" else None},
+        # a project that doesn't rebuild identically yet builds what decompiling needs (not its checksum step)
+        "setup": [["python", "configure.py", *tool_args()], ["ninja"] if ok else ["ninja", "all_source", f"build/{gid}/report.json"]],
+        "rebuild": rebuild,
+    }, indent=2), encoding="utf-8")
     (root / "README.example.md").unlink(missing_ok=True)
     with open(root / ".gitignore", "a", encoding="utf-8") as f:
         f.write("\n# decomp.wtf\n.decomp-wtf/\n")
-    (root / "README.md").write_text(
-        f"""# {info["title"]} ({gid}) decompilation
+    (root / "README.md").write_text(f"""# {info['title']} ({gid}) decompilation
 
 Started from scratch with [decomp.wtf](https://decomp.wtf) on [dtk-template](https://github.com/encounter/dtk-template),
 the layout GameCube and Wii decomps use. Every build rebuilds `main.dol` and checks it against your copy, byte for byte.
@@ -860,24 +751,11 @@ the layout GameCube and Wii decomps use. Every build rebuilds `main.dol` and che
 3. Decompiled code goes in `src/`; `objdiff` (objdiff.json) shows each function's progress.
 
 Compiler: CodeWarrior {compiler} (change `config.linker_version` in configure.py if the game used another).
-""",
-        encoding="utf-8",
-    )
+""", encoding="utf-8")
     if shutil.which("git"):
-        for cmd in (
-            ["git", "init", "-q", "-b", "main"],
-            ["git", "add", "-A"],
-            [
-                "git",
-                "-c",
-                "user.name=decomp.wtf",
-                "-c",
-                "user.email=noreply@decomp.wtf",
-                "commit",
-                "-q",
-                "-m",
-                f"Start the {gid} decompilation (decomp.wtf, dtk-template)",
-            ],
-        ):
+        for cmd in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
+                    ["git", "-c", "user.name=decomp.wtf", "-c", "user.email=noreply@decomp.wtf", "commit", "-q", "-m",
+                     f"Start the {gid} decompilation (decomp.wtf, dtk-template)"]):
             subprocess.run(cmd, cwd=root, capture_output=True)
-    return {"platform": platform, "id": gid, "title": info["title"], "compiler": compiler, "sources": len(sources), "rebuild": rebuild}
+    return {"platform": platform, "id": gid, "title": info["title"], "compiler": compiler, "sources": len(sources),
+            "rebuild": rebuild}
