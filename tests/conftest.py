@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pytest
 
@@ -52,12 +53,18 @@ def pytest_sessionfinish(session, exitstatus):
     if not broken:
         return
     lines = [f"DECOMP_TEST_PROFILE=full, but {len(broken)} test(s) skipped for something that is not in NOT_IN_FULL:", ""]
-    for node, why in broken[:40]:
+    for node, why in broken[:200]:
         lines.append(f"  {node}\n      {why}")
     if len(broken) > 40:
         lines.append(f"  ... and {len(broken) - 40} more")
     lines += ["", "Either install what the run promised, or add the reason to tests/conftest.py:NOT_IN_FULL so the gap is",
               "written down. A skip standing in for a broken install is the failure this check exists to catch."]
+    # the step log expires and is not always readable; the artifact is, so the evidence goes there too
+    try:
+        Path(".ci-artifacts").mkdir(exist_ok=True)
+        Path(".ci-artifacts/broken-promises.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     if reporter is not None:
         reporter.write_line("")
