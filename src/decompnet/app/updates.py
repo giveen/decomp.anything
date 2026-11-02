@@ -59,7 +59,16 @@ def running_id() -> str:
         except (OSError, subprocess.TimeoutExpired):  # no git, or it hung: fall back to what the installer recorded
             return (installed().get("commit") or "")[:12]
         if found.returncode == 0 and found.stdout.strip():
-            return found.stdout.strip()[:12]
+            ident = found.stdout.strip()[:12]
+            # a checkout with uncommitted edits is not the commit it names: two processes at the same HEAD could
+            # otherwise still look identical while running different code. Untracked files are ignored: they are not
+            # what is running.
+            try:
+                dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+                                       capture_output=True, text=True, timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                return ident
+            return f"{ident}-dirty" if dirty.returncode == 0 and dirty.stdout.strip() else ident
     return (installed().get("commit") or "")[:12]
 
 

@@ -150,3 +150,12 @@ Under `full`, a test that skips for a reason not listed in `tests/conftest.py:NO
 itself**. `NOT_IN_FULL` is the ledger of what this project does not verify (proprietary compilers, Windows-only,
 archives CI never fetches): deleting a line means the capability is now covered, and losing one turns the build red with
 the reason spelled out, instead of quietly reporting a smaller suite as a pass.
+
+### The skip count is a ratchet too
+
+`tools/ci/skip_baseline.json` records how many tests each pytest leg may skip. `tools/ci/test_summary.py` fails the leg
+when it skips **more** (coverage lost) or **fewer** (coverage gained but unrecorded — set the number so the next branch
+cannot spend it again unnoticed). The per-leg table of reasons already lands in the run's Summary tab.
+
+Two gates, one ledger: `tests/conftest.py:NOT_IN_FULL` says which absences are *allowed*, and this says how many are
+*expected*. A skip has to justify itself to both.

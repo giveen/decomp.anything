@@ -1,0 +1,8 @@
+{
+  "note": "How many tests each pytest leg is allowed to skip. More fails the leg; fewer also fails it, until this file is lowered in the same PR, so recovered coverage cannot be lost again unnoticed. Every remaining skip must also be named in tests/conftest.py:NOT_IN_FULL, or the DECOMP_TEST_PROFILE=full check fails the leg on its own.",
+  "recorded": "2026-11-02, both legs at the same count after the fixtures job landed (PR #33)",
+  "skipped": {
+    "3.12": 57,
+    "3.14": 57
+  }
+}
