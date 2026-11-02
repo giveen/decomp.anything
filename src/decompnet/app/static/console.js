@@ -813,10 +813,10 @@ function rcCalls(box, d) {
   };
   const edge = (x1, y1, x2, y2, cls) => rcEl(g, "path", { d: `M${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2} ${y2}`, class: `rc-edge ${cls}`, "marker-end": "url(#rcArrow)" });
   const top = (n) => (height - colH(n)) / 2;
-  callers.forEach((c, i) => { const y = top(callers.length) + i * (H + G); edge(20 + W, y + H / 2, cx, cy + H / 2, "in"); });
-  callees.forEach((c, i) => { const y = top(callees.length) + i * (H + G); edge(cx + W, cy + H / 2, cx + W + 150, y + H / 2, "call"); });
+  callers.forEach((_, i) => { const y = top(callers.length) + i * (H + G); edge(20 + W, y + H / 2, cx, cy + H / 2, "in"); });
+  callees.forEach((_, i) => { const y = top(callees.length) + i * (H + G); edge(cx + W, cy + H / 2, cx + W + 150, y + H / 2, "call"); });
   callers.forEach((c, i) => node(20, top(callers.length) + i * (H + G), c.name || c.address, "caller", rcNorm(c.address)));
-  callees.forEach((c, i) => {
+  callees.forEach((_, i) => {
     const ext = String(c.name || "").startsWith("<EXTERNAL>") || c.thunk;
     node(cx + W + 150, top(callees.length) + i * (H + G), String(c.name || c.address).replace("<EXTERNAL>::", "⇢ "), ext ? "ext" : "", ext ? null : rcNorm(c.address));
   });
@@ -839,7 +839,7 @@ function rcSchema(s, root, depth = 0) {
   if (!s || depth > 8) return s || {};
   if (s.$ref) {
     const name = s.$ref.split("/").pop();
-    const { $ref, ...rest } = s;
+    const { $ref: _ref, ...rest } = s;
     return { ...rcSchema((root.$defs || root.definitions || {})[name], root, depth + 1), ...rest };
   }
   for (const k of ["anyOf", "oneOf"]) if (Array.isArray(s[k])) {

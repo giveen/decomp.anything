@@ -325,7 +325,7 @@ def _settings() -> dict:
     if saved.get("command"):
         return out | {"command": list(saved["command"]), "env": dict(saved.get("env") or {}), "source": "saved"}
     if env:
-        return out | {"command": shlex.split(env), "source": "DECOMP_REA"}
+        return out | {"command": _split_command(env), "source": "DECOMP_REA"}
     found = shutil.which("rea") or shutil.which("rea-agents")
     if found:
         return out | {"command": [found, "mcp"], "source": "PATH"}
@@ -344,7 +344,7 @@ def save(command: list[str] | str, env: dict | None = None, provider: str = "ghi
     """Keep the console's REA settings (used by the agents' bridge too)."""
     if CONFIG is None:
         raise ReaError("decomp.wtf has no settings folder")
-    argv = shlex.split(command) if isinstance(command, str) else [str(a) for a in command]
+    argv = _split_command(command) if isinstance(command, str) else [str(a) for a in command]
     if provider and provider not in PROVIDERS:
         raise ReaError(f"provider must be one of {', '.join(PROVIDERS)}")
     clean = {str(k).strip(): str(v) for k, v in (env or {}).items() if str(k).strip()}
@@ -651,6 +651,34 @@ def search(binary: Path, query: str, symbols, timeout: float = 900) -> str:
         except (ReaError, OSError):
             pass
     return "\n".join(rows) or f"REA found no string or procedure matching {query!r}."
+
+
+def _split_command(text: str, windows: bool | None = None) -> list[str]:
+    """Split a command line into an argv. shlex's POSIX rules treat a backslash as an escape, which turns a Windows
+    command like `D:\\a\\rea\\python.exe C:\\rea\\mcp.js` into `D:areapython.exe`, so a Windows path would arrive at
+    Popen mangled and REA would simply never start. Quoted spans are kept, quotes removed, on both platforms."""
+    if not (_windows() if windows is None else windows):
+        return shlex.split(text)
+    out: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    for ch in text:
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                buf.append(ch)
+        elif ch in "\"'":
+            quote = ch
+        elif ch.isspace():
+            if buf:
+                out.append("".join(buf))
+                buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        out.append("".join(buf))
+    return out
 
 
 def _dict(value) -> dict:

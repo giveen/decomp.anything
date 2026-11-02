@@ -106,6 +106,9 @@ def test_a_compiler_installed_off_path_is_found(tmp_path, monkeypatch):
 def test_system_compilers_are_not_downloaded(tc_root, monkeypatch):
     """A MinGW/clang-cl/gcc the computer provides can't be fetched: say so instead of trying to download a build."""
     monkeypatch.setattr(toolchains.shutil, "which", lambda _name: None)
+    # a Windows runner may well have MinGW in a standard install folder, which is not PATH: this test is about
+    # what happens when the tool is nowhere at all
+    monkeypatch.setattr(toolchains, "_windows_dirs", list)
     downloaded = []
     monkeypatch.setattr(toolchains, "_download", lambda *args: downloaded.append(args))
     with pytest.raises(toolchains.ToolchainError, match=r"not a download: x86_64-w64-mingw32-g\+\+ is not on PATH"):
