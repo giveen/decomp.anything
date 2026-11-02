@@ -729,7 +729,8 @@ def test_an_engine_we_did_not_install_names_the_lane_it_keeps_shut(monkeypatch, 
     # the rows we add for other people's software must not pretend to own it
     for tid in rea.SYSTEM_LANES:
         assert rows[tid]["fix"].startswith("install "), tid
-    assert rows["prlimit"]["name"].startswith("prlimit")
+    # the prlimit row is Linux-only, by design: util-linux is not a Windows package
+    assert ("prlimit" in rows) == sys.platform.startswith("linux")
 
 
 def test_an_installed_engine_shows_its_lane_as_ready(monkeypatch, tmp_path):
@@ -763,12 +764,13 @@ def test_an_engine_the_operator_pointed_at_themselves_is_left_alone(monkeypatch,
 
 def test_a_tool_the_host_provides_is_still_named_to_rea(monkeypatch, tmp_path):
     """Detection without naming is the Ghidra bug again: the binary is there, REA's environment says otherwise."""
+    found = Path("/usr/bin") / "tshark"  # Path, so the expected string has this host's separators
     monkeypatch.setattr(rea.toolchains, "system_binary",
-                        lambda tc: Path("/usr/bin") / tc.binary_name if tc.id == "tshark" else None)
+                        lambda tc: found if tc.id == "tshark" else None)
     # and nothing of ours is installed on this machine for the purposes of this test, or the real Ghidra in
     # ~/.local/share/decompnet turns an assertion about tshark into one about the laptop
     monkeypatch.setattr(rea.toolchains, "installed", lambda tid, linux=None: None)
-    assert rea.provider_env() == {"REA_TSHARK_COMMAND": "/usr/bin/tshark"}
+    assert rea.provider_env() == {"REA_TSHARK_COMMAND": str(found)}
     row = next(r for r in rea.engines() if r["tool"] == "tshark")
     assert row["ready"] and row["set_by"] == "host" and row["fix"] is None
     absent = next(r for r in rea.engines() if r["tool"] == "sigrok-cli")
@@ -864,7 +866,8 @@ def test_windows_gets_the_wrapper_and_the_exe_it_can_actually_run(monkeypatch, t
     (homes["apktool"] / "bin" / "apktool").write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(rea, "_windows", lambda: False)
     posix = rea.provider_env()
-    assert posix["REA_ADB_PATH"].endswith("/adb") and posix["REA_APKTOOL_COMMAND"].endswith("/apktool")
+    assert Path(posix["REA_ADB_PATH"]).name == "adb"
+    assert Path(posix["REA_APKTOOL_COMMAND"]).name == "apktool", "the bare name, not the .bat"
 
 
 def test_prlimit_is_only_offered_where_it_exists(monkeypatch):
