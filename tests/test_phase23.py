@@ -1,6 +1,7 @@
 """Phase 2/3 features: reputation, open registration, hash-only projects, per-unit headers, function pages,
 donated compute and upstream export."""
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -161,8 +162,6 @@ def test_worker_warns_before_sending_a_token_in_the_clear():
     for risky in ("http://api.decomp.online", "http://8.8.8.8:6481"):
         assert _cleartext(risky), f"{risky} should warn"
     seen: list[str] = []
-    try:
-        worker("http://api.decomp.online", "dn_test", minutes_per_job=0.001, max_jobs=1, log=seen.append)
-    except Exception:  # noqa: BLE001,B001 the request itself fails: only the warning matters here
-        pass
+    with contextlib.suppress(OSError):  # `.invalid` never resolves: the run stops at its first request
+        worker("http://coordinator.invalid", "dn_test", minutes_per_job=0.001, max_jobs=1, log=seen.append)
     assert any("plain text" in line for line in seen), seen[:3]
