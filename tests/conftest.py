@@ -30,6 +30,8 @@ NOT_IN_FULL = (
     "needs gcc-2.7.2-psx",
     "needs the GameCube binutils",
     "needs agbcc",  # fetched by the GBA project, not by the toolchain installer
+    "needs Ghidra and Java 21+",  # a foreign install; the draft path is covered by the fake in test_forks.py
+    "needs Linux and the EE-GCC archive in the local download cache",  # the PS2 archive is never fetched by CI
 )
 
 _skipped: list[tuple[str, str]] = []
