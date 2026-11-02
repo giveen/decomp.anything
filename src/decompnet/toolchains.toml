@@ -475,6 +475,40 @@ launcher = { script = "apktool", jar = "apktool_3.0.3.jar" }
 # Tools the computer provides and we can only find out about. They are not downloads, so the honest part of the
 # card is where to get one; we still name the binary to REA once it exists, because REA only sees what it is told
 # about and a pcap reader sitting in /usr/bin is invisible to a registry entry.
+[kuna]
+name = "Kuna"
+kind = "tool"
+license = "Apache-2.0"
+source = "Noelo-Lab/kuna v1.989"
+description = "A decompiler the RE console can use as a pseudocode provider: procedure lists, lookups, pseudocode and assembly. REA expects `kuna <major>.<minor>` and reaches it through REA_KUNA_COMMAND."
+binary_name = "kuna"
+parts = [
+  { url = "https://github.com/Noelo-Lab/kuna/releases/download/v1.989/kuna-v1.989-linux-x86_64.tar.gz", sha256 = "f935d848ba4b3f515479b9dbcbf749b170e64703ae0636f28b050e7368ab517f", subdir = "kuna-v1.989-linux-x86_64", platforms = ["linux-x86_64"] },
+  { url = "https://github.com/Noelo-Lab/kuna/releases/download/v1.989/kuna-v1.989-linux-arm64.tar.gz", sha256 = "b5f12a6751a02ddd7c245c4ebfde008542041d702c7438dc30e778ae6216c47e", subdir = "kuna-v1.989-linux-arm64", platforms = ["linux-aarch64"] },
+]
+
+[unblob]
+name = "unblob"
+kind = "tool"
+license = "MIT"
+source = "onekey-sec/unblob 26.6.4 (PyPI)"
+description = "Extracts nested firmware images (squashfs, cramfs, UBI, zip and dozens more) so the console can look inside instead of at a blob. Optional, and it drives extractor programs of its own: 7z, cabextract, unar, lz4 and zstd have to exist too."
+pip = "unblob==26.6.4"
+extractors = ["7z", "cabextract", "unar", "lz4", "zstd"]
+
+# binwalk 3 is Rust and publishes no binaries, so there is nothing to pin and download: building it needs a Rust
+# toolchain, which is a decision rather than a download. We find it and name it to REA instead.
+[binwalk]
+name = "binwalk"
+kind = "tool"
+license = "MIT"
+source = "system binwalk 3.x (ReFirmLabs)"
+description = "Finds the filesystems and file types embedded in a firmware image. Detected here rather than installed: binwalk 3 is written in Rust and ships no binaries, so install it with `cargo install binwalk` or a package that provides it."
+system = true
+download = "https://github.com/ReFirmLabs/binwalk"
+cmd = ["binwalk"]
+binary_name = "binwalk"
+
 [sigrok-cli]
 name = "sigrok"
 kind = "tool"

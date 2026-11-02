@@ -692,6 +692,13 @@ def _fake_engines(monkeypatch, tmp_path):
     adb = homes["adb"] = tmp_path / "adb"  # Google's archive keeps its own top-level directory
     (adb / "platform-tools").mkdir(parents=True)
     (adb / "platform-tools" / "adb").write_text("x", encoding="utf-8")
+    kuna = homes["kuna"] = tmp_path / "kuna"  # the tarball keeps the binary at the top of its own directory
+    kuna.mkdir()
+    (kuna / "kuna").write_text("x", encoding="utf-8")
+    unblob = homes["unblob"] = tmp_path / "unblob"
+    venv = rea.toolchains.venv_bin(unblob / "venv", "unblob")
+    venv.parent.mkdir(parents=True)
+    venv.write_text("", encoding="utf-8")
     monkeypatch.setattr(rea.toolchains, "installed",
                         lambda tid, linux=None: {"id": tid} if tid in homes else None)
     monkeypatch.setattr(rea.toolchains, "path", lambda tid, linux=None: homes[tid])
@@ -710,7 +717,9 @@ def test_every_engine_we_installed_is_named_to_rea(monkeypatch, tmp_path):
         "REA_PWNTOOLS_PYTHON": str(rea.toolchains.venv_bin(homes["pwntools"] / "venv", "python")),
         "REA_MITMDUMP_COMMAND": str(rea.toolchains.venv_bin(homes["mitmproxy"] / "venv", "mitmdump")),
         "REA_APKTOOL_COMMAND": str(homes["apktool"] / "bin" / "apktool"),
-        "REA_ADB_PATH": str(homes["adb"] / "platform-tools" / "adb")}
+        "REA_ADB_PATH": str(homes["adb"] / "platform-tools" / "adb"),
+        "REA_KUNA_COMMAND": str(homes["kuna"] / "kuna"),
+        "REA_UNBLOB_COMMAND": str(rea.toolchains.venv_bin(homes["unblob"] / "venv", "unblob"))}
 
 
 def test_an_engine_we_did_not_install_names_the_lane_it_keeps_shut(monkeypatch, tmp_path):
@@ -735,7 +744,8 @@ def test_an_engine_we_did_not_install_names_the_lane_it_keeps_shut(monkeypatch, 
 
 def test_an_installed_engine_shows_its_lane_as_ready(monkeypatch, tmp_path):
     homes = _fake_engines(monkeypatch, tmp_path)
-    ours = {tid for _var, (tid, _shape) in rea.OWN_ENGINES.items()} - {"ghidra"}
+    # ghidra has its own test; unblob is installed but its extractor programs are not, which is asserted below
+    ours = {tid for _var, (tid, _shape) in rea.OWN_ENGINES.items()} - {"ghidra", "unblob"}
     rows = {row["tool"]: row for row in rea.engines() if row["tool"] in ours}
     for tid, row in rows.items():
         assert row["ready"] and row["set_by"] == "decomp.anything" and row["fix"] is None, tid
@@ -752,8 +762,9 @@ def test_an_unpack_but_wrong_layout_engine_is_not_offered(monkeypatch, tmp_path)
     env = rea.provider_env()
     assert "REA_WABT_BIN_DIRECTORY" not in env and "REA_JADX_MCP_JAR" not in env and "REA_ADB_PATH" not in env
     ours = {tid for _var, (tid, _shape) in rea.OWN_ENGINES.items()}
-    assert {row["tool"] for row in rea.engines() if row["ready"] and row["tool"] in ours} == \
-           {"pwntools", "mitmproxy", "apktool"}
+    # unblob is installed but its extractors are not, so it must not report ready
+    ready = {row["tool"] for row in rea.engines() if row["ready"] and row["tool"] in ours}
+    assert ready == {"pwntools", "mitmproxy", "apktool", "kuna"}
 
 
 def test_an_engine_the_operator_pointed_at_themselves_is_left_alone(monkeypatch, tmp_path):
