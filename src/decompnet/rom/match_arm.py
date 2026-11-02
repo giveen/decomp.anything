@@ -13,8 +13,6 @@ from dataclasses import dataclass
 from io import BytesIO
 
 from elftools.elf.elffile import ELFFile
-from elftools.elf.relocation import RelocationSection
-from elftools.elf.sections import SymbolTableSection
 
 from .. import elfobj
 from ..elfobj import FunctionObj, Reloc, _function_symbols
@@ -90,9 +88,7 @@ def link(obj: bytes, name: str, target: ArmTarget, symbols: SymbolTable, read) -
         if own.setdefault(key, original) != original:
             problem(f"{elf.get_section(key[0]).name}+0x{key[1]:X} is used for two different addresses in the original")
 
-    for rsec in elf.iter_sections():
-        if not isinstance(rsec, RelocationSection) or rsec["sh_info"] != shndx:
-            continue
+    for rsec in elfobj.relocations_targeting(elf, shndx):
         symtab = elf.get_section(rsec["sh_link"])
         for rel in rsec.iter_relocations():
             at = rel["r_offset"] - start
@@ -169,11 +165,10 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
     def relocs_in(sec_idx: int) -> list:
         if sec_idx not in data_relocs:
             out = []
-            for rsec in elf.iter_sections():
-                if isinstance(rsec, RelocationSection) and rsec["sh_info"] == sec_idx:
-                    rsym = elf.get_section(rsec["sh_link"])
-                    if not isinstance(rsym, SymbolTableSection):  # a reloc section that doesn't point at a symbol table
-                        continue
+            for rsec in elfobj.relocations_targeting(elf, sec_idx):
+                rsym = elfobj.symbol_table_for(elf, rsec)
+                if rsym is None:  # a reloc section that doesn't point at a symbol table
+                    continue
                     out += [(rel["r_offset"], rel["r_info_type"], rsym.get_symbol(rel["r_info_sym"]))
                             for rel in rsec.iter_relocations()]
             data_relocs[sec_idx] = out

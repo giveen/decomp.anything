@@ -24,8 +24,6 @@ from io import BytesIO
 from typing import Literal
 
 from elftools.elf.elffile import ELFFile
-from elftools.elf.relocation import RelocationSection
-from elftools.elf.sections import SymbolTableSection
 
 from .. import elfobj, scoring
 from ..elfobj import _MASKS, FunctionObj, Reloc, _canonical, _section_target, _symbol_at
@@ -166,11 +164,9 @@ def canonical_target(t: RomTarget, symbols: SymbolTable) -> FunctionObj:
 def _raw_relocs(elf: ELFFile, shndx: int, start: int, size: int, code: bytes) -> list[dict]:
     order = "little" if elf.little_endian else "big"
     raw = []
-    for rsec in elf.iter_sections():
-        if not isinstance(rsec, RelocationSection) or rsec["sh_info"] != shndx:
-            continue
-        symtab = elf.get_section(rsec["sh_link"])
-        if not isinstance(symtab, SymbolTableSection):  # a reloc section that doesn't point at a symbol table
+    for rsec in elfobj.relocations_targeting(elf, shndx):
+        symtab = elfobj.symbol_table_for(elf, rsec)
+        if symtab is None:  # a reloc section that doesn't point at a symbol table
             continue
         for rel in rsec.iter_relocations():
             off = rel["r_offset"]
@@ -278,13 +274,12 @@ class _Linker:
         """(offset, type, symbol) of relocations inside one of the candidate's data sections."""
         if shndx not in self._data_relocs:
             out = []
-            for rsec in self.elf.iter_sections():
-                if isinstance(rsec, RelocationSection) and rsec["sh_info"] == shndx:
-                    rsym = self.elf.get_section(rsec["sh_link"])
-                    if not isinstance(rsym, SymbolTableSection):  # a reloc section that doesn't point at a symbol table
-                        continue
-                    out += [(rel["r_offset"], rel["r_info_type"], rsym.get_symbol(rel["r_info_sym"]))
-                            for rel in rsec.iter_relocations()]
+            for rsec in elfobj.relocations_targeting(self.elf, shndx):
+                rsym = elfobj.symbol_table_for(self.elf, rsec)
+                if rsym is None:  # a reloc section that doesn't point at a symbol table
+                    continue
+                out += [(rel["r_offset"], rel["r_info_type"], rsym.get_symbol(rel["r_info_sym"]))
+                        for rel in rsec.iter_relocations()]
             self._data_relocs[shndx] = sorted(out, key=lambda x: x[0])
         return self._data_relocs[shndx]
 
