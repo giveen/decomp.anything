@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import secrets
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -119,7 +120,7 @@ class Network:
 
     # ---------------------------------------------------------------- helpers
 
-    def _project(self, slug: str | None):
+    def _project(self, slug: str | None) -> sqlite3.Row:
         if slug:
             row = self.store.one("SELECT * FROM projects WHERE slug=?", slug)
             if row is None:
@@ -130,7 +131,7 @@ class Network:
             return rows[0]
         raise NetworkError("several projects exist; pass `project` (see list_projects)")
 
-    def _function(self, name: str, project: str | None):
+    def _function(self, name: str, project: str | None) -> sqlite3.Row:
         if project is None and "/" in name and "@" not in name.split("/", 1)[0]:  # project/name (fork names hold units)
             project, name = name.split("/", 1)
         if project is None:
@@ -147,13 +148,23 @@ class Network:
             raise NetworkError(f"no function {name!r}" + (f" in {project!r}" if project else ""))
         return row
 
-    def _context(self, project_id: int, unit: str | None = ""):
+    def _context(self, project_id: int, unit: str | None = "") -> sqlite3.Row | None:
         """Latest header for a translation unit, falling back to the project-wide one. Real codebases have
-        one header set per source file; small projects just have the project-wide header ('' unit)."""
+        one header set per source file; small projects just have the project-wide header ('' unit).
+
+        None when the project has none yet (a project made but never given a header). Callers that compile or
+        export from it want `_must_context`, which says so instead of failing where the header gets read."""
         unit = unit or ""
         return self.store.one(
             "SELECT * FROM context_versions WHERE project_id=? AND unit IN (?, '') "
             "ORDER BY unit=? DESC, version DESC LIMIT 1", project_id, unit, unit)
+
+    def _must_context(self, project_id: int, unit: str | None = "") -> sqlite3.Row:
+        """`_context` for the callers that read `header` and `version` off it right away."""
+        row = self._context(project_id, unit)
+        if row is None:
+            raise NetworkError("this project has no context.h yet" + (f" for unit {unit!r}" if unit else ""))
+        return row
 
     def _unit_contexts(self, project_id: int) -> set[str]:
         return {r["unit"] for r in self.store.all(
@@ -229,14 +240,14 @@ class Network:
     def get_context(self, project: str | None, function: str | None = None) -> str:
         if function:
             fn = self._function(function, project)
-            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
-            ctx = self._context(proj["id"], fn["unit"])
+            proj = self.store.must_one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+            ctx = self._must_context(proj["id"], fn["unit"])
         else:
             proj = self._project(project)
             if self._unit_contexts(proj["id"]):
                 raise NetworkError(f"{proj['slug']} has one header per source file: pass `function` to get the "
                                    f"header that function compiles against")
-            ctx = self._context(proj["id"])
+            ctx = self._must_context(proj["id"])
         return (f"// context.h for {proj['slug']} — version {ctx['version']} "
                 f"(prepended to every compile as #include \"context.h\")\n{ctx['header']}")
 
@@ -261,8 +272,8 @@ class Network:
             self._expire_claims(db)
             held_rows = db.execute("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
                                    (agent.id,)).fetchall()
-            target_fn = self._function(function, proj["slug"] if proj else None) if function else None
-            matching_held = next((h for h in held_rows if target_fn and h["id"] == target_fn["id"]), None)
+            want = self._function(function, proj["slug"] if proj else None) if function else None
+            matching_held = next((h for h in held_rows if want and h["id"] == want["id"]), None)
             if matching_held is not None:
                 fn = matching_held
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
@@ -271,8 +282,8 @@ class Network:
                     raise NetworkError(f"you already hold {held_rows[0]['name']}; match it or release_function it first")
                 fn = held_rows[0]
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
-            elif function:
-                fn = target_fn
+            elif want is not None:  # `function` was given, and _function raises when there is no such function
+                fn = want
                 if fn["status"] == "matched":
                     raise NetworkError(f"{fn['name']} is already matched; use get_function to read its source")
                 if fn["status"] == "asm":
@@ -289,6 +300,7 @@ class Network:
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
             else:
+                proj = proj or self._project(project)  # a strategy always picks from one project
                 fn = db.execute(
                     f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                         AND f.id NOT IN (SELECT function_id FROM claims)
@@ -322,8 +334,8 @@ class Network:
         return self._brief(self._function(function, project), agent, header="VIEW")
 
     def _brief(self, fn, agent: Agent | None, header: str) -> str:
-        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
-        ctx = self._context(proj["id"], fn["unit"])
+        proj = self.store.must_one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        ctx = self._must_context(proj["id"], fn["unit"])
         claim = self.store.one("SELECT * FROM claims WHERE function_id=?", fn["id"])
         lines = [f"## {header}: {proj['slug']}/{fn['name']}",
                  f"size {fn['size']} bytes, {fn['n_insns']} instructions, arch {proj['arch']}, "
@@ -386,7 +398,7 @@ class Network:
         """Compile, score and record one attempt. Returns {"text", "score", "matched"} (score None: didn't compile)."""
         self._require_budget(agent)
         fn = self._function(function, project)
-        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        proj = self.store.must_one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         now = time.time()
 
         # Claim bookkeeping first: you can't score (or get credit) on someone else's function.
@@ -406,10 +418,10 @@ class Network:
                 else:
                     db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
 
-        ctx = self._context(proj["id"], fn["unit"])
+        ctx = self._must_context(proj["id"], fn["unit"])
         result = self._compile(proj, ctx["header"], source)
 
-        if not result.ok:
+        if result.obj is None:  # a compile that produced no object: the log says why
             self._record(fn, agent, None, source, ctx["version"])
             return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}", "score": None, "matched": False}
 
@@ -446,7 +458,7 @@ class Network:
                             f"Credited to {agent.name}; your claim is released. Call claim_function for the next one.",
                     "score": 0, "matched": True}
         else:
-            best = self.store.one("SELECT best_score FROM functions WHERE id=?", fn["id"])["best_score"]
+            best = self.store.must_one("SELECT best_score FROM functions WHERE id=?", fn["id"])["best_score"]
             delta_str = ""
             if prev_attempt and prev_attempt["score"] is not None and d.score is not None:
                 diff_pts = prev_attempt["score"] - d.score
@@ -546,7 +558,7 @@ class Network:
         self._require_level(agent, "Editing the shared header")
         if function:
             fn = self._function(function, project)
-            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+            proj = self.store.must_one("SELECT * FROM projects WHERE id=?", fn["project_id"])
             unit = self._effective_unit(fn, self._unit_contexts(proj["id"]))
         else:
             proj = self._project(project)
@@ -557,7 +569,7 @@ class Network:
         if not message.strip():
             raise NetworkError("give a short commit message explaining the change")
         for _ in range(3):
-            ctx = self._context(proj["id"], unit)
+            ctx = self._must_context(proj["id"], unit)
             header = ctx["header"]
             if old:
                 from .textedit import replace_once
@@ -593,7 +605,7 @@ class Network:
         word = re.compile(rf"\b{re.escape(old)}\b")
         for _ in range(3):
             units = self._unit_contexts(proj["id"])
-            current = {u: self._context(proj["id"], u) for u in ({""} | units)}
+            current = {u: self._must_context(proj["id"], u) for u in ({""} | units)}
             changed = {u: word.sub(new, c["header"]) for u, c in current.items() if word.search(c["header"])}
             if not changed:
                 raise NetworkError(f"`{old}` does not occur in any header")
@@ -647,9 +659,9 @@ class Network:
             "SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
 
         def check(fn) -> tuple[str, str] | None:
-            res = self._compile(proj, header_for(fn) if header_for else header,
-                                (sources or {}).get(fn["id"], fn["matched_source"]))
-            if not res.ok:
+            res = self._compile(proj, (header_for(fn) if header_for else header) or "",
+                                (sources or {}).get(fn["id"], fn["matched_source"]) or "")
+            if res.obj is None:  # no object: it stopped compiling
                 return fn["name"], "no longer compiles: " + res.log.strip().splitlines()[0][:200] if res.log.strip() else "compile failed"
             cand, verdict, _ = self._evaluate(fn, proj, res.obj, symbols=symbols)
             if verdict is None and cand is not None:
@@ -696,7 +708,7 @@ class Network:
             self._expire_claims(db)
         projects = []
         for p in self.store.all("SELECT * FROM projects ORDER BY slug"):
-            agg = self.store.one(
+            agg = self.store.must_one(
                 "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
                 "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts "
                 "FROM functions WHERE project_id=?", p["id"])
@@ -817,10 +829,11 @@ class Network:
         """Write matched sources + the current context as a tree you can PR upstream."""
         proj = self._project(project)
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "context.h").write_text(self._context(proj["id"])["header"], encoding="utf-8")
+        (out_dir / "context.h").write_text(self._must_context(proj["id"])["header"], encoding="utf-8")
         for unit in sorted(self._unit_contexts(proj["id"])):
             (out_dir / "contexts").mkdir(exist_ok=True)
-            (out_dir / "contexts" / f"{unit}.h").write_text(self._context(proj["id"], unit)["header"], encoding="utf-8")
+            (out_dir / "contexts" / f"{unit}.h").write_text(self._must_context(proj["id"], unit)["header"],
+                                                             encoding="utf-8")
         rows = self.store.all(
             "SELECT f.name, f.matched_source, a.name AS agent, a.owner FROM functions f "
             "LEFT JOIN agents a ON a.id=f.matched_agent_id WHERE f.project_id=? AND f.status='matched' "

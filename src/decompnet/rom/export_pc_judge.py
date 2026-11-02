@@ -42,7 +42,7 @@ def check(name: str) -> bool:
     header = header_path.read_text(encoding="utf-8") if header_path.exists() else ""
     body = source[m.end():] if m else source
     res = compile_source(compiler_config(ROOT, {"compiler": B["compiler"]}), header, body, trusted=True)
-    if not res.ok:
+    if res.obj is None:  # it didn't compile: the log says why
         print(f"❌ {name}: doesn't compile\n{res.log[-1200:]}")
         return False
     candidate = coffobj.extract_function(res.obj, name) if coffobj.is_coff(res.obj) else elfobj.extract_function(res.obj, name)

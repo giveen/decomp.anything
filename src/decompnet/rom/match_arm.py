@@ -14,6 +14,7 @@ from io import BytesIO
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
+from elftools.elf.sections import SymbolTableSection
 
 from ..elfobj import FunctionObj, Reloc, _function_symbols
 from .match import LinkResult, significant
@@ -170,6 +171,8 @@ def _verify_own(elf: ELFFile, symtab, name: str, fn_shndx: int, fn_start: int, t
             for rsec in elf.iter_sections():
                 if isinstance(rsec, RelocationSection) and rsec["sh_info"] == sec_idx:
                     rsym = elf.get_section(rsec["sh_link"])
+                    if not isinstance(rsym, SymbolTableSection):  # a reloc section that doesn't point at a symbol table
+                        continue
                     out += [(rel["r_offset"], rel["r_info_type"], rsym.get_symbol(rel["r_info_sym"]))
                             for rel in rsec.iter_relocations()]
             data_relocs[sec_idx] = out

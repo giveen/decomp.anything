@@ -55,7 +55,7 @@ def procedures(value: Any, segments: list[dict] | None = None) -> list[dict]:
         if isinstance(row, dict):
             address = number(row.get("address"))
             name = row.get("value") or row.get("name") or row.get("label")
-            proc = row.get("procedure") if isinstance(row.get("procedure"), dict) else {}
+            proc = proc_or_none if isinstance(proc_or_none := row.get("procedure"), dict) else {}  # only when REA identified one
             if proc.get("external") or row.get("external"):
                 continue
         else:
@@ -124,7 +124,7 @@ def dossier(value: Any) -> str:
     """A readable function dossier from analyze_function: signature, pseudocode, assembly, calls, strings."""
     if not isinstance(value, dict):
         return pretty(value)
-    proc = value.get("procedure") if isinstance(value.get("procedure"), dict) else {}
+    proc = proc_or_none if isinstance(proc_or_none := value.get("procedure"), dict) else {}  # only when REA identified one
     out: list[str] = []
     sig = proc.get("signature") or proc.get("name")
     if sig:
@@ -169,7 +169,7 @@ def batch_view(value: Any, limit: int = 4, max_code: int = 6000) -> dict:
     for item in items[:limit]:
         if not isinstance(item, dict):
             continue
-        proc = item.get("procedure") if isinstance(item.get("procedure"), dict) else {}
+        proc = proc_or_none if isinstance(proc_or_none := item.get("procedure"), dict) else {}  # only when REA identified one
         address = str(proc.get("address") or item.get("address") or "")
         name = str(proc.get("name") or "")
         label = name or address or "function"
@@ -638,7 +638,7 @@ def feature_node(node: dict) -> dict | None:
     """One application graph node as the app stores it: a readable name, its path and what it is."""
     if not isinstance(node, dict) or not node.get("node_id"):
         return None
-    identity = node.get("identity") if isinstance(node.get("identity"), dict) else {}
+    identity = ident_or_none if isinstance(ident_or_none := node.get("identity"), dict) else {}  # one without an identity has a label
     observations = [o for o in node.get("observations") or [] if isinstance(o, dict)]
     label = next((str(o.get("label")) for o in observations if o.get("label")), "")
     path = _DIGEST_PREFIX.sub("", str(identity.get("path") or identity.get("original_source") or ""))
@@ -667,7 +667,7 @@ def feature_graph(trace: dict, max_nodes: int = MAX_FEATURE_NODES,
                   max_edges: int = MAX_FEATURE_EDGES) -> dict:
     """The reachable subgraph of one trace, bounded: nodes with names, and the edges between them."""
     trace = trace if isinstance(trace, dict) else {}
-    graph = trace.get("graph") if isinstance(trace.get("graph"), dict) else {}
+    graph = graph_or_none if isinstance(graph_or_none := trace.get("graph"), dict) else {}  # no subgraph, no nodes to draw
     nodes: list[dict] = []
     seen: set[str] = set()
     truncated = False

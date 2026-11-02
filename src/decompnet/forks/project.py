@@ -108,6 +108,13 @@ class ForkProject:
         p = self.root / ".decomp.wtf.json"
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
+    def _must_manifest(self) -> dict:
+        """`manifest` for the branches `kind()` only answers "manifest" to."""
+        m = self.manifest
+        if m is None:
+            raise ForkError("this project has no .decomp.wtf.json")
+        return m
+
     def kind(self) -> str:
         if self.manifest:
             return "manifest"
@@ -154,6 +161,13 @@ class ForkProject:
                 return p
         return None
 
+    def _must_splat_yaml(self) -> Path:
+        """`_splat_yaml` for the branches `kind()` only answers "splat" to."""
+        y = self._splat_yaml()
+        if y is None:
+            raise ForkError("this project has no splat config yaml")
+        return y
+
     def _inside(self, rel: str) -> str | None:
         """`rel` as a clean path inside the project, or None if it points outside or is a template."""
         if not rel or "__" in rel or "$" in rel or "{" in rel:
@@ -171,7 +185,7 @@ class ForkProject:
                   "help": "This project has its own setup. Follow its README in a terminal, in the project folder; "
                           "once its build has produced objdiff.json, click Check again."}
         if kind == "manifest":
-            g = self.manifest.get("game", {})
+            g = self._must_manifest().get("game", {})
             path = self._inside(g.get("path", ""))
             return {"what": g.get("what", "your copy of the game"), "path": path, "sha1": g.get("sha1"),
                     "help": g.get("help", ""), "auto": path is not None}
@@ -187,12 +201,13 @@ class ForkProject:
                         "sha1": None, "auto": True, "help": "The build checks the game against the project's hashes."}
             return manual
         if kind == "splat":
-            y = self._splat_yaml().read_text(errors="replace", encoding="utf-8")
+            splat = self._must_splat_yaml()
+            y = splat.read_text(errors="replace", encoding="utf-8")
             target = re.search(r"^\s*target_path:\s*['\"]?([^'\"\n#]+)", y, re.MULTILINE)
             base = re.search(r"^\s*base_path:\s*['\"]?([^'\"\n#]+)", y, re.MULTILINE)
             sha1 = re.search(r"^sha1:\s*['\"]?([0-9a-fA-F]{40})", y, re.MULTILINE)
             path = target.group(1).strip() if target else ""
-            yaml_dir = os.path.relpath(self._splat_yaml().parent, self.root)
+            yaml_dir = os.path.relpath(splat.parent, self.root)
             if path and base:
                 path = str(Path(yaml_dir) / base.group(1).strip() / path)
             path = self._inside(path) if path else None
@@ -252,7 +267,7 @@ class ForkProject:
     def setup_commands(self, version: str | None = None) -> list[list[str]]:
         kind = self.kind()
         if kind == "manifest":
-            m = self.manifest
+            m = self._must_manifest()
             cmds = m.get("setup", [])
             if m.get("created") == "from scratch" and cmds:  # point at this computer's tools, not the creator's
                 from . import scratch_dsd, scratch_dtk
@@ -294,7 +309,7 @@ class ForkProject:
             return False, f"{cmd[0]} isn't installed"
         out, seen, quiet = [], collections.Counter(), 0
         try:
-            for line in proc.stdout:
+            for line in proc.stdout or ():  # it's a pipe we asked for; None only means we never asked
                 line = line.rstrip()
                 out.append(line)
                 if failed is not None and (m := _FAILED.match(line)):
@@ -379,6 +394,7 @@ class ForkProject:
         with _CONFIG_LOCK:
             hit = _CONFIG_CACHE.get(str(p))
             if hit is None or hit[0] != key:
+                cfg = None
                 for wait in range(40):  # configure.py rewrites it when a file is linked: read it whole
                     try:
                         cfg = json.loads(p.read_text(encoding="utf-8"))
@@ -389,6 +405,8 @@ class ForkProject:
                                 return hit  # the last whole one: units rarely change between two writes
                             raise ForkError("objdiff.json can't be read (it's being rewritten): try again") from None
                         time.sleep(0.15)
+                if cfg is None:  # the loop above parses, waits or gives up: nothing else comes here
+                    raise ForkError("objdiff.json can't be read: try again")
                 st = p.stat()
                 key = (st.st_mtime_ns, st.st_size)
                 by_name: dict[str, Unit] = {}

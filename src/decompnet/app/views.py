@@ -287,7 +287,7 @@ class ViewsMixin:
             "traced": agg["traced"] or 0, "hits": agg["hits"] or 0,
             "data": self.store.one("SELECT COUNT(*) AS n FROM symbols WHERE project_id=? AND kind!='func'",
                                     proj["id"])["n"],
-            "context_version": self._context(proj["id"])["version"],
+            "context_version": self._must_context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
             "reconstruction": {"folder": "recovered", "files": agg["reconstructed"] or 0,
@@ -503,7 +503,7 @@ class ViewsMixin:
         kind, source = next(((k, v) for k, v in picks if v), (None, None))
         if source is None:
             return {"kind": None, "rows": None}
-        ctx = self._context(proj["id"], fn["unit"])
+        ctx = self._must_context(proj["id"], fn["unit"])
         key = (fn["id"], hashlib.sha1(source.encode()).hexdigest(), ctx["version"], proj["config"])
         with self._diffs_lock:
             if key in self._diffs:
@@ -678,7 +678,7 @@ class ViewsMixin:
         sample = rows[::step]
         kept, broke, failed = [], [], []
         for fn in sample:
-            ctx = self._context(proj["id"], fn["unit"])
+            ctx = self._must_context(proj["id"], fn["unit"])
             result = self._compile(fake, ctx["header"], fn["matched_source"])
             if not result.ok:
                 failed.append(fn["name"])

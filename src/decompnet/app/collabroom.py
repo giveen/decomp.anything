@@ -243,7 +243,7 @@ class Room:
             if changed_symbols:
                 out["symbols"] = [dict(r) for r in changed_symbols]
         out["l"] = cutoff
-        ctx = net._context(pid)
+        ctx = net._must_context(pid)
         if ctx["version"] != ctx_version:
             out["context"] = {"version": ctx["version"], "header": ctx["header"]}
         if first or kinds & {"note"}:

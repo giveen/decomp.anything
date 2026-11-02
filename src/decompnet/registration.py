@@ -50,7 +50,7 @@ class Registrar:
         salt = secrets.token_hex(16)
         with self.net.store.tx() as db:
             db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('ip_salt', ?)", (salt,))
-        return self.net.store.one("SELECT value FROM settings WHERE key='ip_salt'")["value"]
+        return self.net.store.must_one("SELECT value FROM settings WHERE key='ip_salt'")["value"]
 
     def _siteverify(self, token: str, ip: str | None) -> dict:
         body = {"secret": self.secret, "response": token}

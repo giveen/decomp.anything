@@ -372,16 +372,22 @@ def _unique_in(path: Path) -> list[str]:
     if not m:
         return []
     lines = m.group(1).rstrip("\n").split("\n")
-    names = [(_SECTION_LINE.match(line) or [None, None])[1] for line in lines]
+    # one pass over the section lines: each one's place, its name, and what dtk wrote after it (a line it can't
+    # read has no name, so it never takes part in a rename)
+    secs = [(i, name, rest) for i, line in enumerate(lines)
+            if (hit := _SECTION_LINE.match(line)) and (name := hit[1]) and (rest := hit[2])]
+    names: list[str | None] = [None] * len(lines)
+    for i, name, _ in secs:
+        names[i] = name
     renamed = []
-    for i, name in enumerate(names):
-        if name and names.count(name) > 1 and name in names[i + 1:]:
+    for i, name, rest in secs:
+        if names.count(name) > 1 and name in names[i + 1:]:
             new, k = f"{name}{i}", i  # letters and digits only: dtk reads no other section names in symbols.txt
             while new in names:
                 k += 1
                 new = f"{name}{k}"
             names[i] = new
-            lines[i] = f"\t{new:<11} {_SECTION_LINE.match(lines[i]).group(2).strip()}"  # dtk's own layout
+            lines[i] = f"\t{new:<11} {rest.strip()}"  # dtk's own layout
             renamed.append(new)
     if renamed:
         path.write_text("Sections:\n" + "\n".join(lines) + "\n", encoding="utf-8")
@@ -438,22 +444,30 @@ def _overlap_hint(root: Path, game_id: str, log_tail: str) -> str | None:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     line_re = r"^(\S+) = \.text:0x([0-9A-Fa-f]{8});(.*?)size:0x([0-9A-Fa-f]+)(.*)$"
     lines = text.splitlines()
-    at = next((i for i, ln in enumerate(lines) if (mm := re.match(line_re, ln)) and int(mm.group(2), 16) == start), None)
-    before = next((i for i, ln in enumerate(lines) if (mm := re.match(line_re, ln))
-                   and int(mm.group(2), 16) + int(mm.group(4), 16) == start and "type:function" in ln), None)
+    # the line that starts at A, and the function that ends there: the first of each, kept with its match
+    at: tuple[int, re.Match[str]] | None = None
+    before: tuple[int, re.Match[str]] | None = None
+    for i, ln in enumerate(lines):
+        mm = re.match(line_re, ln)
+        if not mm:
+            continue
+        if at is None and int(mm.group(2), 16) == start:
+            at = (i, mm)
+        if before is None and int(mm.group(2), 16) + int(mm.group(4), 16) == start and "type:function" in ln:
+            before = (i, mm)
     if before is not None:  # one function: the one before takes A's code
-        mm = re.match(line_re, lines[before])
-        lines[before] = f"{mm.group(1)} = .text:0x{mm.group(2)};{mm.group(3)}size:0x{end - int(mm.group(2), 16):X}{mm.group(5)}"
+        at_before, mm = before  # the match that found it, not a second look at the line
+        lines[at_before] = f"{mm.group(1)} = .text:0x{mm.group(2)};{mm.group(3)}size:0x{end - int(mm.group(2), 16):X}{mm.group(5)}"
         if at is not None:
-            del lines[at]
+            del lines[at[0]]
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return f"0x{int(mm.group(2), 16):08X}"
     size = f"size:0x{inner - start:X}"
     if at is not None:
-        if f" {size}" in lines[at]:
+        at_here, mm = at
+        if f" {size}" in lines[at_here]:
             return None  # already said: dtk didn't take it
-        mm = re.match(line_re, lines[at])
-        lines[at] = f"{mm.group(1)} = .text:0x{mm.group(2)};{mm.group(3)}{size}{mm.group(5)}"
+        lines[at_here] = f"{mm.group(1)} = .text:0x{mm.group(2)};{mm.group(3)}{size}{mm.group(5)}"
     else:
         lines.append(f"fn_{start:08X} = .text:0x{start:08X}; // type:function {size}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -561,7 +575,10 @@ def _drop_module(root: Path, game_id: str, log_tail: str) -> list[str] | None:
         ob = re.search(r"^object_base:\s*(\S+)", text, re.MULTILINE)
         base = root / ob.group(1) if ob else root
         for name, block in blocks.items():
-            obj = re.match(r"- object: (\S+)", block.group(0)).group(1)
+            obj = re.match(r"- object: (\S+)", block.group(0))  # every block was found by this same line
+            if obj is None:
+                continue
+            obj = obj.group(1)
             try:
                 data = (base / obj).read_bytes() if ":" not in obj else b""
             except OSError:
@@ -707,8 +724,11 @@ write_asm: true
     ok, tail = _build(fp, log)
     if not ok and (_differing(root, gid, tail) is None or not diff):
         raise ForkError(f"the project didn't rebuild the game identically after adding source files:\n{tail[-1500:]}")
-    rebuild = {"identical": True, "detail": "identical"} if ok else {
-        "identical": False, "detail": f"{len(diff)} files differ: {', '.join(diff[:8])}{', ...' if len(diff) > 8 else ''}"}
+    if ok or not diff:  # not ok got here only with something to report (the check above raised otherwise)
+        rebuild = {"identical": True, "detail": "identical"}
+    else:
+        rebuild = {"identical": False,
+                   "detail": f"{len(diff)} files differ: {', '.join(diff[:8])}{', ...' if len(diff) > 8 else ''}"}
 
     (root / ".decomp.wtf.json").write_text(json.dumps({
         "created": "from scratch", "platform": platform, "version": gid, "compiler": compiler,

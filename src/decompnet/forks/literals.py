@@ -117,6 +117,8 @@ def mismatches(target: Path, base: Path, symbol: str, insns: list[tuple[int, str
         if not ra or not rb or ra[1] is None or rb[1] is None:
             continue
         (label, da, oa), (_, db, ob) = ra, rb
+        if da is None or db is None or oa is None or ob is None:  # one side has no datum behind this reference
+            continue
         width = _WIDTH.get(mnemonic)
         if width:
             theirs, yours = da[oa:oa + width], db[ob:ob + width]

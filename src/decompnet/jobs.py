@@ -45,7 +45,7 @@ def next_job(net: Network, agent: Agent) -> dict | None:
     return {
         "project": fn["slug"], "function": fn["name"], "unit": fn["unit"] or None,
         "toolchain": cfg["toolchain"], "flags": cfg.get("flags"), "cmd": cfg.get("cmd"),
-        "context": net._context(fn["project_id"], fn["unit"])["header"],
+        "context": net._must_context(fn["project_id"], fn["unit"])["header"],
         "include_files": includes,
         "source": fn["best_source"], "best_score": fn["best_score"], "max_score": fn["n_insns"] * 100,
         "target": {"arch": fn["arch"], "big_endian": bool(fn["big_endian"]),
@@ -63,11 +63,11 @@ def submit(net: Network, agent: Agent, project: str, function: str, source: str)
     claim = net.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
     if claim and claim["agent_id"] != agent.id:
         return {"accepted": False, "reason": "an agent is working on it right now"}
-    proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
-    ctx = net._context(proj["id"], fn["unit"])
+    proj = net.store.must_one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+    ctx = net._must_context(proj["id"], fn["unit"])
     res = net._compile(proj, ctx["header"], source)
     cand = None
-    if res.ok:
+    if res.obj is not None:  # it compiled: this is what the coordinator's own compiler made
         try:
             cand = coffobj.extract_function(res.obj, fn["name"]) if coffobj.is_coff(res.obj) else \
                 elfobj.extract_function(res.obj, fn["name"])

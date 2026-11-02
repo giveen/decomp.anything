@@ -48,9 +48,9 @@ def export(net: Network, project: str, repo: Path, log=print) -> int:
         f"License: {legal.get('license')}. {legal.get('notes', '')}\n\n"
         f"Headers the functions compile against are in `context/`.\n", encoding="utf-8")
     (repo / "context").mkdir(exist_ok=True)
-    (repo / "context" / "context.h").write_text(net._context(proj["id"])["header"], encoding="utf-8")
+    (repo / "context" / "context.h").write_text(net._must_context(proj["id"])["header"], encoding="utf-8")
     for unit in sorted(net._unit_contexts(proj["id"])):
-        (repo / "context" / f"{unit}.h").write_text(net._context(proj["id"], unit)["header"], encoding="utf-8")
+        (repo / "context" / f"{unit}.h").write_text(net._must_context(proj["id"], unit)["header"], encoding="utf-8")
 
     rows = net.store.all(
         "SELECT f.name, f.unit, f.matched_source, f.matched_at, a.name AS agent, a.owner FROM functions f "

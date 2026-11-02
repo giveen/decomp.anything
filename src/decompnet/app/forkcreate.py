@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import time
 from collections import defaultdict
+from collections.abc import Collection
 from pathlib import Path
 
 from ..forks import catalog, scratch_dsd, scratch_dtk
@@ -54,7 +55,8 @@ class ForkCreateMixin:
             raise NetworkError("give a GitHub/GitLab/Codeberg repository URL (https://github.com/owner/repo)")
         if not shutil.which("git"):
             raise NetworkError("forking needs git: install it from https://git-scm.com")
-        url = REPO.match(repo).group(1) if REPO.match(repo) else str(local.resolve())
+        hit = REPO.match(repo)
+        url = hit.group(1) if hit else str(local.resolve())  # a remote's own address, or this folder as git sees it
         for p in self.net.store.all("SELECT slug, config FROM projects"):
             if json.loads(p["config"]).get("repo_url") == url:
                 log(f"already forked as {p['slug']}")
@@ -132,20 +134,22 @@ class ForkCreateMixin:
         """Add the user's game (bytes, or a file on disk) and run the project's setup, then measure it."""
         proj, fp, cfg = self.get(slug)
         if game is not None:
-            if isinstance(game, (bytes, bytearray)):
+            if isinstance(game, (bytes, bytearray)):  # the browser's upload: give it a path like the disk's has
                 tmp = fp.root / STATE / "upload.tmp"
                 tmp.write_bytes(game)
-                game, move = tmp, True
-            self._match_version(proj, fp, cfg, Path(game), log)
+                src, move = tmp, True
+            else:
+                src, move = game, False
+            self._match_version(proj, fp, cfg, src, log)
             if not cfg.get("program_sha1"):  # which game it is: members of a room on it need the same one
                 from .forkroom import game_identity
 
                 try:
-                    cfg["game_sha1"] = game_identity(Path(game))
+                    cfg["game_sha1"] = game_identity(src)
                     self._save_cfg(proj, cfg)
                 except (OSError, ForkError):
                     pass
-            dest = fp.place_game(Path(game), filename or Path(game).name, cfg.get("version"), move=move)
+            dest = fp.place_game(src, filename or src.name, cfg.get("version"), move=move)
             log(f"your copy of the game is at {dest.relative_to(fp.root)}")
         if not fp.needs(cfg.get("version"))["auto"]:
             raise NetworkError("this project has its own setup: follow its README, then click Check again")
@@ -202,19 +206,23 @@ class ForkCreateMixin:
             self.link_soon(slug)  # files that are finished but not linked yet (in the project as it came, too)
         return measures
 
-    def sync(self, slug: str, log=print, rep: dict | None = None, broken: set[str] = frozenset(),
+    def _measure(self, proj, fp: ForkProject, log) -> dict:
+        """objdiff's report for a project, read while the tree is locked so a build can't leave it half-written."""
+        log("measuring progress with objdiff")
+        try:
+            with self._tree(proj).exclusive():  # never read an object while a build writes it
+                return fp.report()
+        except (ObjdiffError, ForkError) as e:
+            raise NetworkError(f"objdiff couldn't measure the project: {e}") from None
+        raise NetworkError("objdiff gave no report")  # only reached if the lock's holder swallows the read
+
+    def sync(self, slug: str, log=print, rep: dict | None = None, broken: Collection[str] = frozenset(),
              agent: Agent | None = None) -> dict:
         """Measure the whole project with objdiff (or take a report just made) and update every function's state.
         Functions in `broken` units (sources that don't build) don't count as matched. Functions that match now and
         didn't before are recorded as matches (credited to `agent`, whose change it was)."""
         proj, fp, cfg = self.get(slug)
-        if rep is None:
-            log("measuring progress with objdiff")
-            try:
-                with self._tree(proj).exclusive():  # never read an object while a build writes it
-                    rep = fp.report()
-            except (ObjdiffError, ForkError) as e:
-                raise NetworkError(f"objdiff couldn't measure the project: {e}") from None
+        rep = rep if rep is not None else self._measure(proj, fp, log)  # the caller's report, or a fresh one
         units = {u.name: u for u in fp.units()}
         rows = [(u["name"], f) for u in rep.get("units", []) for f in u.get("functions", [])]
         counts: dict[str, int] = defaultdict(int)

@@ -114,6 +114,8 @@ class CompilerConfig:
 
 @dataclass
 class CompileResult:
+    """ok: the compiler produced an object (`obj`). A compile that didn't has None there and `log` says why."""
+
     ok: bool
     obj: bytes | None
     log: str

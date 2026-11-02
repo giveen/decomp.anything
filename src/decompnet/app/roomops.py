@@ -221,7 +221,7 @@ class RoomOpsMixin:
         fn = self._function(name, slug)
         if fn["status"] != "open" or score <= 0 or (fn["best_score"] is not None and score >= fn["best_score"]):
             return
-        self._record(fn, agent, score, source, self._context(fn["project_id"], fn["unit"])["version"], via="room")
+        self._record(fn, agent, score, source, self._must_context(fn["project_id"], fn["unit"])["version"], via="room")
 
     def release(self, agent: Agent, function: str, notes: str, project: str | None = None) -> str:
         if (fork := self.fork_slug(project)):
@@ -328,7 +328,7 @@ class RoomOpsMixin:
 
     def apply_remote_context(self, slug: str, header: str, host_version: int) -> None:
         proj = self._project(slug)
-        if self._context(proj["id"])["header"] == header:
+        if self._must_context(proj["id"])["header"] == header:
             return
         with self.store.tx() as db:
             version = self._next_version(db, proj["id"])

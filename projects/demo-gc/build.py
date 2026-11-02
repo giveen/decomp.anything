@@ -55,11 +55,15 @@ def main() -> None:
     # linked by CodeWarrior's own linker, like GameCube games (it also writes the start-up tables). Keep every function,
     # even ones nothing calls, so the demo has all of Demo Quest to decompile (FORCEACTIVE, CodeWarrior's way).
     from elftools.elf.elffile import ELFFile
+    from elftools.elf.sections import SymbolTableSection
 
     keep = set()
     for obj in objs:
         with open(BUILD / obj, "rb") as f:
-            for sym in ELFFile(f).get_section_by_name(".symtab").iter_symbols():
+            symtab = ELFFile(f).get_section_by_name(".symtab")
+            if not isinstance(symtab, SymbolTableSection):  # an object without a symbol table names nothing to force
+                continue
+            for sym in symtab.iter_symbols():
                 if sym["st_info"]["type"] == "STT_FUNC" and sym["st_info"]["bind"] == "STB_GLOBAL" and sym["st_shndx"] != "SHN_UNDEF":
                     keep.add(sym.name)
     lcf = (HERE / "demo.lcf").read_text().replace("FORCEACTIVE\n{\n}", "FORCEACTIVE\n{\n" + "".join(f"    {n}\n" for n in sorted(keep)) + "}")

@@ -17,6 +17,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 WIN = sys.platform == "win32"
 
@@ -84,7 +85,7 @@ def agy_settings() -> Path:
 def endpoint_entry(e: dict) -> dict:
     """A saved API endpoint, with what's left out filled in from its provider (a name: the provider's, or for a
     custom server the address's host, so sessions say which machine they run on)."""
-    provider = e.get("provider") if e.get("provider") in API_PRESETS else "custom"
+    provider = named if isinstance(named := e.get("provider"), str) and named in API_PRESETS else "custom"
     preset = API_PRESETS[provider]
     base = (e.get("base_url") or preset["base_url"]).strip()
     host = re.sub(r"^\w+://", "", base).split("/", 1)[0]
@@ -125,7 +126,7 @@ def is_local(base: str, resolve: bool = True) -> bool:
     if not resolve or re.fullmatch(r"[\d.]+|[0-9a-fA-F:]+", host):
         return False
     try:
-        addrs = {i[4][0] for i in socket.getaddrinfo(host, None)}
+        addrs = {str(i[4][0]) for i in socket.getaddrinfo(host, None)}  # getaddrinfo types an address as str | int
     except (OSError, UnicodeError):
         return False
     return bool(addrs) and all(private(a) for a in addrs)
@@ -300,7 +301,7 @@ def major(said: str | None) -> int:
 def detect() -> list[dict]:
     out = []
     for k in KINDS.values():
-        row = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": signin(k), "docs": k.docs,
+        row: dict[str, Any] = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": signin(k), "docs": k.docs,
                "install": k.install.get("windows" if WIN else "unix", "")}
         if not k.command:
             row.update(installed=True, version=None, path=None)

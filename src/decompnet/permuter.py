@@ -70,22 +70,21 @@ def _shuffle_declarations(lines, rng):
 
 def _retype_local(lines, rng):
     lo, hi = _body_bounds(lines)
-    cands = [i for i in range(lo, hi) if (m := _DECL.match(lines[i])) and m.group(3) in TYPES_32 and not m.group(4).strip()]
+    cands = [(i, m) for i in range(lo, hi)
+             if (m := _DECL.match(lines[i])) and m.group(3) in TYPES_32 and not m.group(4).strip()]
     if not cands:
         return None
-    i = rng.choice(cands)
-    m = _DECL.match(lines[i])
+    i, m = rng.choice(cands)  # the match that made it a candidate, not a second look at the line
     lines[i] = f"{m.group(1)}{m.group(2) or ''}{rng.choice([t for t in TYPES_32 if t != m.group(3)])}{m.group(4)}{m.group(5)}{m.group(6)}"
     return lines
 
 
 def _toggle_register(lines, rng):
     lo, hi = _body_bounds(lines)
-    cands = [i for i in range(lo, hi) if _DECL.match(lines[i])]
+    cands = [(i, m) for i in range(lo, hi) if (m := _DECL.match(lines[i]))]
     if not cands:
         return None
-    i = rng.choice(cands)
-    m = _DECL.match(lines[i])
+    i, m = rng.choice(cands)
     reg = "" if m.group(2) else "register "
     lines[i] = f"{m.group(1)}{reg}{m.group(3)}{m.group(4)}{m.group(5)}{m.group(6)}"
     return lines
@@ -167,11 +166,11 @@ _WHILE_LOOP = re.compile(r"^(\s*)while\s*\(([^)]+)\)\s*\{$")
 
 def _mutate_while_and_dowhile(lines, rng):
     lo, hi = _body_bounds(lines)
-    options = [i for i in range(lo, hi) if _WHILE_LOOP.match(lines[i])]
+    options = [(i, m) for i in range(lo, hi) if (m := _WHILE_LOOP.match(lines[i]))]
     if not options:
         return None
-    i = rng.choice(options)
-    ind, cond = _WHILE_LOOP.match(lines[i]).groups()
+    i, m = rng.choice(options)
+    ind, cond = m.groups()
     lines[i] = f"{ind}if ({cond}) do {{"
     # find matching brace
     depth, j = 1, i + 1
@@ -261,7 +260,7 @@ class LocalScorer:
 
     def score(self, source: str) -> int | None:
         res = compile_source(self.cc, self.context, source)
-        if not res.ok:
+        if res.obj is None:  # it didn't compile here: nothing to score
             return None
         try:
             cand = coffobj.extract_function(res.obj, self.name) if coffobj.is_coff(res.obj) else \
@@ -275,10 +274,11 @@ def search(job: dict, seconds: float, on_improvement, log=print, seed: int | Non
     rng = random.Random(seed)
     scorer = LocalScorer(job, log)
     best_src = cur_src = job["source"]
-    best = cur = scorer.score(best_src)
-    if best is None:
+    start = scorer.score(best_src)
+    if start is None:
         log("  the coordinator's best source doesn't compile here; skipping")
         return job["best_score"], best_src
+    best = cur = start
     deadline, tries = time.monotonic() + seconds, 0
     while time.monotonic() < deadline and best > 0:
         cand = mutate(cur_src if rng.random() < 0.85 else best_src, rng)

@@ -427,7 +427,7 @@ class RomEditMixin:
             trial.add(Symbol(new, addr, fnrow["size"] if fnrow else (base.size if base and base.address == addr else 0),
                              "func" if fnrow else (base.kind if base else "data")))
         units = self._unit_contexts(proj["id"])
-        current_ctx = {u: self._context(proj["id"], u) for u in ({""} | units)}
+        current_ctx = {u: self._must_context(proj["id"], u) for u in ({""} | units)}
         changed = {u: word.sub(new, c["header"]) for u, c in current_ctx.items() if word.search(c["header"])}
         matched = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
         rewritten = {r["id"]: word.sub(new, r["matched_source"]) for r in matched}

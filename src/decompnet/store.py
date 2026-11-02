@@ -8,6 +8,11 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+
+class StoreError(RuntimeError):
+    """A row `must_one` was sure was there isn't: a bug or a race, which is worth a stack trace over a wrong answer."""
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, owner TEXT, token_hash TEXT UNIQUE NOT NULL,
@@ -133,6 +138,14 @@ class Store:
     def one(self, sql: str, *args) -> sqlite3.Row | None:
         with self.lock:
             return self.conn.execute(sql, args).fetchone()
+
+    def must_one(self, sql: str, *args) -> sqlite3.Row:
+        """`one` for a row that has to be there (a foreign key's target, a row this call just wrote). Missing is
+        an error here, where it can be said, rather than a None that turns into a type error where it's used."""
+        row = self.one(sql, *args)
+        if row is None:
+            raise StoreError(f"no row for: {' '.join(sql.split())[:120]}")
+        return row
 
     def all(self, sql: str, *args) -> list[sqlite3.Row]:
         with self.lock:

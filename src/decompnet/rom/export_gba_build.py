@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parent
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
@@ -33,8 +34,8 @@ except ImportError:
     sys.exit("This build uses decomp.wtf's pinned tools: install decomp.wtf first (https://decomp.wtf).")
 
 
-def fail(msg: str) -> None:
-    sys.exit(f"error: {msg}")
+def fail(msg: str) -> NoReturn:
+    sys.exit(f"error: {msg}")  # NoReturn: callers that fail() really stop here
 
 
 def run(argv: list[str]) -> None:
@@ -105,6 +106,7 @@ def trim(path: Path) -> None:
     from io import BytesIO
 
     from elftools.elf.elffile import ELFFile
+    from elftools.elf.relocation import RelocationSection
 
     from decompnet.elfobj import _function_symbols
 
@@ -117,7 +119,7 @@ def trim(path: Path) -> None:
     for shndx, end in ends.items():
         sec = elf.get_section(shndx)
         relocated = any(r["r_offset"] >= end for rs in elf.iter_sections()
-                        if rs.header["sh_type"] in ("SHT_REL", "SHT_RELA") and rs["sh_info"] == shndx
+                        if isinstance(rs, RelocationSection) and rs["sh_info"] == shndx
                         for r in rs.iter_relocations())
         tail = sec.data()[end:]
         if end < sec["sh_size"] and (not tail.strip(b"\0") or tail == b"\xc0\x46" * (len(tail) // 2)) and not relocated:
@@ -161,11 +163,14 @@ def _obj_size(obj: str, sections: str = ".text") -> int:
 
 def _globals(obj: str) -> set[str]:
     from elftools.elf.elffile import ELFFile
+    from elftools.elf.sections import SymbolTableSection
 
     with open(ROOT / obj, "rb") as f:
         symtab = ELFFile(f).get_section_by_name(".symtab")
-        return {s.name for s in symtab.iter_symbols() if s["st_info"]["bind"] == "STB_GLOBAL"
-                and s["st_shndx"] != "SHN_UNDEF"} if symtab else set()
+    if not isinstance(symtab, SymbolTableSection):  # an object with no symbol table declares no globals
+        return set()
+    return {s.name for s in symtab.iter_symbols() if s["st_info"]["bind"] == "STB_GLOBAL"
+            and s["st_shndx"] != "SHN_UNDEF"}
 
 
 def layout(pieces: list[dict], c_objs: dict[str, str]) -> list[tuple[int, str, str]]:
@@ -270,7 +275,7 @@ def check(name: str) -> bool:
     m = re.match(r'\s*#include "([^"]+)"\s*\n', text)
     header = (ROOT / "include" / m.group(1)).read_text(encoding="utf-8") if m else ""
     res = compile_source(cfg, header, text[m.end():] if m else text, trusted=True)
-    if not res.ok:
+    if res.obj is None:  # it didn't compile: the log says why
         print(res.log)
         return False
     linked = match_arm.link(res.obj, name, target, table, read)

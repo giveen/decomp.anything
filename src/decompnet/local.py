@@ -7,6 +7,7 @@ which answers match / no match. Nothing copyrighted ever has to be hosted.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from . import scoring, toolchains
@@ -30,7 +31,7 @@ def fingerprint(obj: Path, function: str) -> str:
 
 
 def diff(obj: Path, function: str, source: Path, toolchain: str, context: Path | None = None,
-         flags: list[str] | None = None, include_dirs: list[Path] = ()) -> str:
+         flags: list[str] | None = None, include_dirs: Sequence[Path] = ()) -> str:
     target = extract_function(obj.read_bytes(), function)
     if target is None:
         raise SystemExit(f"{obj} has no function {function!r}")
@@ -39,7 +40,7 @@ def diff(obj: Path, function: str, source: Path, toolchain: str, context: Path |
         compiler["flags"] = flags
     cc = compiler_config(Path("."), {"compiler": compiler})  # on Windows, Linux-only toolchains go through WSL
     res = compile_source(cc, context.read_text(encoding="utf-8") if context else "", source.read_text(encoding="utf-8"))
-    if not res.ok:
+    if res.obj is None:  # it didn't compile: the log is the answer
         return f"COMPILE ERROR\n{res.log}"
     cand = extract_function(res.obj, function)
     if cand is None:
