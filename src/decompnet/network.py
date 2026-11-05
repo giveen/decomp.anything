@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import policy, scoring
+from . import policy, scoring, toolchains
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config
@@ -75,6 +75,9 @@ class Network:
         self.store = Store(db_path)
         self.claim_ttl = claim_ttl
         self._pool = ThreadPoolExecutor(max_workers=8)
+        # every attempt records what its compile actually ran, and resolving that means path lookups; the answer
+        # only changes when the project's config does, so it is remembered per (project, config)
+        self._compiler_keys: dict[tuple, str] = {}
 
     # ------------------------------------------------------------------ agents
 
@@ -201,6 +204,41 @@ class Network:
     def _agent_name(self, agent_id) -> str:
         row = self.store.one("SELECT name FROM agents WHERE id=?", agent_id) if agent_id else None
         return row["name"] if row else "?"
+
+    def _compile_command(self, proj) -> str:
+        """What a compile of this project actually runs: the resolved command, toolchain path and all.
+
+        A recorded attempt only answers a later submission of the same bytes while this still matches, because the
+        compiler and its flags are what make identical C produce a different object. `draft_tries` keys machine
+        drafts the same way. Empty when no compiler can be resolved, which also means nothing is answered from the
+        record: the attempt path below then returns its own "no compiler" error instead of a stale verdict."""
+        memo = (proj["id"], proj["config"] or "")
+        if memo not in self._compiler_keys:
+            try:
+                cfg = compiler_config(Path(proj["root"]), json.loads(memo[1]))
+                key = " ".join(cfg.cmd)
+            except (toolchains.ToolchainError, KeyError, ValueError):
+                key = ""
+            if len(self._compiler_keys) > 32:      # a room holds a handful of projects; this is a guard, not a cache
+                self._compiler_keys.clear()
+            self._compiler_keys[memo] = key
+        return self._compiler_keys[memo]
+
+    def _repeat_attempt(self, function_id: int, source: str, command: str) -> sqlite3.Row | None:
+        """The newest attempt at this function built from these exact bytes, when its verdict is still the answer:
+        it scored something, and it was built with the command the project runs now. None otherwise.
+
+        Two agents reach the same source without seeing each other's work, and the compiler is deterministic, so
+        recompiling it costs a toolchain run and teaches nobody anything. Callers must also check the row is still
+        the newest attempt: that is the diff `why_mismatch` shows, and a verdict with no diff to read beside it is
+        a dead end. An older repeat still compiles, and gets told what the earlier attempt scored."""
+        if not command:
+            return None
+        row = self.store.one("SELECT * FROM attempts WHERE function_id=? AND source_hash=? ORDER BY id DESC LIMIT 1",
+                             function_id, hashlib.sha256(source.encode()).hexdigest())
+        if row is None or row["score"] is None:
+            return None
+        return row if (row["compiler"] or "") == command else None
 
     def _compile(self, proj, header: str, source: str):
         root = Path(proj["root"])
@@ -344,6 +382,12 @@ class Network:
             who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
             lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
                          f"(each compile_and_diff renews it)")
+        if fn["status"] not in ("matched", "unmatchable") and fn["stuck_at"]:
+            compiles, agents = self._room_churn(fn["id"], fn["best_score"])
+            lines.append(f"⚠️ KNOWN HARD: {compiles} compiles by {agents} agents have not beaten its best score of "
+                         f"{fn['best_score']}. Read the notes and `why_mismatch` before editing, and `retire_function` "
+                         "if what is missing is a struct or a wrong boundary — retiring records that so the next "
+                         "agent starts from the evidence rather than from this source again.")
         if fn["status"] == "unmatchable":
             why = json.loads(fn["meta"] or "{}").get("unmatchable", "")
             lines.append(f"RETIRED as unmatchable: {why}")
@@ -419,6 +463,26 @@ class Network:
                     db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
 
         ctx = self._must_context(proj["id"], fn["unit"])
+        # The compiler is deterministic: these exact bytes under this same context and command already produced this
+        # object once, so the recorded verdict answers them. Answering costs a lookup instead of a toolchain run,
+        # and the agent gets told which attempt it was rather than being shown the same diff again.
+        command = self._compile_command(proj)
+        repeat = self._repeat_attempt(fn["id"], source, command)
+        if (repeat is not None and not scratch and repeat["context_version"] == ctx["version"]
+                and repeat["id"] == self.store.must_one("SELECT MAX(id) AS newest FROM attempts WHERE function_id=?",
+                                                        fn["id"])["newest"]):
+            self._record(fn, agent, repeat["score"], source, ctx["version"], compiled=True, compiler=command,
+                         via="cached")
+            who = self.store.must_one("SELECT name FROM agents WHERE id=?", repeat["agent_id"])["name"]
+            best = self.store.must_one("SELECT best_score FROM functions WHERE id=?", fn["id"])["best_score"]
+            text = (f"♻️ Already tried, byte for byte. Attempt #{repeat['id']} by {who} scored {repeat['score']} "
+                    f"under this same context and compiler, so nothing was recompiled.")
+            if best is not None and best < repeat["score"]:
+                text += f"\n\nBest for this function is still {best}."
+            text += ("\n\nNothing new can come from these exact bytes. Change something the compiler can see — a "
+                     "type, a cast, a struct field, a flag — or `release_function` so another agent can try a "
+                     "different approach.")
+            return {"text": text + self.stall_note(fn["id"], agent.id), "score": repeat["score"], "matched": False}
         result = self._compile(proj, ctx["header"], source)
 
         if result.obj is None:  # a compile that produced no object: the log says why
@@ -449,7 +513,7 @@ class Network:
             "SELECT score, source FROM attempts WHERE function_id=? AND agent_id=? ORDER BY id DESC LIMIT 1",
             fn["id"], agent.id,
         )
-        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now)
+        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, compiler=command)
 
         if scratch:
             head = f"(scratch — {fn['name']} was already matched) score {d.score}"
@@ -471,9 +535,16 @@ class Network:
             dup_warn = "\n⚠️ Identical source to your previous attempt. No changes were made." if (
                 prev_attempt and prev_attempt["source"] == source
             ) else ""
+            # an older repeat still compiles (its diff is not the one on record), but the room should know it
+            # doubled up: that is how a function quietly collects thirty identical attempts
+            room_warn = ""
+            if repeat is not None and not scratch and repeat["context_version"] == ctx["version"]:
+                who = self.store.must_one("SELECT name FROM agents WHERE id=?", repeat["agent_id"])["name"]
+                room_warn = (f"\n⚠️ Attempt #{repeat['id']} by {who} was already these exact bytes and scored "
+                             f"{repeat['score']}. This function is collecting repeats, not progress.")
             head = (f"score {d.score}{delta_str} ({scoring.percent_text(d.percent)} match) — best so far {best}. "
                     f"Target {len([r for r in d.rows if r[1]])} insns, yours {len([r for r in d.rows if r[2]])}."
-                    f"{dup_warn}")
+                    f"{dup_warn}{room_warn}")
 
             hints = scoring.hypotheses(d)
             if hints:
@@ -506,11 +577,14 @@ class Network:
         """A nudge once an agent's last `after` compiles of a function didn't beat its best: functions that match
         mostly do in the first few tries, and the agent's time is better spent on the next one. Big functions get
         longer (a quarter of Mario Party 6's agent matches over 64 instructions took more than 4 compiles, and
-        those functions hold most of the code left)."""
+        those functions hold most of the code left).
+
+        The same patience test then runs across the room, because this count is one agent's and resets when the
+        lease moves on: a function several agents have each taken past their patience is hard for everyone, and
+        whoever inherits it should read the notes before adding another opinion."""
         if after is None:
             row = self.store.one("SELECT n_insns FROM functions WHERE id=?", function_id)
-            n = (row["n_insns"] if row else 0) or 0
-            after = 4 if n < 64 else 6 if n < 128 else 8 if n < 256 else 10
+            after = self._patience((row["n_insns"] if row else 0) or 0)
         rows = self.store.all("SELECT score FROM attempts WHERE function_id=? AND agent_id=? ORDER BY id DESC LIMIT 16",
                               function_id, agent_id)
         best, since = None, 0
@@ -520,23 +594,42 @@ class Network:
             else:
                 since += 1
         if since < after:
-            return ""
+            return self._room_stall_note(function_id)
         return (f"\n\n⏭ No better in your last {since} compiles. release_function with notes (what you tried, what's "
                 "left) and claim the next one: functions that match mostly do in the first few tries, and this one "
                 "keeps your best attempt for whoever comes next.")
 
+    def _room_stall_note(self, function_id: int) -> str:
+        """The room's own patience verdict, set by _mark_stuck and read here so an agent that has done nothing yet
+        still learns this function is a known hard one before it spends its own budget on it."""
+        stuck = self.store.one("SELECT stuck_at, best_score FROM functions WHERE id=?", function_id)
+        if stuck is None or stuck["stuck_at"] is None:
+            return ""
+        compiles, agents = self._room_churn(function_id, stuck["best_score"])
+        return (f"\n\n🧱 {compiles} compiles by {agents} agents have not beaten this function's best score of "
+                f"{stuck['best_score']}. It is hard for the room, not just for you, and a new lease resets nobody's "
+                "history: read the notes and `why_mismatch` before editing, `add_note` what you rule out, and "
+                "`retire_function` to put it last unless you hold the missing piece.")
+
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
-                compiled: bool | None = None, via: str = "agent"):
+                compiled: bool | None = None, compiler: str = "", via: str = "agent"):
         now = time.time()
         compiled = score is not None if compiled is None else compiled
         with self.store.tx() as db:
-            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
-                       "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
+            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,"
+                       "via,source_hash,compiler) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (fn["id"], agent.id, score, compiled, ctx_version, source, now, via,
+                        hashlib.sha256(source.encode()).hexdigest(), compiler))
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             if score is not None:
-                db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "
-                           "WHERE id=? AND status='open' AND (best_score IS NULL OR best_score > ?)",
-                           (score, source, agent.id, fn["id"], score))
+                improved = db.execute("SELECT 1 FROM functions WHERE id=? AND status='open' AND "
+                                      "(best_score IS NULL OR best_score > ?)", (fn["id"], score)).fetchone()
+                if improved:
+                    # progress is also the answer to being stuck: the room's counter starts over on a new best
+                    db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=?, stuck_at=NULL "
+                               "WHERE id=?", (score, source, agent.id, fn["id"]))
+            if not matched:
+                self._mark_stuck(db, fn, now)
             if matched:
                 db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, "
                            "matched_at=?, best_score=0, best_source=? WHERE id=?",
@@ -545,6 +638,39 @@ class Network:
                 self._event(db, fn["project_id"], agent.id, "match", fn["name"])
         if matched:
             self.on_match(self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"]), fn["id"], agent)
+
+    @staticmethod
+    def _patience(n_insns: int) -> int:
+        """How many compiles of one function one agent should try before stopping; see stall_note for the study."""
+        return 4 if n_insns < 64 else 6 if n_insns < 128 else 8 if n_insns < 256 else 10
+
+    def _room_churn(self, function_id: int, best: int) -> tuple:
+        """Compiles since this function first reached `best`, and how many agents made them. Scores equal to the
+        best count: repeating the best is the room walking in place, not the room advancing.
+
+        Safe to ask from inside a _record transaction: Store keeps one connection and a reentrant lock, so the
+        attempt that transaction just wrote is already visible here."""
+        row = self.store.must_one("SELECT COUNT(*) AS n, COUNT(DISTINCT agent_id) AS agents FROM attempts "
+                                  "WHERE function_id=? AND score IS NOT NULL AND score >= ? "
+                                  "  AND id > (SELECT IFNULL(MIN(id), 0) FROM attempts WHERE function_id=? "
+                                  "AND score=?)", function_id, best, function_id, best)
+        return row["n"], row["agents"]
+
+    def _mark_stuck(self, db, fn, now: float) -> None:
+        """Flag a function the room as a whole is out of patience with, once per best score.
+
+        stall_note counts one agent's streak and a fresh lease starts at zero, so a function can absorb five
+        agents' worth of compiles without anyone being told to stop. This is the room's own counter, and it is
+        what the claim brief and list_functions(status="stuck") read, so the next agent starts from the notes
+        rather than from the source again."""
+        best = db.execute("SELECT best_score FROM functions WHERE id=?", (fn["id"],)).fetchone()["best_score"]
+        if best is None:
+            return
+        compiles, agents = self._room_churn(fn["id"], best)
+        if compiles < 2 * self._patience(fn["n_insns"] or 0) or agents < 2:
+            return
+        if db.execute("UPDATE functions SET stuck_at=? WHERE id=? AND stuck_at IS NULL", (now, fn["id"])).rowcount:
+            self._event(db, fn["project_id"], None, "stuck", fn["name"])
 
     def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
         """A function just matched (subclasses try its code on its twins)."""

@@ -688,7 +688,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def list_functions(ctx: Context, status: str = "open", limit: int = 40) -> str:
-        """List functions by status: open, matched or all."""
+        """List functions by status: open, matched, all, or stuck — the open ones whose best score a room of
+        agents has failed to beat over many compiles, most-compiles first. Read those notes before editing one."""
         return await run(ctx, "list_functions", status=status, limit=limit)
 
     @mcp.tool(meta=ALWAYS_LOAD)
