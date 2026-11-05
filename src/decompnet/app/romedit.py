@@ -33,12 +33,21 @@ class RomEditMixin:
             return self.forks.list_functions(fork, status, limit)
         proj = self._project(project)
         analysis = self.is_analysis(proj)
-        where = "" if status == "all" else " AND f.status=?"
-        args = [proj["id"]] + ([] if status == "all" else [status])
+        # "stuck" is not a status: it is what _mark_stuck decides when the room as a whole runs out of patience,
+        # and it is the triage list — the open functions absorbing the most compiles per unit of progress. The
+        # status test matters: other paths mark a function matched without going through _record, which is what
+        # normally clears the flag
+        if status == "stuck":
+            where = " AND f.stuck_at IS NOT NULL AND f.status='open'"
+            args, order = [proj["id"]], " ORDER BY f.attempts DESC"
+        elif status == "all":
+            where, args, order = "", [proj["id"]], " ORDER BY f.vram"
+        else:
+            where, args, order = " AND f.status=?", [proj["id"], status], " ORDER BY f.vram"
         rows = self.store.all(
-            f"SELECT f.name, f.vram, f.n_insns, f.status, f.best_score, a.name AS claimed_by FROM functions f "
-            f"LEFT JOIN claims c ON c.function_id=f.id LEFT JOIN agents a ON a.id=c.agent_id "
-            f"WHERE f.project_id=?{where} ORDER BY f.vram LIMIT ?", *args, limit)
+            f"SELECT f.name, f.vram, f.n_insns, f.status, f.best_score, f.attempts, a.name AS claimed_by FROM "
+            f"functions f LEFT JOIN claims c ON c.function_id=f.id LEFT JOIN agents a ON a.id=c.agent_id "
+            f"WHERE f.project_id=?{where}{order} LIMIT ?", *args, limit)
         if not rows:
             return f"No {status} {'work items' if analysis else 'functions'}."
         if analysis:
@@ -47,6 +56,7 @@ class RomEditMixin:
                              for r in rows)
         return "\n".join(f"- {r['name']} @0x{r['vram']:08X}: {r['n_insns']} insns, {r['status']}"
                          + (f", best score {r['best_score']}" if r["best_score"] is not None else "")
+                         + (f", {r['attempts']} compiles" if status == "stuck" else "")
                          + (f", claimed by {r['claimed_by']}" if r["claimed_by"] else "") for r in rows)
 
     def get_function(self, function: str, project: str | None = None, agent: Agent | None = None) -> str:
@@ -180,7 +190,8 @@ class RomEditMixin:
         now = time.time()
         with self.store.tx() as db:
             db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
-                       "changed_at=? WHERE id=?", (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
+                       "stuck_at=NULL, changed_at=? WHERE id=?", (head.size, len(head.lines), th.code,
+                                                    json.dumps(th.to_json()),
                                                     self._asm_source(head), now, fn["id"]))
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,"
                        "changed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -224,7 +235,7 @@ class RomEditMixin:
             db.execute("DELETE FROM claims WHERE function_id=?", (frag["id"],))
             db.execute("DELETE FROM functions WHERE id=?", (frag["id"],))
             db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
-                       "best_source=NULL, best_agent_id=NULL, changed_at=? WHERE id=?",
+                       "best_source=NULL, best_agent_id=NULL, stuck_at=NULL, changed_at=? WHERE id=?",
                        (len(code), count, code, json.dumps([[r[0], r[1], r[2], r[3]] for r in refs]), asm, now,
                         prev["id"]))
             db.execute("UPDATE symbols SET size=?, changed_at=? WHERE project_id=? AND address=?",
@@ -348,7 +359,8 @@ class RomEditMixin:
         now = time.time()
         with self.store.tx() as db:
             db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
-                       "changed_at=? WHERE id=?", (len(head), max(1, len(head) // 2), head, json.dumps(refs_head), asm_head,
+                       "stuck_at=NULL, changed_at=? WHERE id=?", (len(head), max(1, len(head) // 2), head,
+                                                    json.dumps(refs_head), asm_head,
                                                     now, fn["id"]))
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,"
                        "changed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",

@@ -386,8 +386,9 @@ class RoomOpsMixin:
             syms.add(Symbol(f["name"], vram, tail.size, "func"))
             th, tt = self._make_target(proj, head, syms), self._make_target(proj, tail, syms)
             with self.store.tx() as db:
-                db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL "
-                           "WHERE id=?", (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
+                db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, "
+                           "best_score=NULL, stuck_at=NULL WHERE id=?",
+                           (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
                                           self._asm_source(head), owner["id"]))
                 # the head's name now covers only the head (its old best attempt was for the whole function)
                 db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (head.size, pid, owner["name"]))

@@ -1,5 +1,6 @@
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -307,3 +308,151 @@ def test_a_project_without_a_header_says_so_before_anything_reads_it(tmp_path):
             net._must_context(pid, unit)
         assert "no context.h" in str(missing.value)
         assert not unit or unit in str(missing.value)
+
+
+# --- a repeat submission is answered from the record, not from the compiler --------------------------------
+
+
+def _watch_compiles(net):
+    """Wrap net._compile so a test can prove a submission never reached the toolchain."""
+    seen, real = [], net._compile
+    net._compile = lambda *args, **kw: (seen.append(1), real(*args, **kw))[1]
+    return seen
+
+
+def test_identical_source_from_another_agent_is_answered_from_the_record(net, agents):
+    """Two agents reach the same source without seeing each other's attempt, and the compiler is deterministic:
+    the second one gets the recorded verdict instead of a second toolchain run."""
+    alice, bob = agents
+    net.compile_and_diff(alice, "clamp_s32", WRONG_CLAMP)
+    score = net.store.one("SELECT score FROM attempts ORDER BY id DESC LIMIT 1")["score"]
+    net.release(alice, "clamp_s32", "not my best attempt")
+
+    compiles = _watch_compiles(net)
+    out = net.compile_and_diff(bob, "clamp_s32", WRONG_CLAMP)
+    assert compiles == [], "byte-identical source should not reach the compiler twice"
+    assert "Already tried, byte for byte" in out and f"scored {score}" in out
+    # the submission is still on the record, so the room's counters see the churn
+    row = net.store.one("SELECT via, agent_id FROM attempts ORDER BY id DESC LIMIT 1")
+    assert row["via"] == "cached" and row["agent_id"] == bob.id
+
+
+def test_a_ping_pong_repeat_compiles_and_hears_about_the_earlier_one(net, agents):
+    """Only the newest attempt has its diff on file for why_mismatch, so an older repeat still compiles — and is
+    told the room is walking in place, which is how a function quietly collects thirty identical attempts."""
+    alice, bob = agents
+    net.compile_and_diff(alice, "clamp_s32", WRONG_CLAMP)
+    net.release(alice, "clamp_s32", "not my best attempt")
+    net.compile_and_diff(bob, "clamp_s32", "s32 clamp_s32(s32 v, s32 lo, s32 hi) { return lo; }")
+    net.release(bob, "clamp_s32", "worse")
+
+    compiles = _watch_compiles(net)
+    out = net.compile_and_diff(alice, "clamp_s32", WRONG_CLAMP)
+    assert len(compiles) == 1, "this repeat is not the newest attempt, so its diff has to be rebuilt"
+    assert "Already tried" not in out and "was already these exact bytes" in out
+
+
+def test_a_different_compiler_invalidates_the_record(net, agents):
+    """Flags and compiler version are what make identical C produce a different object, so a recorded verdict
+    only answers a repeat while the resolved command still matches."""
+    alice, bob = agents
+    net.compile_and_diff(alice, "clamp_s32", WRONG_CLAMP)
+    net.release(alice, "clamp_s32", "not my best attempt")
+    proj = net.store.one("SELECT id, config FROM projects LIMIT 1")
+    net._compiler_keys.clear()
+    net._compiler_keys[(proj["id"], proj["config"])] = "mwcc -O3 -pe on"   # as if the flags had just changed
+
+    compiles = _watch_compiles(net)
+    out = net.compile_and_diff(bob, "clamp_s32", WRONG_CLAMP)
+    assert len(compiles) == 1 and "Already tried" not in out
+
+
+# --- the room's own patience counter ------------------------------------------------------------------------
+
+
+def _spent(net, name, rounds, crew):
+    """Give every agent a full budget of compiles that never beats the function's best score."""
+    fn = net._function(name, None)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET best_score=999 WHERE id=?", (fn["id"],))
+    for _ in range(rounds):
+        for agent in crew:
+            net._record(fn, agent, 999, f"source by {agent.id} round {_}", 1)
+    return net._function(name, None)
+
+
+def _crew(net, count):
+    return [net.authenticate(net.register_agent(f"worker{i}", "room")) for i in range(count)]
+
+
+def test_the_room_marks_a_function_stuck_when_its_agents_run_out_of_patience(net):
+    """stall_note counts one agent and resets when the lease moves on, so a function can absorb five agents'
+    worth of compiles without anyone being told to stop. stuck_at is the room's counter: it is set once the room
+    has spent two agents' patience, and it is what a fresh agent hears before spending a third's."""
+    crew = _crew(net, 3)
+    budget = net._patience(net._function("game_tick", None)["n_insns"] or 0)
+    fn = _spent(net, "game_tick", budget, crew)
+    assert fn["stuck_at"] is not None
+
+    fresh = net.authenticate(net.register_agent("newcomer", "room"))
+    note = net.stall_note(fn["id"], fresh.id)
+    assert "hard for the room" in note and f"{3 * budget - 1} compiles by 3 agents" in note
+    assert "KNOWN HARD" in net._brief(net._function("game_tick", None), fresh, "")
+
+
+def test_one_agent_running_out_of_patience_is_not_the_rooms_verdict(net):
+    """One agent's long streak is already handled by stall_note; the room's flag needs more than one of them."""
+    budget = net._patience(net._function("game_tick", None)["n_insns"] or 0)
+    fn = _spent(net, "game_tick", budget * 2, _crew(net, 1))
+    assert net.store.one("SELECT stuck_at FROM functions WHERE id=?", fn["id"])["stuck_at"] is None
+
+
+def test_a_new_best_score_clears_the_rooms_flag(net):
+    """Progress is the answer to being stuck, so the flag belongs to a best score rather than to the function."""
+    crew = _crew(net, 2)
+    budget = net._patience(net._function("game_tick", None)["n_insns"] or 0)
+    fn = _spent(net, "game_tick", budget + 1, crew)   # two agents, each past the budget, past the baseline attempt
+    assert fn["stuck_at"] is not None
+
+    net._record(fn, crew[0], 500, "the struct was wrong", 1)
+    assert net.store.one("SELECT stuck_at FROM functions WHERE id=?", fn["id"])["stuck_at"] is None
+
+
+def test_a_boundary_change_invalidates_the_recorded_verdict(net, agents):
+    """split_function, merge_function and rename_symbol rewrite what a function is compared against and move
+    functions.changed_at, while the context version and the compiler command stay exactly as they were. A score
+    measured against the old boundary must not answer a submission made against the new one."""
+    alice, bob = agents
+    net.compile_and_diff(alice, "clamp_s32", WRONG_CLAMP)
+    net.release(alice, "clamp_s32", "not my best attempt")
+    with net.store.tx() as db:      # the row edit a split makes to the half it keeps
+        db.execute("UPDATE functions SET changed_at=?, best_score=NULL WHERE id=?",
+                   (time.time(), net._function("clamp_s32", None)["id"]))
+
+    compiles = _watch_compiles(net)
+    out = net.compile_and_diff(bob, "clamp_s32", WRONG_CLAMP)
+    assert len(compiles) == 1, "the target moved, so the old score answers nothing"
+    assert "Already tried" not in out
+
+
+def test_the_rooms_verdict_is_measured_against_one_header(net):
+    """The compiles that earned a patience verdict were made against the header of the time. When the missing
+    struct arrives that history stops being evidence that the function is hopeless, so the room goes quiet until
+    the new header has produced enough churn of its own."""
+    crew = _crew(net, 3)
+    budget = net._patience(net._function("game_tick", None)["n_insns"] or 0)
+    fn = _spent(net, "game_tick", budget, crew)
+    assert fn["stuck_at"] is not None
+    fresh = net.authenticate(net.register_agent("newcomer", "room"))
+    assert "hard for the room" in net.stall_note(fn["id"], fresh.id)
+
+    with net.store.tx() as db:      # edit_context: the struct landed, and everyone compiles against v2 now
+        db.execute("INSERT INTO context_versions(project_id, version, header, agent_id, message, created_at, unit)"
+                   " VALUES(?,?,?,?,?,?,?)",
+                   (fn["project_id"], 2, "#include <struct.h>", crew[0].id, "added the player struct", time.time(),
+                    fn["unit"]))
+    net._record(fn, fresh, 999, "first look under the new header", 2)
+
+    assert net._stuck_report(fn["id"]) is None
+    assert net.stall_note(fn["id"], fresh.id) == ""
+    assert "KNOWN HARD" not in net._brief(net._function("game_tick", None), fresh, "")

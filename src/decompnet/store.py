@@ -3,6 +3,7 @@ coordinator whose expensive work (compiling) happens outside the lock."""
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -35,7 +36,7 @@ CREATE TABLE IF NOT EXISTS claims(
   function_id INTEGER PRIMARY KEY, agent_id INTEGER NOT NULL, claimed_at REAL, expires_at REAL);
 CREATE TABLE IF NOT EXISTS attempts(
   id INTEGER PRIMARY KEY, function_id INTEGER, agent_id INTEGER, score INTEGER, compiled INTEGER,
-  context_version INTEGER, source TEXT, created_at REAL);
+  context_version INTEGER, source TEXT, created_at REAL, source_hash TEXT, compiler TEXT);
 CREATE TABLE IF NOT EXISTS notes(
   id INTEGER PRIMARY KEY, project_id INTEGER, function_id INTEGER, agent_id INTEGER, text TEXT, created_at REAL);
 CREATE TABLE IF NOT EXISTS events(
@@ -74,6 +75,10 @@ MIGRATIONS = [
     ("functions", "trace_at", "REAL"),                         # last trace import that touched it
     ("functions", "changed_at", "REAL"),                       # rooms: when its name or boundary last changed
     ("symbols", "changed_at", "REAL"),                         # rooms: when the name at this address last changed
+    ("attempts", "source_hash", "TEXT"),                       # sha256 of source: recognises a resubmission
+    ("attempts", "compiler", "TEXT"),                          # ... and only while the same command built it
+    ("functions", "stuck_at", "REAL"),                         # first attempt that showed the room, not just one
+                                                                # agent, is out of patience with this function
 ]
 
 
@@ -89,6 +94,9 @@ class Store:
             if column not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_agent_time ON attempts(agent_id, created_at)")
+        # a submission is answered from its own row when another agent already submitted these exact bytes (see
+        # Network.attempt): the lookup is by function and source, the same pair twin_misses keys machine tries on
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_source ON attempts(function_id, source_hash)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_unit ON functions(project_id, unit, status)")
         # by address: a room's sync looks functions up by vram (matches, notes, renames). Without this each lookup
         # scanned every function of the project, so a big room's first sync took minutes to apply.
@@ -122,6 +130,22 @@ class Store:
                 INSERT INTO settings(key, value) VALUES('abandons_recounted', '1');
                 COMMIT;""")
         self.lock = threading.RLock()
+        # attempts written before this column existed carry no hash, so a resubmission could not be recognised
+        # against any of the history. Hashed once here, in batches: a room that has been running for years has
+        # more attempts than belong in memory at once, and each batch commits so a crash restarts only the tail.
+        # The filter excludes rows just hashed, so the loop walks the table instead of spinning on it.
+        if self.conn.execute("SELECT 1 FROM settings WHERE key='attempt_source_hashes'").fetchone() is None:
+            while True:
+                rows = self.conn.execute("SELECT id, source FROM attempts WHERE source_hash IS NULL "
+                                         "LIMIT 500").fetchall()
+                if not rows:
+                    break
+                with self.tx():
+                    for row in rows:
+                        self.conn.execute("UPDATE attempts SET source_hash=? WHERE id=?",
+                                          (hashlib.sha256((row["source"] or "").encode()).hexdigest(), row["id"]))
+            self.conn.execute("INSERT INTO settings(key, value) VALUES('attempt_source_hashes', '1')")
+            self.conn.commit()
 
     @contextmanager
     def tx(self):
