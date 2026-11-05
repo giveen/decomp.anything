@@ -305,7 +305,7 @@ class ForkAgentMixin:
     def list_functions(self, slug: str, status: str = "open", limit: int = 40) -> str:
         proj, _, _ = self.get(slug)
         where = {"open": "status='open'", "matched": "status='matched'", "all": "1",
-                 "stuck": "stuck_at IS NOT NULL"}.get(status)
+                 "stuck": "stuck_at IS NOT NULL AND status='open'"}.get(status)
         if where is None:
             raise NetworkError("status must be open, matched, all or stuck")
         rows = self.net.store.all(f"SELECT name, unit, n_insns, status, best_score FROM functions WHERE project_id=? "

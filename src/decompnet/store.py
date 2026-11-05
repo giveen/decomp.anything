@@ -131,15 +131,21 @@ class Store:
                 COMMIT;""")
         self.lock = threading.RLock()
         # attempts written before this column existed carry no hash, so a resubmission could not be recognised
-        # against any of the history. Hashed once here: a project's whole attempt history is a few thousand sources,
-        # and sha256 over them costs milliseconds next to the one compile it saves.
+        # against any of the history. Hashed once here, in batches: a room that has been running for years has
+        # more attempts than belong in memory at once, and each batch commits so a crash restarts only the tail.
+        # The filter excludes rows just hashed, so the loop walks the table instead of spinning on it.
         if self.conn.execute("SELECT 1 FROM settings WHERE key='attempt_source_hashes'").fetchone() is None:
-            rows = self.conn.execute("SELECT id, source FROM attempts WHERE source_hash IS NULL").fetchall()
-            with self.tx():
-                for row in rows:
-                    self.conn.execute("UPDATE attempts SET source_hash=? WHERE id=?",
-                                      (hashlib.sha256((row["source"] or "").encode()).hexdigest(), row["id"]))
-                self.conn.execute("INSERT INTO settings(key, value) VALUES('attempt_source_hashes', '1')")
+            while True:
+                rows = self.conn.execute("SELECT id, source FROM attempts WHERE source_hash IS NULL "
+                                         "LIMIT 500").fetchall()
+                if not rows:
+                    break
+                with self.tx():
+                    for row in rows:
+                        self.conn.execute("UPDATE attempts SET source_hash=? WHERE id=?",
+                                          (hashlib.sha256((row["source"] or "").encode()).hexdigest(), row["id"]))
+            self.conn.execute("INSERT INTO settings(key, value) VALUES('attempt_source_hashes', '1')")
+            self.conn.commit()
 
     @contextmanager
     def tx(self):

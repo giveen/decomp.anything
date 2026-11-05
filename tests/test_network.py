@@ -1,5 +1,6 @@
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -415,3 +416,43 @@ def test_a_new_best_score_clears_the_rooms_flag(net):
 
     net._record(fn, crew[0], 500, "the struct was wrong", 1)
     assert net.store.one("SELECT stuck_at FROM functions WHERE id=?", fn["id"])["stuck_at"] is None
+
+
+def test_a_boundary_change_invalidates_the_recorded_verdict(net, agents):
+    """split_function, merge_function and rename_symbol rewrite what a function is compared against and move
+    functions.changed_at, while the context version and the compiler command stay exactly as they were. A score
+    measured against the old boundary must not answer a submission made against the new one."""
+    alice, bob = agents
+    net.compile_and_diff(alice, "clamp_s32", WRONG_CLAMP)
+    net.release(alice, "clamp_s32", "not my best attempt")
+    with net.store.tx() as db:      # the row edit a split makes to the half it keeps
+        db.execute("UPDATE functions SET changed_at=?, best_score=NULL WHERE id=?",
+                   (time.time(), net._function("clamp_s32", None)["id"]))
+
+    compiles = _watch_compiles(net)
+    out = net.compile_and_diff(bob, "clamp_s32", WRONG_CLAMP)
+    assert len(compiles) == 1, "the target moved, so the old score answers nothing"
+    assert "Already tried" not in out
+
+
+def test_the_rooms_verdict_is_measured_against_one_header(net):
+    """The compiles that earned a patience verdict were made against the header of the time. When the missing
+    struct arrives that history stops being evidence that the function is hopeless, so the room goes quiet until
+    the new header has produced enough churn of its own."""
+    crew = _crew(net, 3)
+    budget = net._patience(net._function("game_tick", None)["n_insns"] or 0)
+    fn = _spent(net, "game_tick", budget, crew)
+    assert fn["stuck_at"] is not None
+    fresh = net.authenticate(net.register_agent("newcomer", "room"))
+    assert "hard for the room" in net.stall_note(fn["id"], fresh.id)
+
+    with net.store.tx() as db:      # edit_context: the struct landed, and everyone compiles against v2 now
+        db.execute("INSERT INTO context_versions(project_id, version, header, agent_id, message, created_at, unit)"
+                   " VALUES(?,?,?,?,?,?,?)",
+                   (fn["project_id"], 2, "#include <struct.h>", crew[0].id, "added the player struct", time.time(),
+                    fn["unit"]))
+    net._record(fn, fresh, 999, "first look under the new header", 2)
+
+    assert net._stuck_report(fn["id"]) is None
+    assert net.stall_note(fn["id"], fresh.id) == ""
+    assert "KNOWN HARD" not in net._brief(net._function("game_tick", None), fresh, "")

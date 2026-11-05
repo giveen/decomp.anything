@@ -1,6 +1,7 @@
 """The local engine on Demo Quest 64: import, claim, split, match, rename, read data, export."""
 
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,25 @@ def test_read_data_and_lists(net):
     assert "DEMOQUEST-SAVE" in text
     assert "bss" in net.read_data("demo-quest-64", "g_player", 16)
     assert "clamp_s32" in net.list_functions("demo-quest-64", "matched")
+
+
+def test_the_stuck_list_only_shows_open_functions(net):
+    """_record clears stuck_at when a function matches, but room sync, prefill and the fork path mark functions
+    matched without going through it. The triage list therefore filters on status, so a finished function never
+    resurfaces as work for someone to do."""
+    open_one = net._function("func_80000B3C", "demo-quest-64")
+    done = net._function("func_80000460", "demo-quest-64")
+    with net.store.tx() as db:      # exactly the flags a stale room would still be carrying
+        db.execute("UPDATE functions SET status='matched', stuck_at=? WHERE id=?", (time.time(), done["id"]))
+        db.execute("UPDATE functions SET stuck_at=? WHERE id=?", (time.time(), open_one["id"]))
+    try:
+        stuck = net.list_functions("demo-quest-64", "stuck")
+        assert open_one["name"] in stuck, "the flag still has to list work the room has not finished"
+        assert done["name"] not in stuck
+    finally:                        # this module's fixture is shared: leave the project as the others expect it
+        with net.store.tx() as db:
+            db.execute("UPDATE functions SET status='open', stuck_at=NULL WHERE id=?", (done["id"],))
+            db.execute("UPDATE functions SET stuck_at=NULL WHERE id=?", (open_one["id"],))
 
 
 def test_export_and_live(net):

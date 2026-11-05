@@ -34,9 +34,12 @@ class RomEditMixin:
         proj = self._project(project)
         analysis = self.is_analysis(proj)
         # "stuck" is not a status: it is what _mark_stuck decides when the room as a whole runs out of patience,
-        # and it is the triage list — the functions absorbing the most compiles per unit of progress
+        # and it is the triage list — the open functions absorbing the most compiles per unit of progress. The
+        # status test matters: other paths mark a function matched without going through _record, which is what
+        # normally clears the flag
         if status == "stuck":
-            where, args, order = " AND f.stuck_at IS NOT NULL", [proj["id"]], " ORDER BY f.attempts DESC"
+            where = " AND f.stuck_at IS NOT NULL AND f.status='open'"
+            args, order = [proj["id"]], " ORDER BY f.attempts DESC"
         elif status == "all":
             where, args, order = "", [proj["id"]], " ORDER BY f.vram"
         else:
@@ -187,7 +190,8 @@ class RomEditMixin:
         now = time.time()
         with self.store.tx() as db:
             db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
-                       "changed_at=? WHERE id=?", (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
+                       "stuck_at=NULL, changed_at=? WHERE id=?", (head.size, len(head.lines), th.code,
+                                                    json.dumps(th.to_json()),
                                                     self._asm_source(head), now, fn["id"]))
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,"
                        "changed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -231,7 +235,7 @@ class RomEditMixin:
             db.execute("DELETE FROM claims WHERE function_id=?", (frag["id"],))
             db.execute("DELETE FROM functions WHERE id=?", (frag["id"],))
             db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
-                       "best_source=NULL, best_agent_id=NULL, changed_at=? WHERE id=?",
+                       "best_source=NULL, best_agent_id=NULL, stuck_at=NULL, changed_at=? WHERE id=?",
                        (len(code), count, code, json.dumps([[r[0], r[1], r[2], r[3]] for r in refs]), asm, now,
                         prev["id"]))
             db.execute("UPDATE symbols SET size=?, changed_at=? WHERE project_id=? AND address=?",
@@ -355,7 +359,8 @@ class RomEditMixin:
         now = time.time()
         with self.store.tx() as db:
             db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
-                       "changed_at=? WHERE id=?", (len(head), max(1, len(head) // 2), head, json.dumps(refs_head), asm_head,
+                       "stuck_at=NULL, changed_at=? WHERE id=?", (len(head), max(1, len(head) // 2), head,
+                                                    json.dumps(refs_head), asm_head,
                                                     now, fn["id"]))
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,"
                        "changed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",

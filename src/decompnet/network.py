@@ -209,16 +209,17 @@ class Network:
         """What a compile of this project actually runs: the resolved command, toolchain path and all.
 
         A recorded attempt only answers a later submission of the same bytes while this still matches, because the
-        compiler and its flags are what make identical C produce a different object. `draft_tries` keys machine
-        drafts the same way. Empty when no compiler can be resolved, which also means nothing is answered from the
-        record: the attempt path below then returns its own "no compiler" error instead of a stale verdict."""
+        toolchain and its flags are what make identical C produce a different object — and the resolved command
+        carries both, since a pinned toolchain lives at a versioned path. `draft_tries` keys machine drafts the
+        same way. Empty when no compiler can be resolved, which also means nothing is answered from the record:
+        the attempt path below then returns its own "no compiler" error instead of a stale verdict. A miss is not
+        remembered, so installing the toolchain a moment later is picked up without a restart."""
         memo = (proj["id"], proj["config"] or "")
         if memo not in self._compiler_keys:
             try:
-                cfg = compiler_config(Path(proj["root"]), json.loads(memo[1]))
-                key = " ".join(cfg.cmd)
+                key = " ".join(compiler_config(Path(proj["root"]), json.loads(memo[1])).cmd)
             except (toolchains.ToolchainError, KeyError, ValueError):
-                key = ""
+                return ""
             if len(self._compiler_keys) > 32:      # a room holds a handful of projects; this is a guard, not a cache
                 self._compiler_keys.clear()
             self._compiler_keys[memo] = key
@@ -383,11 +384,13 @@ class Network:
             lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
                          f"(each compile_and_diff renews it)")
         if fn["status"] not in ("matched", "unmatchable") and fn["stuck_at"]:
-            compiles, agents = self._room_churn(fn["id"], fn["best_score"])
-            lines.append(f"⚠️ KNOWN HARD: {compiles} compiles by {agents} agents have not beaten its best score of "
-                         f"{fn['best_score']}. Read the notes and `why_mismatch` before editing, and `retire_function` "
-                         "if what is missing is a struct or a wrong boundary — retiring records that so the next "
-                         "agent starts from the evidence rather than from this source again.")
+            report = self._stuck_report(fn["id"])
+            if report is not None:    # the flag is a hint; the churn behind it has to still be there to say so
+                compiles, agents, best = report
+                lines.append(f"⚠️ KNOWN HARD: {compiles} compiles by {agents} agents have not beaten its best score "
+                             f"of {best}. Read the notes and `why_mismatch` before editing, and `retire_function` "
+                             "if what is missing is a struct or a wrong boundary — retiring records that so the "
+                             "next agent starts from the evidence rather than from this source again.")
         if fn["status"] == "unmatchable":
             why = json.loads(fn["meta"] or "{}").get("unmatchable", "")
             lines.append(f"RETIRED as unmatchable: {why}")
@@ -465,10 +468,13 @@ class Network:
         ctx = self._must_context(proj["id"], fn["unit"])
         # The compiler is deterministic: these exact bytes under this same context and command already produced this
         # object once, so the recorded verdict answers them. Answering costs a lookup instead of a toolchain run,
-        # and the agent gets told which attempt it was rather than being shown the same diff again.
+        # and the agent gets told which attempt it was rather than being shown the same diff again. A split, merge
+        # or rename rewrites what the function is compared against without touching either of those, so the score
+        # only still answers while it is newer than the last change to the boundary.
         command = self._compile_command(proj)
         repeat = self._repeat_attempt(fn["id"], source, command)
         if (repeat is not None and not scratch and repeat["context_version"] == ctx["version"]
+                and repeat["created_at"] >= (fn["changed_at"] or 0)
                 and repeat["id"] == self.store.must_one("SELECT MAX(id) AS newest FROM attempts WHERE function_id=?",
                                                         fn["id"])["newest"]):
             self._record(fn, agent, repeat["score"], source, ctx["version"], compiled=True, compiler=command,
@@ -602,14 +608,15 @@ class Network:
     def _room_stall_note(self, function_id: int) -> str:
         """The room's own patience verdict, set by _mark_stuck and read here so an agent that has done nothing yet
         still learns this function is a known hard one before it spends its own budget on it."""
-        stuck = self.store.one("SELECT stuck_at, best_score FROM functions WHERE id=?", function_id)
-        if stuck is None or stuck["stuck_at"] is None:
+        stuck = self.store.one("SELECT stuck_at FROM functions WHERE id=?", function_id)
+        report = self._stuck_report(function_id) if stuck is not None and stuck["stuck_at"] else None
+        if report is None:
             return ""
-        compiles, agents = self._room_churn(function_id, stuck["best_score"])
+        compiles, agents, best = report
         return (f"\n\n🧱 {compiles} compiles by {agents} agents have not beaten this function's best score of "
-                f"{stuck['best_score']}. It is hard for the room, not just for you, and a new lease resets nobody's "
-                "history: read the notes and `why_mismatch` before editing, `add_note` what you rule out, and "
-                "`retire_function` to put it last unless you hold the missing piece.")
+                f"{best} at the header they were tried under. It is hard for the room, not just for you, and a new "
+                "lease resets nobody's history: read the notes and `why_mismatch` before editing, `add_note` what "
+                "you rule out, and `retire_function` to put it last unless you hold the missing piece.")
 
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, compiler: str = "", via: str = "agent"):
@@ -629,10 +636,10 @@ class Network:
                     db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=?, stuck_at=NULL "
                                "WHERE id=?", (score, source, agent.id, fn["id"]))
             if not matched:
-                self._mark_stuck(db, fn, now)
+                self._mark_stuck(db, fn, now, ctx_version)
             if matched:
                 db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, "
-                           "matched_at=?, best_score=0, best_source=? WHERE id=?",
+                           "matched_at=?, best_score=0, best_source=?, stuck_at=NULL WHERE id=?",
                            (source, agent.id, now, source, fn["id"]))
                 db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
                 self._event(db, fn["project_id"], agent.id, "match", fn["name"])
@@ -644,20 +651,42 @@ class Network:
         """How many compiles of one function one agent should try before stopping; see stall_note for the study."""
         return 4 if n_insns < 64 else 6 if n_insns < 128 else 8 if n_insns < 256 else 10
 
-    def _room_churn(self, function_id: int, best: int) -> tuple:
-        """Compiles since this function first reached `best`, and how many agents made them. Scores equal to the
-        best count: repeating the best is the room walking in place, not the room advancing.
+    def _room_churn(self, function_id: int, best: int, context_version: int) -> tuple:
+        """Compiles at `context_version` since this function first reached `best`, and how many agents made them.
+        Scores equal to the best count: repeating the best is the room walking in place, not the room advancing.
+
+        Scoped to one context version because that is the only comparison that means anything. The compiles that
+        earned a patience verdict against yesterday's header were measured against a different contract, and
+        counting them here would tell an agent to give up on the function the missing struct just arrived for.
 
         Safe to ask from inside a _record transaction: Store keeps one connection and a reentrant lock, so the
         attempt that transaction just wrote is already visible here."""
         row = self.store.must_one("SELECT COUNT(*) AS n, COUNT(DISTINCT agent_id) AS agents FROM attempts "
-                                  "WHERE function_id=? AND score IS NOT NULL AND score >= ? "
+                                  "WHERE function_id=? AND context_version=? AND score IS NOT NULL AND score >= ? "
                                   "  AND id > (SELECT IFNULL(MIN(id), 0) FROM attempts WHERE function_id=? "
-                                  "AND score=?)", function_id, best, function_id, best)
+                                  "AND context_version=? AND score=?)",
+                                  function_id, context_version, best, function_id, context_version, best)
         return row["n"], row["agents"]
 
-    def _mark_stuck(self, db, fn, now: float) -> None:
-        """Flag a function the room as a whole is out of patience with, once per best score.
+    def _stuck_report(self, function_id: int) -> tuple | None:
+        """The room's patience verdict while it still stands: (compiles, agents, best score), else None.
+
+        Read this rather than functions.stuck_at on its own. The flag is set once and cleared by a new best, but
+        the ground also moves sideways underneath it: a split resets the best score, and a header edit changes
+        what the compiles were measured against. An agent told to stop by numbers that are no longer there has
+        lost time for nothing, so the numbers have to still be there before anyone is told to stop."""
+        fn = self.store.one("SELECT best_score, n_insns FROM functions WHERE id=?", function_id)
+        last = self.store.one("SELECT context_version FROM attempts WHERE function_id=? ORDER BY id DESC LIMIT 1",
+                              function_id)
+        if fn is None or fn["best_score"] is None or last is None:
+            return None
+        compiles, agents = self._room_churn(function_id, fn["best_score"], last["context_version"])
+        if compiles < 2 * self._patience(fn["n_insns"] or 0) or agents < 2:
+            return None
+        return compiles, agents, fn["best_score"]
+
+    def _mark_stuck(self, db, fn, now: float, context_version: int) -> None:
+        """Flag a function the room as a whole is out of patience with, once per best score and header.
 
         stall_note counts one agent's streak and a fresh lease starts at zero, so a function can absorb five
         agents' worth of compiles without anyone being told to stop. This is the room's own counter, and it is
@@ -666,7 +695,7 @@ class Network:
         best = db.execute("SELECT best_score FROM functions WHERE id=?", (fn["id"],)).fetchone()["best_score"]
         if best is None:
             return
-        compiles, agents = self._room_churn(fn["id"], best)
+        compiles, agents = self._room_churn(fn["id"], best, context_version)
         if compiles < 2 * self._patience(fn["n_insns"] or 0) or agents < 2:
             return
         if db.execute("UPDATE functions SET stuck_at=? WHERE id=? AND stuck_at IS NULL", (now, fn["id"])).rowcount:
@@ -908,8 +937,8 @@ class Network:
             for table in ("claims", "attempts", "notes"):
                 db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
             db.execute("UPDATE functions SET status='open', best_score=NULL, best_source=NULL, best_agent_id=NULL, "
-                       "matched_source=NULL, matched_agent_id=NULL, matched_at=NULL, attempts=0, abandons=0 "
-                       "WHERE id=?", (fn["id"],))
+                       "matched_source=NULL, matched_agent_id=NULL, matched_at=NULL, attempts=0, abandons=0, "
+                       "stuck_at=NULL WHERE id=?", (fn["id"],))
 
     def revoke_agent(self, name: str, erase: bool = False) -> None:
         """Disable an agent's token. With erase=True also strip its identity (GDPR erasure):
