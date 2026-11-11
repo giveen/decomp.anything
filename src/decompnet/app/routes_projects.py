@@ -125,6 +125,18 @@ def register(ctx: ServerContext) -> None:
         res = net.attempt(agent, str(data.get("name", "")), str(data.get("source", "")), slug)
         return {"score": res["score"], "matched": res["matched"], "text": res["text"][-4000:]}
 
+    def p_matrix_run(slug, request, data):
+        """You, running the compiler matrix on a function from the GUI (see forkmatrix.py)."""
+        agent, _ = net.local_agent("you")
+        res = net.forks.matrix(agent, slug, str(data.get("name", "")), str(data.get("source", "")),
+                               again=bool(data.get("again")))
+        return {"matched": res["matched"], "committed": res["committed"], "repeat": res["repeat"], "text": res["text"]}
+
+    def p_matrix_sweep(slug, request, data):
+        if data.get("action") == "stop":
+            return net.forks.matrix_stop(slug)
+        return net.forks.matrix_sweep(slug, int(data.get("limit") or 0))
+
     def p_release(slug, request, data):
         agent, _ = net.local_agent("you")
         with contextlib.suppress(NetworkError):  # not yours (any more): nothing to give back
@@ -237,6 +249,8 @@ def register(ctx: ServerContext) -> None:
         "/api/ide": (p_ide, ["POST"]),
         "/api/delete": (p_delete, ["POST"]), "/api/agents/manual": (p_manual, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
+        "/api/matrix": (lambda s, r, d: {**net.forks.matrix_status(s), "saved": net.forks.matrix_matches(s)}, ["GET"]),
+        "/api/matrix/run": (p_matrix_run, ["POST"]), "/api/matrix/sweep": (p_matrix_sweep, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
         "/api/analysis/task": (p_add_task, ["POST"]),

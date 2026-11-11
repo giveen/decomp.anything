@@ -85,5 +85,7 @@ class ForkViewMixin:
                 "source": current or fn["best_source"], "source_kind": "matched" if fn["status"] == "matched" else
                 ("latest" if current else "best" if fn["best_source"] else None),
                 "match_percent": pct, "scores": [{"score": a["score"], "t": a["created_at"], "agent": a["agent"]} for a in attempts],
-                "notes": [dict(n) for n in notes], "calls": [], "called_by": []}
+                "notes": [dict(n) for n in notes], "calls": [], "called_by": [],
+                "matrix": {"configured": self.matrix_config(fp) is not None, "saved": meta.get("matrix"),
+                           "runs": self.matrix_runs(slug, name, 3)}}
 

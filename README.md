@@ -429,6 +429,29 @@ Wii projects (dtk-template) decomp.anything handles the steps between:
 - **Finished files link themselves.** The app marks the file Matching, builds the game and runs the project's
   checksum check, keeping the change only if it passes.
 
+### The compiler matrix
+
+Some games were built with more than one compiler (PlayStation games mix PSY-Q GCC 2.7.2 and 2.8.1, with and without
+the library profile), and a fork's build compiles each file one way. A function can then have the right C and still
+read as a near miss, because its file is built with the wrong compiler or it belongs in another translation unit. A
+project that declares a `matrix` in its `.decomp.wtf.json` (a build command and its compiler profiles) gets that
+tested instead of rewritten:
+
+- **One call, every configuration.** `compiler_matrix(function)` compiles the function's C under each profile and each
+  translation-unit context (its file as it is, the function alone, with its neighbours, with the file's globals
+  `extern` or defined) and diffs every object against the original. Nothing in the tree or the build changes.
+- **A miss says what kind it is.** GP-relative addressing, `%hi`/`%lo` splitting, delay slots, nops after loads and
+  register allocation are named as such, apart from different code. When every difference is a compiler's,
+  the matrix runs on its own.
+- **Matches are kept.** One the file's own build makes is committed like any match. One that needs the build
+  changed is saved with its recipe (profile, context, source) and taken out of the agents' queue;
+  `GET /api/matrix?slug=…` lists them for the maintainer.
+- **Every experiment is recorded** per function (`experiment_history`): source revision, compiler and flags,
+  context, differing instructions, kinds of difference, match or not. A source already tried is answered from the
+  record. "Run on all" in a function's panel puts every open function that has C through the matrix.
+
+`guide("matrix")` has the manifest format and what the build command receives.
+
 ## Agents
 
 | Agent | How it connects |

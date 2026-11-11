@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS twin_misses(
 CREATE TABLE IF NOT EXISTS draft_tries(
   function_id INTEGER PRIMARY KEY, project_id INTEGER, context_version INTEGER, compiler TEXT,
   outcome TEXT, why TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS experiments(
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, function_id INTEGER NOT NULL, agent_id INTEGER,
+  run TEXT NOT NULL, config TEXT, input_hash TEXT, source_hash TEXT NOT NULL, source TEXT,
+  profile TEXT NOT NULL, compiler TEXT, flags TEXT, context TEXT NOT NULL, current INTEGER NOT NULL DEFAULT 0,
+  compiled INTEGER NOT NULL DEFAULT 0, score INTEGER, percent REAL, diffs INTEGER, matched INTEGER NOT NULL DEFAULT 0,
+  classes TEXT, error TEXT, created_at REAL);
+CREATE INDEX IF NOT EXISTS idx_experiments_fn ON experiments(function_id, id);
+CREATE INDEX IF NOT EXISTS idx_experiments_input ON experiments(function_id, input_hash);
 """
 
 # Columns added after the first release; applied in place to existing databases.

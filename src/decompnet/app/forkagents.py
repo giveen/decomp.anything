@@ -218,6 +218,7 @@ class ForkAgentMixin:
                                    "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 6", fn["id"])
         if notes:
             lines += ["", "### Notes"] + [f"- ({n['name']}) {n['text']}" for n in notes]
+        lines += self.matrix_brief(fn, fp)
         lines += ["", "Send compile_and_diff the complete function definition (same name and signature as the original), "
                       "with any #include \"...\", prototypes or #pragma lines it needs. Structs, globals and helper "
                       "functions go in with edit_file."]
@@ -372,6 +373,21 @@ class ForkAgentMixin:
         with suppress(NetworkError):
             link.call("/collab/best", agent, function=name, source=source, score=score)
 
+    def _placed(self, proj, fp: ForkProject, unit, fn, names: list[str], before: str, code: str, includes: list[str],
+                before_lines: list[str], after_lines: list[str], prelude: str) -> str:
+        """The source file's text (`before`) with the function's new definition in place of the old one or of its
+        stub, or where it was in the original when the file doesn't have it yet."""
+        _hit, old_span = self._find(before, names)
+        pre, post = "".join(ln + "\n" for ln in before_lines), "".join(ln + "\n" for ln in after_lines)
+        if old_span:
+            lo, hi = old_span
+            if any(PRAGMA.match(ln) for ln in before_lines + after_lines):  # a new wrapper replaces the old one
+                lo, hi = _pragmas_around(before, lo, hi)
+            after = before[:lo] + pre + code.rstrip("\n") + "\n" + post + before[hi:]
+        else:
+            after = self._insert_in_order(proj, fp, unit, fn, before, pre + code.rstrip("\n") + "\n" + post)
+        return _with_includes(after, includes, prelude)
+
     def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
                  quiet: int | None = None) -> dict:
         proj, fp, _cfg = self.get(slug)
@@ -422,16 +438,7 @@ class ForkAgentMixin:
                 protected = {n for n, pct in (self._last_scores(proj, unit) or {}).items()
                              if n != symbol and n not in held and pct is not None and pct >= 100}
                 was_matched = fn["status"] == "matched"
-            _hit, old_span = self._find(before, names)
-            pre, post = "".join(ln + "\n" for ln in before_lines), "".join(ln + "\n" for ln in after_lines)
-            if old_span:
-                lo, hi = old_span
-                if any(PRAGMA.match(ln) for ln in before_lines + after_lines):  # a new wrapper replaces the old one
-                    lo, hi = _pragmas_around(before, lo, hi)
-                after = before[:lo] + pre + code.rstrip("\n") + "\n" + post + before[hi:]
-            else:
-                after = self._insert_in_order(proj, fp, unit, fn, before, pre + code.rstrip("\n") + "\n" + post)
-            after = _with_includes(after, includes, prelude)
+            after = self._placed(proj, fp, unit, fn, names, before, code, includes, before_lines, after_lines, prelude)
             path.write_text(after, encoding="utf-8")
 
             def undo() -> None:
@@ -503,6 +510,8 @@ class ForkAgentMixin:
         stall = self.net.stall_note(fn["id"], agent.id)
         if d.literals:
             return {"text": f"score {score} (0 = identical). {d.literals_note()}{stall}", "score": score, "matched": False}
-        return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}{stall}", "score": score,
-                "matched": False}
+        # the kinds of difference left, and the compiler matrix when they are all a compiler's (forkmatrix.py)
+        more = self.matrix_after_miss(agent, slug, fn["name"], source, d.rows, pct) if keep and quiet is None else ""
+        return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}{more}{stall}",
+                "score": score, "matched": False}
 

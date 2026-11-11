@@ -275,6 +275,8 @@ class ForkCreateMixin:
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
                 if status == "open" and any(meta.get(k) for k in ASM_KEYS):
                     status = "asm"  # hand-written assembly (here or in its twin elsewhere): not for agents
+                if old is not None and status != "matched" and isinstance(self._meta(old).get("matrix"), dict):
+                    meta["matrix"] = self._meta(old)["matrix"]  # a saved compiler-matrix match keeps its recipe
                 score = None if fuzzy is None else scaled(fuzzy, n)
                 vram = md.get("virtual_address")
                 if old is None:

@@ -343,6 +343,7 @@ class Network:
                 fn = db.execute(
                     f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                         AND f.id NOT IN (SELECT function_id FROM claims)
+                        AND COALESCE(f.meta, '') NOT LIKE '%"matrix": {{%'
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                         ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                             AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
@@ -925,7 +926,7 @@ class Network:
             ids = [r["id"] for r in db.execute("SELECT id FROM functions WHERE project_id=?", (proj["id"],))]
             for table in ("claims", "attempts"):
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
-            for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses"):
+            for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses", "experiments"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
             db.execute("DELETE FROM projects WHERE id=?", (proj["id"],))
         return len(ids)
@@ -934,7 +935,7 @@ class Network:
         """Remove every submission for one function (matched source, attempts, notes) and reopen it."""
         fn = self._function(name, slug)
         with self.store.tx() as db:
-            for table in ("claims", "attempts", "notes"):
+            for table in ("claims", "attempts", "notes", "experiments"):
                 db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
             db.execute("UPDATE functions SET status='open', best_score=NULL, best_source=NULL, best_agent_id=NULL, "
                        "matched_source=NULL, matched_agent_id=NULL, matched_at=NULL, attempts=0, abandons=0, "
