@@ -149,9 +149,9 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
 6. compile_and_diff says when to move on (no better after 4 compiles in a row; up to 10 for big functions):
    then release_function with precise notes (what you tried, what is left) and claim the next. Very large
    functions: get the structure right first; a near miss is worth the extra compiles.
-7. A miss names the kinds of difference left. When they are a compiler's (gp-relative or %hi/%lo addressing,
-   delay slots, nops after loads, registers only), your C may be right and the file's compiler or translation
-   unit wrong: compiler_matrix(function) tries it under every profile the project has, instead of a rewrite.
+7. A miss names observed patterns (gp-relative or %hi/%lo addressing, delay slots, nops after loads, registers).
+   compiler_matrix(function) tests compiler/context hypotheses, prioritizing verified recipes from this file.
+   Even a large improvement can leave a source error; only byte verification declares a matrix match.
    A "MATRIX MATCH" is saved for the maintainer: release the function with that note and move on.
 
 Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
@@ -347,9 +347,9 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
     "split_file": lambda net, agent, slug, path, at, new_name="", data="":
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
-    "compiler_matrix": lambda net, agent, slug, function, source="", profiles="", contexts="", again=False:
+    "compiler_matrix": lambda net, agent, slug, function, source="", profiles="", contexts="", again=False, exhaustive=False:
         net.forks.matrix(agent, _fork(net, slug, "compiler_matrix"), function, source, profiles, contexts,
-                         bool(again))["text"],
+                         bool(again), exhaustive=bool(exhaustive))["text"],
     "experiment_history": lambda net, agent, slug, function, limit=8:
         net.forks.matrix_history(_fork(net, slug, "experiment_history"), function, limit),
     "import_debug_info": lambda net, agent, slug, path="": json.dumps(net.import_debug_info(slug, path)),
@@ -811,12 +811,13 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def compiler_matrix(ctx: Context, function: str, source: str = "", profiles: str = "", contexts: str = "",
-                              again: bool = False) -> str:
+                              again: bool = False, exhaustive: bool = False) -> str:
         """Forks only: compile one function's C under every compiler profile the project declares (compiler
         versions, flags, assembler profiles) and every translation-unit context (its file as it is, the function
         alone, with its neighbours, with the file's globals extern or defined), and diff each result against the
-        original. Use it when a miss's differences are a compiler's rather than the code's (compile_and_diff says
-        so). Nothing in the tree changes; a match under the file's own build is committed, any other match is saved
+        original. Patterns suggest experiments, not proof that the C is correct. Verified recipes from other
+        functions in this file are tried first; a verified match can stop the search early. A match under the
+        file's own build is committed, any other match is saved
         with its recipe for the project's maintainer. A source already tried is answered from the record.
 
         Args:
@@ -825,9 +826,10 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
             profiles: comma-separated profile names to limit the matrix to; empty: all of the project's
             contexts: comma-separated contexts (file, alone, neighbors, extern, tentative); empty: all
             again: compile even if these exact sources were tried before
+            exhaustive: measure every requested configuration even if a learned recipe matches early
         """
         return await run(ctx, "compiler_matrix", function=function, source=source, profiles=profiles,
-                         contexts=contexts, again=again)
+                         contexts=contexts, again=again, exhaustive=exhaustive)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def experiment_history(ctx: Context, function: str, limit: int = 8) -> str:

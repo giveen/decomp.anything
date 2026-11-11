@@ -129,7 +129,7 @@ def register(ctx: ServerContext) -> None:
         """You, running the compiler matrix on a function from the GUI (see forkmatrix.py)."""
         agent, _ = net.local_agent("you")
         res = net.forks.matrix(agent, slug, str(data.get("name", "")), str(data.get("source", "")),
-                               again=bool(data.get("again")))
+                               again=bool(data.get("again")), exhaustive=bool(data.get("exhaustive")))
         return {"matched": res["matched"], "committed": res["committed"], "repeat": res["repeat"], "text": res["text"]}
 
     def p_matrix_sweep(slug, request, data):

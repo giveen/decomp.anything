@@ -14,8 +14,8 @@ CPU: MIPS R3000A (MIPS I). Things that look odd at first:
 
 Compilers: PSY-Q SDK GCC 2.6/2.7.2/2.8.x and ASPSX versions differ in register allocation and
 instruction scheduling; the project picks them per file. Code is mostly C. In a fork, when a miss differs only
-in those ways, `compiler_matrix(function)` compiles your C under each of the project's compiler profiles and
-translation-unit contexts (see `guide("matrix")`) instead of you rewriting it.
+in those ways, `compiler_matrix(function)` tests compiler/context hypotheses, prioritizing verified recipes from
+other functions in the file (see `guide("matrix")`). A partial improvement does not rule out a source error.
 
 Libraries: PSY-Q's libgte, libgpu, libgs, libspu, libcd, libetc, libapi and libc are usually linked
 as library objects, not decompiled; their names and prototypes are in the project's headers.

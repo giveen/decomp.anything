@@ -75,11 +75,11 @@ def test_registers_alone_are_a_maybe_and_other_code_is_the_source():
     assert both.verdict == "mixed"
     stack = _kinds([("|", "sw ra, 0x14(sp)", "sw ra, 0x1c(sp)")])
     assert stack.counts == {"stack": 1} and stack.verdict == "source"
-    assert _kinds([(" ", "jr ra", "jr ra")]).verdict == "match" and _kinds([]).note() == ""
+    assert _kinds([(" ", "jr ra", "jr ra")]).verdict == "unknown" and _kinds([]).note() == ""
 
 
-def test_a_branch_that_only_lands_elsewhere_because_one_side_is_longer_is_no_difference():
-    """Rows of a real PlayStation near miss: one extra `lui at` moves every later branch target by four bytes."""
+def test_branch_targets_are_kept_when_one_side_is_longer():
+    """An extra instruction can explain a shifted target, but cannot prove the branch still reaches the same block."""
     rows = [("i", "lw v0, 0x0(v1)", "lw v1, 0x0(v1)"), (" ", "nop ", "nop "),
             ("i", "bgtz v0, 0xb8", "bgtz v1, 0xbc"),
             (" ", "addiu v0, zero, 0x20", "addiu v0, zero, 0x20"),
@@ -87,17 +87,17 @@ def test_a_branch_that_only_lands_elsewhere_because_one_side_is_longer_is_no_dif
             ("i", "sw v0, -0x28(v1)", "sw v0, %lo(D_80072F68-0x28)(at)"),
             ("i", "beqz v0, 0xc0", "beqz v0, 0xc4")]
     c = _kinds(rows)
-    assert c.counts == {"hi_lo": 2, "regalloc": 2} and c.total == 4 and c.verdict == "compiler"
+    assert c.counts == {"hi_lo": 2, "regalloc": 1, "other": 2} and c.total == 5 and c.verdict == "mixed"
     # the same length on both sides: a branch to another place is a difference
     assert _kinds([("i", "beqz v0, 0xc0", "beqz v0, 0xc4")]).counts == {"other": 1}
 
 
 def test_the_advice_follows_where_the_projects_matrix_stands():
     c = _kinds([("|", "lw v0, %gp_rel(D_1)(gp)", "lui v0, %hi(D_1)"), (">", "", "lw v0, %lo(D_1)(v0)")])
-    assert "compiler_matrix tries it" in c.note() and "compiler_matrix" not in c.note("none")
-    assert "declares no compiler matrix" in c.note("none") and "No profile or context" in c.note("done")
+    assert "compiler_matrix tests" in c.note() and "compiler_matrix" not in c.note("none")
+    assert "declares no compiler matrix" in c.note("none") and "No tested configuration" in c.note("done")
     regs = _kinds([("|", "addu v0, a0, a1", "addu v1, a0, a1")])
-    assert "compiler_matrix is one call" in regs.note() and "most likely the C's shape" in regs.note("done")
+    assert "compiler_matrix tests" in regs.note() and "both the C and the build settings" in regs.note("done")
 
 
 def test_an_instruction_moved_into_a_delay_slot_is_scheduling():
@@ -112,7 +112,8 @@ def test_classes_survive_the_database():
     c = _kinds([("|", "lw v0, %gp_rel(D_1)(gp)", "lui v0, %hi(D_1)"), ("|", "addu v0, a0, a1", "addu v1, a0, a1")])
     back = compilerdiff.from_json(c.to_json())
     assert back.counts == c.counts and back.total == c.total and back.gp == c.gp and back.verdict == c.verdict
-    assert compilerdiff.from_json(None).total == 0 and compilerdiff.from_json("not json").verdict == "match"
+    assert back.examples == c.examples
+    assert compilerdiff.from_json(None).total == 0 and compilerdiff.from_json("not json").verdict == "unknown"
 
 
 # ------------------------------------------------------------------ translation-unit contexts
@@ -304,7 +305,7 @@ def test_a_match_the_files_own_build_makes_is_committed(fork):
     net, slug, agent = fork
     root = Path(net.project_row(slug)["root"])
     before = net.overview(slug)["matched"]
-    res = net.forks.matrix(agent, slug, "lerp", _ref("lerp"))
+    res = net.forks.matrix(agent, slug, "lerp", _ref("lerp"), exhaustive=True)
     assert res["matched"] and res["committed"] and not res["repeat"], res["text"]
     assert _cells(res, profile="O2", context="file")[0]["matched"]
     assert {c["profile"] for c in res["cells"]} == {"O2", "O1"} and all(c["compiled"] for c in res["cells"])
@@ -337,7 +338,7 @@ def test_a_match_under_another_profile_is_saved_with_its_recipe(fork):
         assert fn["status"] == "open" and json.loads(fn["meta"])["matrix"]["profile"] == "O2"
         assert fn["best_source"].strip() == _ref(name)
         note = net.store.one("SELECT text FROM notes WHERE function_id=? ORDER BY id DESC", fn["id"])["text"]
-        assert note.startswith("MATRIX MATCH") and "Don't rewrite it" in note
+        assert note.startswith("MATRIX MATCH") and "verification before integration" in note
         saved = net.forks.matrix_matches(slug)
         assert [(m["function"], m["profile"], m["context"]) for m in saved] == [(name, "O2", "file")]
         assert saved[0]["source"].strip() == _ref(name) and saved[0]["source_path"] == "src/game.c"

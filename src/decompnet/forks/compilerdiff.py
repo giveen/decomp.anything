@@ -17,19 +17,16 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
-# kind -> (what it is, what usually fixes it)
+# These are observations, not diagnoses of the C or the toolchain.
 KINDS = {
     "gp_rel": ("GP-relative addressing",
-               "a global is read through $gp on one side and by its full address on the other: whether the file "
-               "defines it (or declares it small) decides that, not the function's code"),
+               "$gp usage differs; small-data flags and declarations are possible causes; check the referenced global"),
     "hi_lo": ("HI/LO address splitting",
-              "the same address is built with another %hi/%lo split (lui into $at, the %lo on the load or on an "
-              "addiu): an assembler/compiler profile difference"),
+              "address construction differs; check symbols, addends and types as well as assembler/compiler settings"),
     "delay_slot": ("delay slot scheduling",
-                   "a branch's delay slot holds another instruction (or a nop): compiler versions and assembler "
-                   "profiles fill slots differently"),
+                   "instructions around a branch slot differ; scheduling is possible, but side effects may differ too"),
     "load_delay": ("load delay handling",
-                   "a nop after a load is on one side only: the assembler profile decides when one is needed"),
+                   "a nop after a load differs; check dependencies as well as the assembler profile"),
     "nop": ("additional NOP instructions", "nops on one side only, away from loads and branches"),
     "regalloc": ("register allocation",
                  "the same instructions with other registers: a compiler version does this, and so does a "
@@ -37,9 +34,10 @@ KINDS = {
     "reorder": ("instruction order",
                 "the same instructions in another order: a compiler's scheduling, or the order of statements"),
     "stack": ("stack layout", "only stack offsets differ: a local or the frame is another size"),
-    "other": ("different code", "other operations or constants: the C itself differs here"),
+    "other": ("unexplained code differences", "check operations, constants, references and control flow in the C"),
+    "encoding": ("encoding or relocation differences", "the displayed instructions agree, but the diff marks a difference"),
 }
-STRONG = ("gp_rel", "hi_lo", "delay_slot", "load_delay", "nop")  # kinds the C of one function rarely explains
+STRONG = ("gp_rel", "hi_lo", "delay_slot", "load_delay", "nop")  # candidates for a controlled compiler experiment
 WEAK = ("regalloc", "reorder")  # a compiler or the C's shape, either one
 
 _BRANCH = re.compile(r"^(b[a-z0-9]*|j|jal|jr|jalr)$")
@@ -68,13 +66,13 @@ class Classes:
     counts: dict[str, int] = field(default_factory=dict)  # kind -> differing rows of that kind
     total: int = 0  # differing rows
     gp: tuple[int, int] = (0, 0)  # gp-relative accesses in (the original, yours)
+    examples: dict[str, list[dict]] = field(default_factory=dict)
 
     @property
     def verdict(self) -> str:
-        """match, compiler (every differing row is of a kind a compiler or TU makes), maybe (only register
-        allocation or order: either one), mixed (some of each) or source (nothing here points at the compiler)."""
+        """Experiment routing only, never a match verdict or proof of a cause. Empty rows say nothing about bytes."""
         if not self.total:
-            return "match"
+            return "unknown"
         strong = sum(self.counts.get(k, 0) for k in STRONG)
         weak = sum(self.counts.get(k, 0) for k in WEAK)
         rest = self.total - strong - weak
@@ -82,7 +80,7 @@ class Classes:
             return "compiler"
         if rest == 0:
             return "maybe"
-        return "mixed" if strong else "source"
+        return "mixed" if strong or weak else "source"
 
     def summary(self) -> str:
         """One line: `GP-relative addressing x3, register allocation x2`."""
@@ -101,30 +99,22 @@ class Classes:
             if kind == "gp_rel" and self.gp[0] != self.gp[1]:
                 extra = f" (the original reads {self.gp[0]} through $gp, yours {self.gp[1]})"
             lines.append(f"- {name} x{n}{extra}: {why}")
+            for example in self.examples.get(kind, [])[:2]:
+                lines.append(f"  row {example['row']}: {example['target'] or '(absent)'} -> {example['base'] or '(absent)'}")
         verdict = self.verdict
-        if verdict == "source":
-            return "\n".join(lines)
-        what = {"compiler": "Every difference is of a kind the compiler, its profile or the file's declarations make, "
-                            "not the function's logic: your C may already be right.",
-                "maybe": "Only registers or order differ: another compiler version does that, and so does the C's "
-                         "shape (a temporary, the order of declarations or statements).",
-                "mixed": "Some rows are compiler-like, others are different code: fix the code first."}[verdict]
-        then = {"ask": {"compiler": "Don't rewrite it: compiler_matrix tries it under the project's other compilers "
-                                    "and translation-unit contexts.",
-                        "maybe": "compiler_matrix is one call; try it before a long series of rewrites.",
-                        "mixed": "compiler_matrix can test what is left after that."},
-                "none": {"compiler": "This project declares no compiler matrix to test that: leave it as the best "
-                                     "attempt, with a note saying which kinds are left.",
-                         "maybe": "Note it if rewrites don't move it.", "mixed": ""},
-                "done": {"compiler": "No profile or context of this project closes it, though: it may need a compiler "
-                                     "or flags the project doesn't declare. Note that, and move on.",
-                         "maybe": "No profile or context closes it, so it is most likely the C's shape.",
-                         "mixed": ""}}[matrix][verdict]
-        lines.append(f"→ {what} {then}".rstrip())
+        lines.append("These patterns are hypotheses, not proof of compiler causation or correct C. "
+                     "A configuration can reduce differences while a source error remains. Only byte-for-byte verification declares MATCH.")
+        if matrix == "done":
+            lines.append("No tested configuration verified a match. Review the remaining evidence in both the C and the build settings.")
+        elif matrix == "none" and verdict != "source":
+            lines.append("This project declares no compiler matrix to test these hypotheses.")
+        elif matrix == "ask" and verdict != "source":
+            lines.append("compiler_matrix tests the same C under other profiles and contexts; it does not certify a partial improvement.")
         return "\n".join(lines)
 
     def to_json(self) -> str:
-        return json.dumps({"counts": self.counts, "total": self.total, "gp": list(self.gp), "verdict": self.verdict})
+        return json.dumps({"counts": self.counts, "total": self.total, "gp": list(self.gp), "verdict": self.verdict,
+                           "examples": self.examples})
 
 
 def from_json(text: str | None) -> Classes:
@@ -134,14 +124,7 @@ def from_json(text: str | None) -> Classes:
         d = {}
     gp = d.get("gp") or [0, 0]
     return Classes({str(k): int(v) for k, v in (d.get("counts") or {}).items() if k in KINDS}, int(d.get("total") or 0),
-                   (int(gp[0]), int(gp[1])))
-
-
-def _untarget(text: str) -> str:
-    """A branch without its destination (an offset inside the function)."""
-    if _mnemonic(text).startswith("b") and _BRANCH.match(_mnemonic(text)):
-        return re.sub(r"(0x[0-9a-f]+|\d+)\s*$", "<to>", text.rstrip(), flags=re.IGNORECASE)
-    return text
+                   (int(gp[0]), int(gp[1])), d.get("examples") or {})
 
 
 def _only_registers_differ(a: str, b: str) -> bool:
@@ -164,11 +147,8 @@ def classify(rows: list[tuple[str, str, str]]) -> Classes:
     """The kinds of difference in a diff's rows: (marker, the original's instruction, yours), aligned as objdiff
     gives them (an instruction only one side has leaves the other side empty)."""
     rows = [(m, t or "", b or "") for m, t, b in rows]
-    if any(m.strip() and bool(t.strip()) != bool(b.strip()) for m, t, b in rows):
-        # one side is longer, so every branch across the extra instructions lands somewhere else: that follows
-        # from the difference, it isn't one
-        rows = [(m, _untarget(t), _untarget(b)) for m, t, b in rows]
-    differing = [i for i, (m, t, b) in enumerate(rows) if m.strip() and _norm(t) != _norm(b)]
+    # Never erase branch targets because the lengths differ: a real control-flow error looks the same.
+    differing = [i for i, (m, _t, _b) in enumerate(rows) if m.strip()]
     if not differing:
         return Classes()
     gp_t = sum(1 for _, t, _ in rows if _GP.search(t))
@@ -189,10 +169,17 @@ def classify(rows: list[tuple[str, str, str]]) -> Classes:
     moved = left & right
 
     counts: Counter[str] = Counter()
+    examples: dict[str, list[dict]] = {}
     for i in differing:
         _, t, b = rows[i]
         nt, nb = _is_nop(t), _is_nop(b)
-        if (nt or not t.strip()) and (nb or not b.strip()):
+        refs_t = re.findall(r"%\w+\(([^)]+)\)", t)
+        refs_b = re.findall(r"%\w+\(([^)]+)\)", b)
+        if _norm(t) == _norm(b):
+            kind = "encoding"
+        elif refs_t and refs_b and refs_t != refs_b:
+            kind = "other"  # a different symbol/addend must not hide behind a HI/LO or GP label
+        elif (nt or not t.strip()) and (nb or not b.strip()):
             kind = "nop"  # a nop against nothing (both nops would not be a differing row)
             side = 1 if nt else 2
             before = _mnemonic(prev(side, i))
@@ -204,6 +191,10 @@ def classify(rows: list[tuple[str, str, str]]) -> Classes:
             side = 1 if nt else 2
             before = _mnemonic(prev(side, i))
             kind = "delay_slot" if _BRANCH.match(before) else "load_delay" if _LOAD.match(before) else "nop"
+        elif t.strip() and b.strip() and _mnemonic(t) != _mnemonic(b) and _mnemonic(t) != "lui" and _mnemonic(b) != "lui":
+            kind = "reorder" if moved[_norm(t)] > 0 and moved[_norm(b)] > 0 else "other"
+            if kind == "reorder" and (_BRANCH.match(_mnemonic(t)) or _BRANCH.match(_mnemonic(b))):
+                kind = "delay_slot"
         elif bool(_GP.search(t)) != bool(_GP.search(b)) or (gp_t != gp_b and (_HILO.search(t) or _HILO.search(b))):
             kind = "gp_rel"
         elif (_HILO.search(t) or _HILO.search(b)) and (hi_t != hi_b or bool(_HILO.search(t)) != bool(_HILO.search(b))
@@ -213,7 +204,7 @@ def classify(rows: list[tuple[str, str, str]]) -> Classes:
             kind = "regalloc"
         elif t.strip() and b.strip() and _only_stack_differs(t, b):
             kind = "stack"
-        elif (t.strip() and moved[_norm(t)] > 0) or (b.strip() and moved[_norm(b)] > 0):
+        elif (not t.strip() or moved[_norm(t)] > 0) and (not b.strip() or moved[_norm(b)] > 0):
             near_branch = (_BRANCH.match(_mnemonic(prev(1, i))) or _BRANCH.match(_mnemonic(prev(2, i)))
                            or _BRANCH.match(_mnemonic(t)) or _BRANCH.match(_mnemonic(b)))
             kind = "delay_slot" if near_branch else "reorder"
@@ -223,4 +214,7 @@ def classify(rows: list[tuple[str, str, str]]) -> Classes:
         else:
             kind = "other"
         counts[kind] += 1
-    return Classes(dict(counts), len(differing), (gp_t, gp_b))
+        sample = examples.setdefault(kind, [])
+        if len(sample) < 3:
+            sample.append({"row": i + 1, "target": t, "base": b})
+    return Classes(dict(counts), len(differing), (gp_t, gp_b), examples)

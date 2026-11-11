@@ -437,14 +437,18 @@ read as a near miss, because its file is built with the wrong compiler or it bel
 project that declares a `matrix` in its `.decomp.wtf.json` (a build command and its compiler profiles) gets that
 tested instead of rewritten:
 
-- **One call, every configuration.** `compiler_matrix(function)` compiles the function's C under each profile and each
+- **One call, learned search order.** `compiler_matrix(function)` compiles the function's C under each profile and each
   translation-unit context (its file as it is, the function alone, with its neighbours, with the file's globals
-  `extern` or defined) and diffs every object against the original. Nothing in the tree or the build changes.
+  `extern` or defined). Verified matches from other functions in the same file prioritize a recipe; a verified
+  early match saves the remaining builds. A miss continues through the remaining configurations. Use
+  `exhaustive=true` to measure all of them. Repeated attempts do not inflate the votes.
 - **A miss says what kind it is.** GP-relative addressing, `%hi`/`%lo` splitting, delay slots, nops after loads and
-  register allocation are named as such, apart from different code. When every difference is a compiler's,
-  the matrix runs on its own.
+  register operands are reported with example rows, alongside unexplained code differences. These are hypotheses,
+  not proof of a compiler cause. Reports quantify improvement against the measured current-profile/file baseline
+  while keeping remaining source, constant and reference differences visible.
 - **Matches are kept.** One the file's own build makes is committed like any match. One that needs the build
-  changed is saved with its recipe (profile, context, source) and taken out of the agents' queue;
+  changed is saved with its recipe (profile, context, source) and taken out of the agents' queue. MATCH requires
+  independent function-byte and relocation verification, plus constant/reference checks, even at 100% similarity;
   `GET /api/matrix?slug=…` lists them for the maintainer.
 - **Every experiment is recorded** per function (`experiment_history`): source revision, compiler and flags,
   context, differing instructions, kinds of difference, match or not. A source already tried is answered from the

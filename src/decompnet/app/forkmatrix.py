@@ -16,7 +16,7 @@ The project says how to compile, in its `.decomp.wtf.json`:
       "auto": true                                                         (optional: after a compiler-like miss)
     }
 
-`build` is run once per matrix, in the project folder, with `{job}` replaced by the path of a JSON file:
+`build` runs per batch (a learned recipe first, then the remainder if needed), with `{job}` replaced by a JSON path:
 {"function", "symbol", "unit", "source_path", "result", "builds": [{"id", "profile", "context", "source", "object"}]}.
 It compiles each build's `source` with its `profile` into `object` (paths relative to the project) and may write
 `result`: {"current": the profile `source_path` is built with, "builds": {id: {"ok", "log"}}}. Sources and objects
@@ -45,7 +45,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from ..forks import compilerdiff, csource, objdiff, tucontext
+from ..forks import compilerdiff, csource, matrixverify, objdiff, tucontext
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import STATE, ForkError, ForkProject
 from ..network import Agent, NetworkError
@@ -109,12 +109,33 @@ class ForkMatrixMixin:
         with self._mlock:
             return self._matrix_locks[proj["id"]]
 
+    def _matrix_learning(self, proj, fn, mcfg: dict, source_path: str, target_hash: str) -> list[dict]:
+        """One vote per other function and recipe, from its latest verified experiment in this file/config/target."""
+        rows = self.net.store.all(
+            "SELECT e.*, f.name FROM experiments e JOIN functions f ON f.id=e.function_id WHERE e.id IN "
+            "(SELECT MAX(id) FROM experiments WHERE project_id=? AND source_path=? AND config=? AND target_hash=? "
+            "GROUP BY function_id, profile, context) AND f.project_id=? AND f.unit=? AND f.id<>? "
+            "AND e.compiled=1 AND e.matched=1 ORDER BY e.id",
+            proj["id"], source_path, mcfg["digest"], target_hash, proj["id"], fn["unit"], fn["id"])
+        votes: dict[tuple[str, str], dict] = {}
+        for row in rows:
+            evidence = matrixverify.read_evidence(row["evidence"])
+            if evidence.get("version") != matrixverify.VERSION or evidence.get("byte_exact") is not True:
+                continue
+            key = row["profile"], row["context"]
+            vote = votes.setdefault(key, {"profile": key[0], "context": key[1], "matches": 0, "functions": []})
+            vote["matches"] += 1
+            if len(vote["functions"]) < 5:
+                vote["functions"].append(row["name"])
+        return sorted(votes.values(), key=lambda v: (-v["matches"], v["profile"], v["context"]))
+
     # ------------------------------------------------------------------ one function through the matrix
 
     def matrix(self, agent: Agent, slug: str, function: str, source: str = "", profiles: str = "", contexts: str = "",
-               again: bool = False, commit: bool = True, terse: bool = False) -> dict:
+               again: bool = False, commit: bool = True, terse: bool = False, exhaustive: bool = False) -> dict:
         """Compile `source` (default: the function as it is in its file, else its best attempt) under the
-        project's profiles and contexts. {"text", "matched", "committed", "cells", "repeat"}. `commit`: whether a
+        project's profiles and contexts, trying a verified same-file recipe first unless `exhaustive` is set.
+        {"text", "matched", "committed", "cells", "repeat"}. `commit`: whether a
         match is kept (committed, or saved with its recipe). `terse`: the answer follows a miss's own diff."""
         proj, fp, _cfg = self.get(slug)
         mcfg = self.matrix_config(fp)
@@ -160,28 +181,54 @@ class ForkMatrixMixin:
             raise NetworkError(f"no such context {unknown[0]!r}; there are: " + ", ".join(tucontext.CONTEXTS))
         texts = tucontext.contexts(text, names[0], want_contexts)
         source_hash = hashlib.sha256(code.encode()).hexdigest()
-        input_hash = hashlib.sha256(json.dumps([mcfg["digest"], [p["name"] for p in plist], sorted(texts.items())])
+        target_hash = hashlib.sha256(unit.target.read_bytes()).hexdigest()
+        input_hash = hashlib.sha256(json.dumps([matrixverify.VERSION, mcfg["digest"], target_hash, exhaustive,
+                                               [p["name"] for p in plist], sorted(texts.items())])
                                     .encode()).hexdigest()
         if not again:
-            done = self.net.store.all("SELECT * FROM experiments WHERE function_id=? AND input_hash=? ORDER BY id",
-                                      fn["id"], input_hash)
+            done = self.net.store.all("SELECT * FROM experiments WHERE function_id=? AND run=(SELECT run FROM experiments "
+                                      "WHERE function_id=? AND input_hash=? ORDER BY id DESC LIMIT 1) ORDER BY id",
+                                      fn["id"], fn["id"], input_hash)
             if done:
                 cells = [self._cell_of(r) for r in done]
                 said = ("(These exact sources were already tried under this matrix; nothing was compiled. "
                         "again=true compiles anyway.)\n" + self._matrix_text(fn, mcfg, cells, source_hash, None))
                 hits = [c for c in cells if c["matched"]]
                 kept = False
-                if hits and commit and fn["status"] != "matched" and not isinstance(meta.get("matrix"), dict):
+                saved = meta.get("matrix") or {}
+                if hits and commit and fn["status"] != "matched" and saved.get("verified") != matrixverify.VERSION:
                     # matched before and not kept (the tree was reset since, or it was only measured): keep it now
-                    was = next((c["profile"] for c in cells if c["current"]), None)
+                    was = self._matrix_current(cells)
                     kept, more = self._matrix_keep(agent, slug, proj, fn, source, hits, was)
                     said += more
                 return {"text": said, "matched": bool(hits), "committed": kept, "cells": cells, "repeat": True}
 
         run = uuid.uuid4().hex[:12]
         started = time.time()
+        pairs = [(p["name"], ctx) for ctx in texts for p in plist]
+        learning = [v for v in self._matrix_learning(proj, fn, mcfg, unit.source, target_hash)
+                    if (v["profile"], v["context"]) in pairs]
         with self._matrix_lock(proj):
-            cells, current = self._matrix_build(fp, mcfg, plist, texts, fn, unit, symbol, run)
+            if learning and not exhaustive:
+                first = learning[0]
+                preferred = (first["profile"], first["context"])
+                cells, current = self._matrix_build(fp, mcfg, plist, texts, fn, unit, symbol, run, [preferred])
+                cells[0]["evidence"]["learning"] = first
+                remaining = [pair for pair in pairs if pair != preferred]
+                if not any(c["matched"] for c in cells) and remaining:
+                    rest, rest_current = self._matrix_build(fp, mcfg, plist, texts, fn, unit, symbol, run + "-rest", remaining)
+                    cells.extend(rest)
+                    if current and rest_current and current != rest_current:
+                        raise NetworkError("the current compiler profile changed between batches; run the matrix again")
+                    current = rest_current or current
+            else:
+                cells, current = self._matrix_build(fp, mcfg, plist, texts, fn, unit, symbol, run)
+        if hashlib.sha256(unit.target.read_bytes()).hexdigest() != target_hash:
+            raise NetworkError("the original object changed during the experiment; run the matrix again")
+        for c in cells:
+            c["current"] = c["profile"] == current
+            c["evidence"]["planned_builds"] = len(pairs)
+            c["evidence"]["current_profile"] = current
         took = time.time() - started
         best = self._best_cell(cells, current)
         with self.net.store.tx() as db:
@@ -189,11 +236,13 @@ class ForkMatrixMixin:
                 db.execute(
                     "INSERT INTO experiments(project_id, function_id, agent_id, run, config, input_hash, source_hash, "
                     "source, profile, compiler, flags, context, current, compiled, score, percent, diffs, matched, "
-                    "classes, error, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "classes, error, created_at, source_path, target_hash, evidence) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (proj["id"], fn["id"], agent.id, run, mcfg["digest"], input_hash, source_hash,
                      source if c is best else None, c["profile"], c["compiler"], c["flags"], c["context"],
                      int(c["profile"] == current), int(c["compiled"]), c["score"], c["percent"], c["diffs"],
-                     int(c["matched"]), c["classes"].to_json() if c["classes"] else None, c["error"], started))
+                     int(c["matched"]), c["classes"].to_json() if c["classes"] else None, c["error"], started,
+                     unit.source, target_hash, json.dumps(c["evidence"])))
         out = [self._matrix_text(fn, mcfg, cells, source_hash, current, took)]
         hits = [c for c in cells if c["matched"]]
         committed = False
@@ -212,7 +261,7 @@ class ForkMatrixMixin:
         return {"text": "\n".join(out), "matched": bool(hits), "committed": committed, "cells": cells, "repeat": False}
 
     def _matrix_build(self, fp: ForkProject, mcfg: dict, plist: list[dict], texts: dict[str, str], fn, unit,
-                      symbol: str, run: str) -> tuple[list[dict], str | None]:
+                      symbol: str, run: str, pairs: list[tuple[str, str]] | None = None) -> tuple[list[dict], str | None]:
         """Write the sources, run the project's matrix build, measure every object. (cells, the file's profile)."""
         work = fp.root / STATE / "matrix" / run
         work.mkdir(parents=True, exist_ok=True)
@@ -224,12 +273,15 @@ class ForkMatrixMixin:
                 src = work / f"{ctx}{suffix}"
                 src.write_text(body, encoding="utf-8", newline="\n")
                 for p in plist:
+                    if pairs is not None and (p["name"], ctx) not in pairs:
+                        continue
                     k = len(builds)
                     builds.append({"id": f"b{k}", "profile": p["name"], "context": ctx, "source": rel(src),
                                    "object": rel(work / f"b{k}.o")})
                     cells.append({"profile": p["name"], "compiler": p["compiler"], "flags": p["flags"], "context": ctx,
                                   "compiled": False, "score": None, "percent": None, "diffs": None, "matched": False,
-                                  "classes": None, "error": None})
+                                  "classes": None, "error": None, "evidence": {"version": matrixverify.VERSION,
+                                                                             "byte_exact": False}})
             job = work / "job.json"
             job.write_text(json.dumps({"function": fn["name"], "symbol": symbol, "unit": unit.name,
                                        "source_path": unit.source, "result": rel(work / "result.json"),
@@ -267,10 +319,13 @@ class ForkMatrixMixin:
                     c["error"] = "the function isn't in the compiled object"
                     return
                 c["percent"] = d.match_percent
-                c["matched"] = d.matched
-                c["diffs"] = 0 if d.matched else max(1, sum(1 for m, _, _ in d.rows if m.strip()), len(d.literals))
-                c["score"] = (0 if d.matched else max(1, len(d.literals)) if d.literals
-                              else scaled(d.match_percent, fn["n_insns"]))
+                c["evidence"] = matrixverify.verify(unit.target, obj, symbol)
+                c["evidence"]["literal_diffs"] = len(d.literals)
+                c["evidence"]["references"] = d.renamed
+                c["evidence"]["literal_details"] = [m.describe() for m in d.literals[:6]]
+                c["matched"] = d.matched and c["evidence"]["byte_exact"] and not d.renamed
+                c["diffs"] = sum(1 for m, _, _ in d.rows if m.strip())
+                c["score"] = 0 if c["matched"] else max(1, len(d.literals), scaled(d.match_percent, fn["n_insns"]))
                 c["classes"] = compilerdiff.classify(d.rows) if mips else None
                 c["rows"] = d.rows
 
@@ -293,10 +348,13 @@ class ForkMatrixMixin:
     def _matrix_keep(self, agent: Agent, slug: str, proj, fn, source: str, hits: list[dict],
                      current: str | None) -> tuple[bool, str]:
         """A match: committed when the file's own build makes it, saved with its recipe otherwise."""
+        hits = [c for c in hits if c["matched"] and c.get("evidence", {}).get("byte_exact") is True]
+        if not hits:
+            return False, "\nNo byte-verified match to save."
         in_file = [c for c in hits if c["context"] == "file" and (current is None or c["profile"] == current)]
         if in_file:
             try:
-                res = self.attempt(agent, slug, fn["name"], source, keep=False)
+                res = self.attempt(agent, slug, fn["name"], source, keep=False, require_bytes=True)
             except NetworkError as e:
                 res = {"matched": False, "text": str(e)}
             if res.get("matched"):
@@ -308,15 +366,15 @@ class ForkMatrixMixin:
         hit = min(hits, key=lambda c: (c["profile"] != current, order.index(c["context"])))
         others = [f"{c['profile']} / {c['context']}" for c in hits if c is not hit]
         recipe = {"profile": hit["profile"], "context": hit["context"], "at": time.time(),
-                  "source_hash": hashlib.sha256(source.encode()).hexdigest()}
+                  "source_hash": hashlib.sha256(source.encode()).hexdigest(), "verified": matrixverify.VERSION}
         change = []
         if current is not None and hit["profile"] != current:
             change.append(f"compiled with {hit['profile']} (its file is built with {current})")
         if hit["context"] != "file":
             change.append(f"in the `{hit['context']}` context ({tucontext.CONTEXTS[hit['context']]})")
         how = " and ".join(change) or f"under {hit['profile']} / {hit['context']}"
-        note = (f"MATRIX MATCH: this C is byte-identical to the original when {how}. The C is right; the build "
-                f"needs the change (the file's compiler, or this function in its own file). Don't rewrite it."
+        note = (f"MATRIX MATCH: this function's object bytes and relocation identities are verified when {how}. "
+                "The project's normal build still needs verification before integration. Preserve this source and recipe."
                 + (f" Also matches: {', '.join(others[:6])}." if others else ""))
         with self.net.store.tx() as db:
             row = db.execute("SELECT meta, best_score FROM functions WHERE id=?", (fn["id"],)).fetchone()
@@ -327,24 +385,77 @@ class ForkMatrixMixin:
             db.execute("INSERT INTO notes(project_id, function_id, agent_id, text, created_at) VALUES(?,?,?,?,?)",
                        (proj["id"], fn["id"], agent.id, note, time.time()))
             self.net._event(db, proj["id"], agent.id, "matrix", fn["name"])
-        return False, (f"\n✅ MATRIX MATCH: {fn['name']} is byte-identical to the original when {how}.\n"
-                       "Your C is right; what differs is how the project builds this file, which agents can't change. "
+        return False, (f"\n✅ MATRIX MATCH: {fn['name']} has byte-identical function code and matching relocations when {how}.\n"
+                       "The project's normal build still needs verification before integration. "
                        "The source and its recipe are saved on the function (notes and experiment history) for the "
-                       "project's maintainer. Don't rewrite it: release_function, then claim the next one.")
+                       "project's maintainer. Preserve this result: release_function, then claim the next one.")
+
+    @staticmethod
+    def _matrix_current(cells: list[dict]) -> str | None:
+        # An early match may omit the current profile entirely: retain the adapter's answer in the history.
+        return next((c.get("evidence", {}).get("current_profile") for c in cells
+                     if c.get("evidence", {}).get("current_profile")),
+                    next((c["profile"] for c in cells if c.get("current")), None))
 
     @staticmethod
     def _cell_of(r) -> dict:
+        evidence = matrixverify.read_evidence(r["evidence"])
         return {"profile": r["profile"], "compiler": r["compiler"] or "", "flags": r["flags"] or "",
                 "context": r["context"], "compiled": bool(r["compiled"]), "score": r["score"], "percent": r["percent"],
-                "diffs": r["diffs"], "matched": bool(r["matched"]), "error": r["error"],
+                "diffs": r["diffs"], "matched": bool(r["matched"] and evidence.get("byte_exact") is True
+                                                    and evidence.get("version") == matrixverify.VERSION), "error": r["error"],
                 "classes": compilerdiff.from_json(r["classes"]) if r["classes"] else None,
-                "current": bool(r["current"])}
+                "current": bool(r["current"]), "evidence": evidence}
+
+    def _matrix_evidence(self, cells: list[dict], current: str | None) -> list[str]:
+        """Measured improvement and verification limits, also consumed by history and the browser."""
+        best = self._best_cell(cells, current)
+        lines = []
+        for c in cells:
+            learned = c.get("evidence", {}).get("learning")
+            if learned:
+                lines.append(f"Tried {c['profile']} / {c['context']} first: {learned['matches']} other function(s) "
+                             "in this file verified that recipe (one vote per function).")
+        planned = max((c.get("evidence", {}).get("planned_builds", len(cells)) for c in cells), default=0)
+        if planned > len(cells):
+            lines.append(f"Verified early match: built {len(cells)} of {planned} configurations; "
+                         "exhaustive=true measures the complete matrix.")
+        if best is None:
+            return lines
+        baseline = next((c for c in cells if c["context"] == "file" and c["profile"] == current
+                         and c["diffs"] is not None), None)
+        if baseline is not None and baseline is not best and baseline["diffs"] > 0 and best["diffs"] is not None:
+            reduction = 100 * (baseline["diffs"] - best["diffs"]) / baseline["diffs"]
+            if reduction > 0:
+                lines.append(f"Alternative configuration {best['profile']} / {best['context']} eliminated {reduction:.1f}% "
+                             f"of differing instruction rows ({baseline['diffs']} -> {best['diffs']}) relative to "
+                             f"{current} / file, with the same submitted C.")
+        elif baseline is None:
+            lines.append("No measured file/current-profile baseline; no reduction percentage is inferred.")
+        evidence = best.get("evidence", {})
+        byte_diffs = evidence.get("byte_diffs")
+        lines.append("Byte verification: " + str(evidence.get("reason") or "unavailable in this historical record")
+                     + (f" ({byte_diffs} differing byte(s))" if byte_diffs is not None else "") + ".")
+        if evidence.get("literal_diffs"):
+            lines.append(f"Remaining constant differences: {evidence['literal_diffs']}. "
+                         + "; ".join(evidence.get("literal_details", [])))
+        if evidence.get("references"):
+            lines.append("Remaining reference differences: " + "; ".join(f"{a} -> {b}" for a, b in evidence["references"]))
+        if not best["matched"]:
+            classes = best.get("classes")
+            counts = classes.counts if classes else best.get("counts", {})
+            if counts:
+                lines.append("Remaining observed patterns: " + ", ".join(
+                    f"{compilerdiff.KINDS[k][0]} x{n}" for k, n in counts.items()) + ".")
+            lines.append("NOT A MATCH: fewer differences do not prove correct C or a compiler cause. "
+                         "Review the remaining code, constants and references; byte-for-byte verification is required.")
+        return lines
 
     def _matrix_text(self, fn, mcfg: dict, cells: list[dict], source_hash: str, current: str | None,
                      took: float | None = None) -> str:
         """The matrix as a table: profiles down, contexts across, differing instructions in each cell."""
         if current is None:
-            current = next((c["profile"] for c in cells if c.get("current")), None)
+            current = self._matrix_current(cells)
         ctxs = [c for c in tucontext.CONTEXTS if any(x["context"] == c for x in cells)]
         profs = list(dict.fromkeys(c["profile"] for c in cells))
         at = {(c["profile"], c["context"]): c for c in cells}
@@ -357,7 +468,7 @@ class ForkMatrixMixin:
                 return "MATCH"
             if not c["compiled"]:
                 return "error"
-            return "-" if c["diffs"] is None else str(c["diffs"])
+            return "-" if c["diffs"] is None else "verify" if c["diffs"] == 0 else str(c["diffs"])
 
         lines = [f"Compiler matrix for {fn['name']} (source {source_hash[:8]}): {len(profs)} profile(s) x "
                  f"{len(ctxs)} context(s), {len(cells)} builds" + (f" in {took:.1f}s" if took is not None else ""),
@@ -365,13 +476,14 @@ class ForkMatrixMixin:
         for p in profs:
             label = p + (" *" if p == current else "")
             lines.append(f"{label:<{width}}" + "".join(f"{show(at.get((p, c))):<11}" for c in ctxs))
-        legend = "cells: differing instructions (MATCH = byte-identical; error = didn't compile; - = function missing)"
+        legend = ("cells: differing instruction rows (MATCH = verified bytes and relocations; verify = no row differences, "
+                  "verification incomplete/failed; error = didn't compile; - = function missing)")
         if current is not None:
             legend += f"; * = the profile {fn['unit']} is built with"
         lines.append(legend)
         skipped = [c for c in mcfg["contexts"] if c not in ctxs]
         if skipped:
-            lines.append(f"not built (the same text as another context, or not asked for): {', '.join(skipped)}")
+            lines.append(f"not built (duplicate text, not requested, or stopped after a verified match): {', '.join(skipped)}")
         best = self._best_cell(cells, current)
         if best is None:
             err = next((c["error"] for c in cells if c["error"]), "")
@@ -385,6 +497,7 @@ class ForkMatrixMixin:
             kinds = best["classes"].summary() if best["classes"] else ""
             lines.append(f"Best: {best['profile']} / {best['context']}: {best['diffs']} differing instruction(s), "
                          f"{percent_text(best['percent'])}" + (f" ({kinds})" if kinds else ""))
+        lines.extend(self._matrix_evidence(cells, current))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ after an ordinary compile
@@ -411,8 +524,8 @@ class ForkMatrixMixin:
             res = self.matrix(agent, slug, function, source, terse=True)
         except NetworkError as e:
             return f"\n\n{classes.note('ask')}\n(compiler_matrix couldn't run just now: {e})"
-        return (f"\n\nEvery difference left is of a kind a compiler makes ({classes.summary()}), so decomp.anything "
-                f"tried your C under the project's other compilers and translation units:\n{res['text']}")
+        return (f"\n\nObserved patterns suggest testing compiler/context hypotheses ({classes.summary()}); "
+                f"they do not rule out a source error. Testing the same C:\n{res['text']}")
 
     # ------------------------------------------------------------------ history
 
@@ -430,8 +543,13 @@ class ForkMatrixMixin:
             cell = self._cell_of(r)
             cell["kinds"] = cell["classes"].summary() if cell["classes"] else ""
             cell["verdict"] = cell["classes"].verdict if cell["classes"] else None
+            cell["counts"] = cell["classes"].counts if cell["classes"] else {}
+            cell["examples"] = cell["classes"].examples if cell["classes"] else {}
             del cell["classes"]
             run["cells"].append(cell)
+        for run in runs.values():
+            current = self._matrix_current(run["cells"])
+            run["evidence_text"] = "\n".join(self._matrix_evidence(run["cells"], current))
         return sorted(runs.values(), key=lambda x: -x["at"])
 
     def matrix_history(self, slug: str, function: str, limit: int = 8) -> str:
@@ -443,6 +561,7 @@ class ForkMatrixMixin:
         for run in runs:
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(run["at"]))
             out.append(f"\n{when}, by {run['agent'] or '?'}, source {run['source_hash'][:8]}:")
+            out.append(run["evidence_text"])
             for c in sorted(run["cells"], key=lambda c: (c["score"] is None, c["score"] or 0)):
                 state = ("MATCH" if c["matched"] else f"didn't compile: {(c['error'] or '').splitlines()[-1][:80]}"
                          if not c["compiled"] else c["error"] if c["diffs"] is None else
@@ -459,7 +578,7 @@ class ForkMatrixMixin:
         for r in self.net.store.all("SELECT id, name, unit, status, best_source, meta FROM functions WHERE "
                                     "project_id=? AND status='open' AND meta LIKE ?", proj["id"], '%"matrix"%'):
             m = self._meta(r).get("matrix")
-            if not isinstance(m, dict):
+            if not isinstance(m, dict) or m.get("verified") != matrixverify.VERSION:
                 continue
             row = self.net.store.one("SELECT source FROM experiments WHERE function_id=? AND matched=1 AND source "
                                      "IS NOT NULL AND profile=? AND context=? ORDER BY id DESC LIMIT 1",
@@ -475,10 +594,12 @@ class ForkMatrixMixin:
         mcfg = self.matrix_config(fp)
         saved = self._meta(fn).get("matrix")
         if isinstance(saved, dict) and fn["status"] != "matched":
+            if saved.get("verified") != matrixverify.VERSION:
+                return ["", "Historical matrix recipe has no strict byte evidence; run compiler_matrix again to verify it."]
             return ["", f"### Compiler matrix: the best attempt already MATCHES under {saved.get('profile')} / "
                         f"{saved.get('context')}",
-                    "Its C is right; the project's build has to change (the file's compiler, or this function in its "
-                    "own file), which agents can't do. Don't rewrite it: release_function and claim another."]
+                    "Function object bytes and relocations verified; the normal project build still needs verification. "
+                    "Preserve the recipe: release_function and claim another."]
         if mcfg is None:
             return []
         last = self.net.store.one("SELECT run, source_hash FROM experiments WHERE function_id=? ORDER BY id DESC LIMIT 1",
@@ -490,7 +611,7 @@ class ForkMatrixMixin:
         cells = [self._cell_of(r) for r in self.net.store.all("SELECT * FROM experiments WHERE run=? ORDER BY id",
                                                               last["run"])]
         return ["", "### Compiler matrix (last run)", "```", self._matrix_text(fn, mcfg, cells, last["source_hash"], None),
-                "```", "A source the matrix already tried isn't worth compiling under other profiles again."]
+                "```", "Use exhaustive=true to measure all requested configurations; again=true reruns unchanged inputs."]
 
     # ------------------------------------------------------------------ every near miss, in the background
 
@@ -530,9 +651,10 @@ class ForkMatrixMixin:
         try:
             agent, _ = self.net.local_agent("matrix")
             rows = self.net.store.all(
-                "SELECT name FROM functions WHERE project_id=? AND status='open' AND COALESCE(meta,'') NOT LIKE ? "
+                "SELECT name FROM functions WHERE project_id=? AND status='open' "
+                "AND COALESCE(json_extract(NULLIF(meta,''), '$.matrix.verified'),0)<>? "
                 "ORDER BY best_score IS NULL, CAST(best_score AS REAL) / MAX(n_insns, 1), n_insns",
-                project_id, '%"matrix"%')
+                project_id, matrixverify.VERSION)
             if limit > 0:
                 rows = rows[:limit]
             job["total"] = len(rows)

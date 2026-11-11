@@ -16,7 +16,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
-from ..forks import catalog, csource, drafts, ghidra
+from ..forks import catalog, csource, drafts, ghidra, matrixverify
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import STATE, ForkError, ForkProject
 from ..network import Agent, NetworkError
@@ -317,7 +317,7 @@ class ForkAgentMixin:
         return "\n".join(out) or "none"
 
     def attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
-                quiet: int | None = None) -> dict:
+                quiet: int | None = None, require_bytes: bool = False) -> dict:
         """`keep`: whether a version that doesn't match stays in the source file (an agent's work in progress) or
         is undone and kept only as the function's best attempt (autopilot's drafts). `prelude`: (decomp.wtf's own
         tries) type definitions the code needs, placed after the file's includes. `quiet`: (the permuter's
@@ -325,7 +325,7 @@ class ForkAgentMixin:
         it builds (twins' tries come unclaimed: a 30-minute claim each kept agents off them, then counted as given up)."""
         held = None if keep else self._hold_for_try(slug, function, agent)
         try:
-            res = self._attempt(agent, slug, function, source, keep, prelude, quiet)
+            res = self._attempt(agent, slug, function, source, keep, prelude, quiet, require_bytes)
         finally:
             if held is not None:
                 with self.net.store.tx() as db:
@@ -389,7 +389,7 @@ class ForkAgentMixin:
         return _with_includes(after, includes, prelude)
 
     def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
-                 quiet: int | None = None) -> dict:
+                 quiet: int | None = None, require_bytes: bool = False) -> dict:
         proj, fp, _cfg = self.get(slug)
         fn = self._fn(slug, function)
         meta = self._meta(fn)
@@ -430,7 +430,7 @@ class ForkAgentMixin:
             scores, builds = self._baseline(proj, fp, unit, before)
             held = self._held(proj, unit.name, before)
             if scores is not None:
-                self._apply_scores(proj, unit.name, scores, text=before)
+                self._apply_scores(proj, unit.name, scores, text=before, skip=fn["id"] if require_bytes else None)
                 protected = {n for n, pct in scores.items()
                              if n != symbol and n not in held and pct is not None and pct >= 100}
                 was_matched = (scores.get(symbol) or 0) >= 100 and symbol not in held
@@ -460,6 +460,12 @@ class ForkAgentMixin:
             except (ObjdiffError, ForkError) as e:
                 undo()
                 return {"text": f"❌ objdiff couldn't compare (your change was undone): {e}", "score": None, "matched": False}
+            if require_bytes and d.matched:
+                evidence = matrixverify.verify(unit.target, unit.base, symbol)
+                if evidence["byte_exact"] is not True or d.renamed:
+                    undo()
+                    return {"text": "Byte verification failed in the normal build; your change was undone: "
+                                    + evidence["reason"], "score": 1, "matched": False}
             broken = sorted(n for n in protected if n and (d.unit_scores.get(n) or 0) < 100)
             if broken:
                 undo()
@@ -510,7 +516,7 @@ class ForkAgentMixin:
         stall = self.net.stall_note(fn["id"], agent.id)
         if d.literals:
             return {"text": f"score {score} (0 = identical). {d.literals_note()}{stall}", "score": score, "matched": False}
-        # the kinds of difference left, and the compiler matrix when they are all a compiler's (forkmatrix.py)
+        # observed patterns and, when warranted, a controlled compiler/context experiment (forkmatrix.py)
         more = self.matrix_after_miss(agent, slug, fn["name"], source, d.rows, pct) if keep and quiet is None else ""
         return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}{more}{stall}",
                 "score": score, "matched": False}

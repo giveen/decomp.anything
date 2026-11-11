@@ -343,7 +343,7 @@ class Network:
                 fn = db.execute(
                     f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                         AND f.id NOT IN (SELECT function_id FROM claims)
-                        AND COALESCE(f.meta, '') NOT LIKE '%"matrix": {{%'
+                        AND COALESCE(json_extract(NULLIF(f.meta, ''), '$.matrix.verified'), 0)=0
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                         ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                             AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",

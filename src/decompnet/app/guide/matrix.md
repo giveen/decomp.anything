@@ -5,11 +5,11 @@ uses another assembler profile, and the original's file boundaries decide which 
 A fork's build compiles each file one way, and you can't change that. So a function can have the right C and still
 read as a near miss: its file is built with the wrong compiler, or it belongs in another translation unit.
 
-The matrix tests that instead of you rewriting C that is right.
+The matrix tests that hypothesis with the same submitted C. A closer result can still contain a source error.
 
 ## When to use it
 
-`compile_and_diff` names the kinds of difference a miss has left. These are a compiler's, not your code's:
+`compile_and_diff` names observed patterns and shows example rows. Each pattern suggests an experiment, not a cause:
 
 - **GP-relative addressing**: `lw v0, %gp_rel(sym)(gp)` on one side, `lui` + `%lo(sym)` on the other. Whether the
   file defines the global (small data) or declares it `extern` decides that.
@@ -21,7 +21,9 @@ The matrix tests that instead of you rewriting C that is right.
 - **Register allocation** and **instruction order** alone: a compiler version does that, and so does the C's shape
   (a temporary, the order of declarations). Try the matrix once before a long series of rewrites.
 
-Different operations, constants or missing calls are not on this list: that is the C. Fix it first.
+Different symbols, addends, operations, constants and calls remain unexplained code differences. Changed branch
+destinations remain visible even when one side has extra instructions; a length change does not prove identical
+control flow. Registers, scheduling and `$gp` patterns can also result from incorrect C or declarations.
 
 When every difference is compiler-like and the miss is close, decomp.anything runs the matrix itself and adds the
 result to the answer.
@@ -39,19 +41,43 @@ every **profile** the project declares (compiler version, flags, assembler profi
 | `extern` | alone, and the globals the file defines are declared `extern` instead |
 | `tentative` | alone, and the file's `extern` globals are defined in the file instead |
 
-Each object is diffed against the original. The answer is a table: profiles down, contexts across, the number of
-differing instructions in each cell. Nothing in the source tree or the build changes.
+Each object is diffed against the original. The table shows differing instruction rows, with separate byte,
+constant and reference evidence. A zero row count or 100% similarity is insufficient: MATCH requires identical
+unmasked function bytes, matching relocation identities, and no constant or reference mismatches. Unavailable
+verification is shown as `verify`, never MATCH. This verifies function objects; the complete linked image still
+needs the project's normal verification. Some valid relocation/layout variants therefore remain unverified here.
 
-- **A match under the file's own profile, in `file`**: an ordinary match, committed like any other.
-- **A match anywhere else** ("MATRIX MATCH"): your C is right. The fix is in the build (the file's compiler, or the
-  function in a file of its own), which only the project's maintainer can make. The source and its recipe are saved
-  on the function. `release_function` with that note, and claim the next one. Do not keep rewriting it.
-- **No match**: the best cell and its kinds of difference are shown. If a cell is much closer than the file's own,
-  say so in your notes: it tells the next agent which compiler the function was probably built with.
+- **A match under the file's own profile, in `file`**: recompiled with the normal build and byte-checked again
+  before committing. If that build disagrees, nothing is saved or committed.
+- **A match anywhere else** ("MATRIX MATCH"): the source and verified recipe are saved on the function, without
+  changing the source tree. The maintainer must verify the normal build before integrating it. Preserve the recipe,
+  `release_function` with that note, and claim the next one.
+- **No match**: the best cell, remaining patterns and example rows are shown. When the current profile in `file`
+  was measured, the report quantifies improvement against it: for example, 100 differing rows reduced to 10 is
+  90% fewer differing rows. This is not a 90% probability that the compiler caused the differences. Without that
+  baseline, no reduction percentage is inferred. Inspect remaining constants, calls and code even after a large gain.
+
+## Learning from other functions
+
+The first run without history measures the requested matrix. Later functions first try the profile/context pair
+with the most verified matches from other functions in the same source file and unit. Ten distinct functions
+matching GCC 2.7.2 / `alone` give that pair ten votes. Repeating one function does not add votes, and the function
+being tested cannot vote for itself. A failed or unverified latest experiment replaces an earlier success.
+
+Votes are scoped to the project, source path, unit, matrix configuration and original object hash. Changed profiles
+or flags, another target, other files and old records without byte evidence do not supply votes. History persists
+across app restarts. It determines search order only; the new function must pass its own byte check.
+
+If the preferred pair verifies a match, the remaining builds are skipped and the report says how many were avoided.
+If it fails to compile or verify, every remaining requested pair is tested. `exhaustive=true` always measures the
+complete requested matrix. Profile/context filters still apply. Build adapters must accept jobs containing a subset
+of the declared pairs; the normal fallback is a second job for the remainder.
 
 `experiment_history(function)` lists every run: source revision, profile and flags, context, differing
-instructions, kinds of difference, match or not. A source that was already tried is answered from that record, so
-asking twice costs nothing, and trying compilers by hand is never needed.
+instructions, patterns with example rows, byte hashes, verified status, learning evidence and baseline improvement.
+Repeated identical inputs are answered from the latest recorded run; `again=true` recompiles. The cache includes
+the original object and verification version. Changes outside these inputs (headers, compiler binaries or build
+scripts) require `again=true`. Historical recipes without byte evidence remain available for a new attempt.
 
 ## For the project's maintainer: declaring a matrix
 
@@ -70,7 +96,7 @@ In the project's `.decomp.wtf.json`:
 }
 ```
 
-`build` runs once per matrix, in the project folder, with `{job}` replaced by the path of a JSON file:
+`build` runs once per batch (at most two batches per matrix), in the project folder, with `{job}` replaced by a JSON file:
 
 ```json
 {"function": "func_80012345", "symbol": "func_80012345", "unit": "main/game", "source_path": "src/main/game.c",
