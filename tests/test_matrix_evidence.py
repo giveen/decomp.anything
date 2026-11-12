@@ -76,6 +76,9 @@ Path(job["result"]).write_text(json.dumps({"current": "default", "builds": said}
 '''
 
 
+EARLY = [["default", "file"], ["gcc272", "file"], ["gcc281", "file"], ["gcc272", "alone"]]
+
+
 @pytest.fixture
 def matrix(tmp_path, monkeypatch):
     root = tmp_path / "project"
@@ -131,15 +134,18 @@ def test_ten_distinct_matches_prioritize_the_same_file_and_context(matrix):
     # Re-running the same function cannot turn one success into multiple votes.
     matrix.run("f0", profiles="gcc272", contexts="alone", again=True)
     result = matrix.run("f10")
-    assert matrix.calls()[-1] == [["gcc272", "alone"]]
-    assert len(result["cells"]) == 1 and result["matched"]
-    assert result["cells"][0]["evidence"]["learning"]["matches"] == 10
-    assert "built 1 of 6" in result["text"]
+    # the learned recipe goes first, with every profile on the file as it is: a match the file's own build makes
+    # must be seen, or it would be saved as one that needs the build changed
+    assert matrix.calls()[-1] == EARLY
+    assert len(result["cells"]) == 4 and result["matched"]
+    learned = next(c for c in result["cells"] if (c["profile"], c["context"]) == ("gcc272", "alone"))
+    assert learned["evidence"]["learning"]["matches"] == 10
+    assert "built 4 of 6" in result["text"]
     assert (matrix.root / "src" / "game.c").read_text().startswith("int f0")
     # History is persisted, includes the early stop, and retains exactly one run when forced to repeat.
     matrix.run("f10", again=True)
     again = matrix.run("f10")
-    assert again["repeat"] and len(again["cells"]) == 1
+    assert again["repeat"] and len(again["cells"]) == 4
     assert matrix.net.forks._matrix_current(again["cells"]) == "default"
     history = matrix.net.forks.matrix_runs("fork", "f10")
     assert len(history) == 2 and "10 other function(s)" in history[0]["evidence_text"]
@@ -158,8 +164,8 @@ def test_a_learned_recipe_that_fails_falls_back_to_every_other_cell(matrix, fail
             matrix.overrides[wrong] = {"percent": 100.0, "rows": [(" ", "jr ra", "jr ra")]}
     result = matrix.run("f1")
     assert not result["matched"] and len(result["cells"]) == 6
-    assert matrix.calls()[-2] == [["gcc272", "alone"]]
-    assert len(matrix.calls()[-1]) == 5 and ["gcc272", "alone"] not in matrix.calls()[-1]
+    assert matrix.calls()[-2] == EARLY
+    assert matrix.calls()[-1] == [["default", "alone"], ["gcc281", "alone"]]
     assert all(not c["matched"] and (c["score"] or 1) > 0 for c in result["cells"])
     assert "NOT A MATCH" in result["text"]
     assert not list((matrix.root / ".decomp-wtf" / "matrix").iterdir())
@@ -271,6 +277,53 @@ def test_raw_bytes_and_relocation_identities_are_both_required(tmp_path):
     assert not matrixverify.verify(a, b, "f")["byte_exact"]
     b.write_bytes(_elf(["different_name"]))
     assert matrixverify.verify(a, b, "f")["reason"] == "function bytes unavailable"
+
+
+def _jump_elf(label: str | None, lands_at: int) -> bytes:
+    """`f`: j <a place inside f>; nop; jr ra; nop. The jump's relocation names a local label at `lands_at`, or
+    (label None) the function itself with the offset in the instruction field, as a compiler's assembler writes it."""
+    field = 0 if label else lands_at >> 2
+    code = struct.pack("<IIII", 0x08000000 | field, 0, 0x03E00008, 0)
+    strings = b"\0f\0" + (label.encode() + b"\0" if label else b"")
+    syms = bytes(16) + struct.pack("<IIIBBH", 1, 0, len(code), 0x12, 0, 1)
+    if label:
+        syms += struct.pack("<IIIBBH", 3, lands_at, 0, 0x00, 0, 1)
+    relocs = struct.pack("<II", 0, ((2 if label else 1) << 8) | 4)  # R_MIPS_26
+    sections = [("", 0, 0, b"", 0, 0, 0), (".text", 1, 6, code, 0, 0, 0), (".symtab", 2, 0, syms, 3, 1, 16),
+                (".strtab", 3, 0, strings, 0, 0, 0), (".rel.text", 9, 0, relocs, 2, 1, 8)]
+    shstrings = b"\0.text\0.symtab\0.strtab\0.rel.text\0.shstrtab\0"
+    sections.append((".shstrtab", 3, 0, shstrings, 0, 0, 0))
+    data = bytearray(52)
+    headers = []
+    for name, kind, flags, payload, link, info, entsize in sections:
+        data += bytes((-len(data)) % 4)
+        headers.append(struct.pack("<IIIIIIIIII", shstrings.index(name.encode() + b"\0") if name else 0,
+                                   kind, flags, 0, len(data) if name else 0, len(payload), link, info, 4 if name else 0, entsize))
+        data += payload
+    data += bytes((-len(data)) % 4)
+    shoff = len(data)
+    data += b"".join(headers)
+    data[:52] = struct.pack("<16sHHIIIIIHHHHHH", b"\x7fELF\x01\x01\x01" + bytes(9), 1, 8, 1,
+                            0, 0, shoff, 0, 52, 0, 0, 40, len(headers), len(headers) - 1)
+    return bytes(data)
+
+
+def test_a_jump_inside_the_function_is_compared_by_where_it_lands_not_by_its_labels_name(tmp_path):
+    """The original's object names the place after its address, the compiler after its own bookkeeping. Comparing
+    the names rejected 428 of the 1,420 functions a PlayStation project's byte-identical build already proves."""
+    original, mine = tmp_path / "original.o", tmp_path / "mine.o"
+    original.write_bytes(_jump_elf("L80001008", 8))
+    for same in (_jump_elf("LM12", 8), _jump_elf(None, 8)):
+        mine.write_bytes(same)
+        evidence = matrixverify.verify(original, mine, "f", [("L80001008", "LM12")])
+        assert evidence["byte_exact"] and evidence["reason"] == "verified" and evidence["references"] == []
+    for elsewhere in (_jump_elf("LM12", 12), _jump_elf(None, 12)):  # the same shape, jumping somewhere else
+        mine.write_bytes(elsewhere)
+        evidence = matrixverify.verify(original, mine, "f")
+        assert not evidence["byte_exact"] and evidence["reason"] == "relocation identities differ"
+    # while the identities differ, a renamed reference to something outside the function is kept as evidence
+    mine.write_bytes(_jump_elf("LM12", 12))
+    assert matrixverify.verify(original, mine, "f", [("g_right", "g_wrong")])["references"] == [["g_right", "g_wrong"]]
 
 
 def test_ninety_percent_improvement_keeps_the_remaining_source_error_visible(matrix):

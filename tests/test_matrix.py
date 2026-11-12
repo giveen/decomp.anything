@@ -78,8 +78,9 @@ def test_registers_alone_are_a_maybe_and_other_code_is_the_source():
     assert _kinds([(" ", "jr ra", "jr ra")]).verdict == "unknown" and _kinds([]).note() == ""
 
 
-def test_branch_targets_are_kept_when_one_side_is_longer():
-    """An extra instruction can explain a shifted target, but cannot prove the branch still reaches the same block."""
+def test_a_branch_target_moved_by_a_longer_side_is_counted_and_named_for_what_it_is():
+    """Rows of a real PlayStation near miss. An extra instruction explains a shifted target without proving the
+    branch still reaches the same block: the row stays counted, as a kind that routes an experiment."""
     rows = [("i", "lw v0, 0x0(v1)", "lw v1, 0x0(v1)"), (" ", "nop ", "nop "),
             ("i", "bgtz v0, 0xb8", "bgtz v1, 0xbc"),
             (" ", "addiu v0, zero, 0x20", "addiu v0, zero, 0x20"),
@@ -87,7 +88,7 @@ def test_branch_targets_are_kept_when_one_side_is_longer():
             ("i", "sw v0, -0x28(v1)", "sw v0, %lo(D_80072F68-0x28)(at)"),
             ("i", "beqz v0, 0xc0", "beqz v0, 0xc4")]
     c = _kinds(rows)
-    assert c.counts == {"hi_lo": 2, "regalloc": 1, "other": 2} and c.total == 5 and c.verdict == "mixed"
+    assert c.counts == {"hi_lo": 2, "regalloc": 2, "branch_shift": 1} and c.total == 5 and c.verdict == "compiler"
     # the same length on both sides: a branch to another place is a difference
     assert _kinds([("i", "beqz v0, 0xc0", "beqz v0, 0xc4")]).counts == {"other": 1}
 

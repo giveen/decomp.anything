@@ -43,9 +43,16 @@ every **profile** the project declares (compiler version, flags, assembler profi
 
 Each object is diffed against the original. The table shows differing instruction rows, with separate byte,
 constant and reference evidence. A zero row count or 100% similarity is insufficient: MATCH requires identical
-unmasked function bytes, matching relocation identities, and no constant or reference mismatches. Unavailable
-verification is shown as `verify`, never MATCH. This verifies function objects; the complete linked image still
-needs the project's normal verification. Some valid relocation/layout variants therefore remain unverified here.
+function bytes outside relocated fields, matching relocation identities, and no constant or reference mismatches.
+A jump to a place inside the function is compared by where it lands, since the original's object and the compiler
+name such places differently (`L8001A22C`, `LM12`); a reference to anything outside the function has to name the
+same symbol with the same addend. Unavailable verification is shown as `verify`, never MATCH. This verifies
+function objects; the complete linked image still needs the project's normal verification.
+
+Some valid variants remain unverified here, because only the link can prove them: a field reached from its
+struct's symbol (`D_80085428+10` for the original's `D_80085432`) and a switch's jump table. In a PlayStation
+project whose build is byte-identical, that was 23 of 1,420 matched functions. When such a function shows `verify`
+under its file's own profile, `compile_and_diff` still judges it by the project's rules.
 
 - **A match under the file's own profile, in `file`**: recompiled with the normal build and byte-checked again
   before committing. If that build disagrees, nothing is saved or committed.
@@ -68,8 +75,10 @@ Votes are scoped to the project, source path, unit, matrix configuration and ori
 or flags, another target, other files and old records without byte evidence do not supply votes. History persists
 across app restarts. It determines search order only; the new function must pass its own byte check.
 
-If the preferred pair verifies a match, the remaining builds are skipped and the report says how many were avoided.
-If it fails to compile or verify, every remaining requested pair is tested. `exhaustive=true` always measures the
+The preferred pair is built together with every profile on the file as it is (`file`): a match the file's own
+build makes has to be seen, or an ordinary match would be saved as one that needs the build changed. If any of them
+verifies a match, the remaining builds are skipped and the report says how many were avoided. If none compiles or
+verifies, every remaining requested pair is tested. `exhaustive=true` always measures the
 complete requested matrix. Profile/context filters still apply. Build adapters must accept jobs containing a subset
 of the declared pairs; the normal fallback is a second job for the remainder.
 

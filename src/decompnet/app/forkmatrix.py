@@ -212,9 +212,12 @@ class ForkMatrixMixin:
             if learning and not exhaustive:
                 first = learning[0]
                 preferred = (first["profile"], first["context"])
-                cells, current = self._matrix_build(fp, mcfg, plist, texts, fn, unit, symbol, run, [preferred])
-                cells[0]["evidence"]["learning"] = first
-                remaining = [pair for pair in pairs if pair != preferred]
+                # with it, every profile on the file as it is: a match the file's own build makes has to be seen,
+                # or an ordinary match would be saved as one that needs the build changed
+                early = [pair for pair in pairs if pair == preferred or pair[1] == "file"]
+                cells, current = self._matrix_build(fp, mcfg, plist, texts, fn, unit, symbol, run, early)
+                next(c for c in cells if (c["profile"], c["context"]) == preferred)["evidence"]["learning"] = first
+                remaining = [pair for pair in pairs if pair not in early]
                 if not any(c["matched"] for c in cells) and remaining:
                     rest, rest_current = self._matrix_build(fp, mcfg, plist, texts, fn, unit, symbol, run + "-rest", remaining)
                     cells.extend(rest)
@@ -319,11 +322,11 @@ class ForkMatrixMixin:
                     c["error"] = "the function isn't in the compiled object"
                     return
                 c["percent"] = d.match_percent
-                c["evidence"] = matrixverify.verify(unit.target, obj, symbol)
+                c["evidence"] = matrixverify.verify(unit.target, obj, symbol, d.renamed)
                 c["evidence"]["literal_diffs"] = len(d.literals)
-                c["evidence"]["references"] = d.renamed
+                c["evidence"].setdefault("references", [list(pair) for pair in d.renamed])
                 c["evidence"]["literal_details"] = [m.describe() for m in d.literals[:6]]
-                c["matched"] = d.matched and c["evidence"]["byte_exact"] and not d.renamed
+                c["matched"] = d.matched and c["evidence"]["byte_exact"] and not c["evidence"]["references"]
                 c["diffs"] = sum(1 for m, _, _ in d.rows if m.strip())
                 c["score"] = 0 if c["matched"] else max(1, len(d.literals), scaled(d.match_percent, fn["n_insns"]))
                 c["classes"] = compilerdiff.classify(d.rows) if mips else None

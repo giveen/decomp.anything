@@ -35,10 +35,13 @@ KINDS = {
                 "the same instructions in another order: a compiler's scheduling, or the order of statements"),
     "stack": ("stack layout", "only stack offsets differ: a local or the frame is another size"),
     "other": ("unexplained code differences", "check operations, constants, references and control flow in the C"),
+    "branch_shift": ("branch target moved",
+                     "the same branch lands a few instructions away while one side is longer: what an added or "
+                     "removed instruction before it does, and also what a changed jump looks like"),
     "encoding": ("encoding or relocation differences", "the displayed instructions agree, but the diff marks a difference"),
 }
 STRONG = ("gp_rel", "hi_lo", "delay_slot", "load_delay", "nop")  # candidates for a controlled compiler experiment
-WEAK = ("regalloc", "reorder")  # a compiler or the C's shape, either one
+WEAK = ("regalloc", "reorder", "branch_shift")  # a compiler or the C's shape, either one
 
 _BRANCH = re.compile(r"^(b[a-z0-9]*|j|jal|jr|jalr)$")
 _LOAD = re.compile(r"^l(w|h|hu|b|bu|wl|wr|wc[12])$")
@@ -127,6 +130,13 @@ def from_json(text: str | None) -> Classes:
                    (int(gp[0]), int(gp[1])), d.get("examples") or {})
 
 
+def _untarget(text: str) -> str:
+    """A conditional branch without its destination (an offset inside the function)."""
+    if _mnemonic(text).startswith("b") and _BRANCH.match(_mnemonic(text)):
+        return re.sub(r"(0x[0-9a-f]+|\d+)\s*$", "<to>", text.rstrip(), flags=re.IGNORECASE)
+    return text
+
+
 def _only_registers_differ(a: str, b: str) -> bool:
     ta, tb = _TOKEN.findall(_norm(a)), _TOKEN.findall(_norm(b))
     if len(ta) != len(tb) or not ta or ta[0] != tb[0]:
@@ -147,7 +157,9 @@ def classify(rows: list[tuple[str, str, str]]) -> Classes:
     """The kinds of difference in a diff's rows: (marker, the original's instruction, yours), aligned as objdiff
     gives them (an instruction only one side has leaves the other side empty)."""
     rows = [(m, t or "", b or "") for m, t, b in rows]
-    # Never erase branch targets because the lengths differ: a real control-flow error looks the same.
+    # A branch whose target differs stays a counted row (a real control-flow error looks the same). When one side is
+    # longer, though, it is named for what it most often is, so that it routes an experiment instead of blocking one.
+    longer = any(m.strip() and bool(t.strip()) != bool(b.strip()) for m, t, b in rows)
     differing = [i for i, (m, _t, _b) in enumerate(rows) if m.strip()]
     if not differing:
         return Classes()
@@ -177,6 +189,10 @@ def classify(rows: list[tuple[str, str, str]]) -> Classes:
         refs_b = re.findall(r"%\w+\(([^)]+)\)", b)
         if _norm(t) == _norm(b):
             kind = "encoding"
+        elif longer and t.strip() and b.strip() and _untarget(t) != t and _norm(_untarget(t)) == _norm(_untarget(b)):
+            kind = "branch_shift"
+        elif longer and t.strip() and b.strip() and _untarget(t) != t and _only_registers_differ(_untarget(t), _untarget(b)):
+            kind = "regalloc"
         elif refs_t and refs_b and refs_t != refs_b:
             kind = "other"  # a different symbol/addend must not hide behind a HI/LO or GP label
         elif (nt or not t.strip()) and (nb or not b.strip()):

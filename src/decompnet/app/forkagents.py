@@ -461,8 +461,8 @@ class ForkAgentMixin:
                 undo()
                 return {"text": f"❌ objdiff couldn't compare (your change was undone): {e}", "score": None, "matched": False}
             if require_bytes and d.matched:
-                evidence = matrixverify.verify(unit.target, unit.base, symbol)
-                if evidence["byte_exact"] is not True or d.renamed:
+                evidence = matrixverify.verify(unit.target, unit.base, symbol, d.renamed)
+                if evidence["byte_exact"] is not True or evidence.get("references"):
                     undo()
                     return {"text": "Byte verification failed in the normal build; your change was undone: "
                                     + evidence["reason"], "score": 1, "matched": False}
