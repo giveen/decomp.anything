@@ -110,6 +110,11 @@ class ForkMatrixMixin:
                "contexts": wanted or list(tucontext.CONTEXTS), "auto": bool(raw.get("auto", True)),
                "timeout": max(30, min(int(raw.get("timeout") or 900), 3600))}
         cfg["digest"] = hashlib.sha1(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
+        # who writes the permuter's rewrites is not part of what a build is, so it stays out of the digest: naming
+        # one doesn't make the experiments on record stale
+        rewrites = raw.get("permute")
+        cfg["permute"] = ([str(a) for a in rewrites] if isinstance(rewrites, list) and rewrites
+                          and any("{job}" in str(a) for a in rewrites) else None)
         return cfg
 
     def project_seed(self, fp: ForkProject, fn, unit) -> tuple[str, str] | None:
@@ -776,6 +781,33 @@ class ForkMatrixMixin:
             made = tucontext.contexts(text, names[0], ["file", cell["context"]])
             return made.get(cell["context"], made["file"])  # a context that changes nothing is the file's text
 
+        def written(base: str, seed: int) -> tuple[list[str], str]:
+            """Rewrites of `base` by the project's own permuter (decomp-permuter, usually): (definitions, why none)."""
+            work = fp.root / STATE / "matrix" / f"rewrite-{uuid.uuid4().hex[:8]}"
+            work.mkdir(parents=True, exist_ok=True)
+            rel = lambda p: Path(p).relative_to(fp.root).as_posix()  # noqa: E731
+            try:
+                text = self._placed(proj, fp, unit, fn, names, have, base, includes, before_lines, after_lines, "")
+                made = tucontext.contexts(text, names[0], ["file", "alone"])
+                src = work / ("base" + (Path(unit.source).suffix or ".c"))
+                # the function alone: what a C parser has to read is this function, not its whole file
+                src.write_text(made.get("alone", made["file"]), encoding="utf-8", newline="\n")
+                job = work / "job.json"
+                job.write_text(json.dumps({"function": symbol, "unit": unit.name, "source_path": unit.source,
+                                           "source": rel(src), "count": PERMUTE_BATCH, "seed": seed,
+                                           "out": rel(work / "variants.json")}), encoding="utf-8", newline="\n")
+                cmd = [sys.executable if a == "python" else a.replace("{job}", rel(job)) for a in mcfg["permute"]]
+                ok, tail = fp.run(cmd, log=lambda *_: None, timeout=180)
+                try:
+                    got = json.loads((work / "variants.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    return [], _tail(tail, 3) if not ok else "it wrote no rewrites"
+                found = got.get("variants") if isinstance(got, dict) else None
+                return [v for v in found or [] if isinstance(v, str)], str(got.get("error") or "")[:300]
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+
+        external, fell_back = bool(mcfg.get("permute")), ""
         rng = random.Random(f"{fn['id']}-{hashlib.sha256(code.encode()).hexdigest()}-{self._permute_turns.get(fn['id'], 0)}")
         self._permute_turns[fn["id"]] = self._permute_turns.get(fn["id"], 0) + 1
         best = cur = cell["score"]
@@ -785,13 +817,20 @@ class ForkMatrixMixin:
         deadline = time.monotonic() + max(1.0, float(seconds))
         while time.monotonic() < deadline and best > 0 and not (stop is not None and stop.is_set()):
             cands: list[str] = []
-            for _ in range(PERMUTE_BATCH * 4):
-                cand = mutate(cur_code if rng.random() < 0.85 else best_code, rng)
-                if cand is not None and cand not in seen and self._find(cand, names)[1] is not None:
-                    seen.add(cand)
-                    cands.append(cand)
-                    if len(cands) >= PERMUTE_BATCH:
-                        break
+            if external:
+                made, why = written(cur_code if rng.random() < 0.85 else best_code, rng.randrange(1 << 30))
+                cands = [c for c in dict.fromkeys(made) if c not in seen and self._find(c, names)[1] is not None]
+                seen.update(cands)
+                if not cands and variants == 0:  # it can't read this C: the built-in rewrites still can
+                    external, fell_back = False, why or "it wrote no rewrites"
+            if not external:
+                for _ in range(PERMUTE_BATCH * 4):
+                    cand = mutate(cur_code if rng.random() < 0.85 else best_code, rng)
+                    if cand is not None and cand not in seen and self._find(cand, names)[1] is not None:
+                        seen.add(cand)
+                        cands.append(cand)
+                        if len(cands) >= PERMUTE_BATCH:
+                            break
             if not cands:
                 break  # every rewrite this source allows has been tried
             texts = {f"v{i}": body(c) for i, c in enumerate(cands)}
@@ -811,7 +850,8 @@ class ForkMatrixMixin:
             if best == 0:
                 break
         out = {"variants": variants, "improved": improved, "before": cell["score"], "after": best}
-        where = f"{cell['profile']} / {cell['context']}"
+        where = f"{cell['profile']} / {cell['context']}" + (
+            f" (built-in rewrites: the project's permuter gave none: {fell_back})" if fell_back else "")
         if best >= cell["score"]:
             return {**out, "matched": False, "committed": False,
                     "text": f"Permuter: {variants} rewrites of {fn['name']} under {where}, none closer than score "

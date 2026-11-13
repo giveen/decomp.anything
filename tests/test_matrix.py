@@ -559,3 +559,46 @@ def test_the_projects_own_c_is_the_brief_and_what_the_matrix_compiles(fork):
     finally:
         manifest.pop("seeds")
         (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
+
+
+@needs_tools
+def test_a_project_can_name_who_writes_the_rewrites(fork):
+    """With "permute" in the manifest's matrix, each round's rewrites come from the project's command (a real
+    project puts decomp-permuter behind it; here it hands back the right code, or says it can't read the C)."""
+    net, slug, agent = fork
+    root = Path(net.project_row(slug)["root"])
+    name = "entity_update_physics"
+    fn = net.store.one("SELECT * FROM functions WHERE name=?", name)
+    if fn["status"] != "open":
+        pytest.skip("entity_update_physics isn't open in this run")
+    good = _ref(name)
+    near = good.replace("{", "{\n    volatile s32 unused_slot = 0;", 1)
+    manifest = json.loads((root / ".decomp.wtf.json").read_text())
+    before = net.forks.matrix_config(net.forks._fork_project(net.project_row(slug)))["digest"]
+    manifest["matrix"]["permute"] = ["python", "tools/rewrites.py", "{job}"]
+    (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
+    script = root / "tools" / "rewrites.py"
+    try:
+        cfg = net.forks.matrix_config(net.forks._fork_project(net.project_row(slug)))
+        assert cfg["permute"] and cfg["digest"] == before  # naming a permuter leaves the record valid
+        first = net.forks.matrix(agent, slug, name, near)
+        if first["matched"]:
+            pytest.skip("the near miss compiles to the same code here")
+        # it can't read the C: said so, and the built-in rewrites take over
+        script.write_text('import json, sys\nfrom pathlib import Path\njob = json.loads(Path(sys.argv[1]).read_text())\n'
+                          'Path(job["out"]).write_text(json.dumps({"variants": [], "error": "ParseError: nope"}))\n')
+        res = net.forks.matrix_permute(agent, slug, name, seconds=2)
+        assert "the project's permuter gave none: ParseError: nope" in res["text"] or res["matched"], res["text"]
+        if res["matched"]:
+            return
+        script.write_text('import json, sys\nfrom pathlib import Path\njob = json.loads(Path(sys.argv[1]).read_text())\n'
+                          'assert job["function"] == "entity_update_physics" and job["count"] == 24\n'
+                          'assert "entity_update_physics" in Path(job["source"]).read_text()\n'
+                          f'Path(job["out"]).write_text(json.dumps({{"variants": [{good!r}, "junk"]}}))\n')
+        res = net.forks.matrix_permute(agent, slug, name, seconds=20)
+        assert res["matched"] and res["committed"] and res["variants"] == 1, res["text"]
+        assert not list((root / ".decomp-wtf" / "matrix").iterdir())
+    finally:
+        manifest["matrix"].pop("permute")
+        (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
+        script.unlink(missing_ok=True)

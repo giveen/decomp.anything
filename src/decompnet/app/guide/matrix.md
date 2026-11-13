@@ -98,6 +98,18 @@ the project's matrix build, so a round costs about what one compile does. A rewr
 the whole matrix, which records it, verifies it and keeps a match like any other; when nothing gets closer, what is
 left is not a matter of order or casts, and the answer says so.
 
+A project can name who writes the rewrites, next to the matrix's `build`:
+
+```json
+"matrix": {"build": [...], "permute": ["./run.sh", "python3", "tools/matrix_permute.py", "{job}"], ...}
+```
+
+It is run once per round with a job file: {"function", "unit", "source_path", "source" (a C file with the
+function as it stands, alone in its translation unit), "count", "seed", "out"}, and writes `out`:
+{"variants": [the function's definition, rewritten, ...], "error": "..."}. With decomp-permuter behind it, the
+rewrites are that tool's (new temporaries, reordered declarations and statements, equivalent types); the batch
+build and the verification stay the same. Without it, or for C it can't read, the built-in rewrites are used.
+
 The project's owner can run it over every open near miss the matrix has measured (`POST /api/matrix/permute`, or
 "Permute near misses" in a function's panel): closest first, three turns per function.
 
