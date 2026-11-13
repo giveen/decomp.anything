@@ -110,6 +110,20 @@ another body replaces the old one. A try that doesn't match is remembered with a
 compiles later, when the file no longer has those. A global with a value, another (non-static) function, or a type
 the file already defines differently is the file's business: `edit_file`.
 
+## The project's own C as a starting point
+
+Some projects keep C that behaves like the original without matching it yet (a functional rewrite, checked by
+running it). A project names where, in `.decomp.wtf.json`:
+
+```json
+"seeds": ["equiv/{target}/{symbol}.c"]
+```
+
+`{symbol}` is the function, `{unit}` its unit's name and `{target}` that name up to its first slash. For a function
+with no C in its file and no best attempt, that file is what `claim_function` shows instead of a machine draft, and
+what `compiler_matrix` (and the sweep over every function) compiles: includes, declarations, macros, types and
+static helpers in it come along with the function.
+
 ## For the project's maintainer: declaring a matrix
 
 In the project's `.decomp.wtf.json`:

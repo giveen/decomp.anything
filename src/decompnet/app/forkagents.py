@@ -189,8 +189,13 @@ class ForkAgentMixin:
         if fn["best_source"] and fn["status"] != "matched":
             lines += ["", f"### Best attempt so far (score {fn['best_score']})", "```c", fn["best_source"].strip(), "```"]
         elif fn["status"] != "matched" and (current is None or csource.is_stub(current)):
-            seed = self._draft(proj, fp, cfg, fn, unit)
-            if seed:
+            own = self.project_seed(fp, fn, unit)
+            seed = None if own else self._draft(proj, fp, cfg, fn, unit)
+            if own:
+                lines += ["", f"### The project's own C for this function ({own[0]}): it behaves like the original, "
+                              "but doesn't compile to its bytes yet", "Start from it: change its form, not what it does.",
+                          "```c", own[1].strip(), "```"]
+            elif seed:
                 lines += ["", "### Machine draft: a starting point, often wrong in types and details", "```c",
                           seed.strip(), "```"]
         twin = self._twin_brief(proj, fn) if fn["status"] != "matched" else []

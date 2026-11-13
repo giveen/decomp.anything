@@ -112,6 +112,37 @@ class ForkMatrixMixin:
         cfg["digest"] = hashlib.sha1(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
         return cfg
 
+    def project_seed(self, fp: ForkProject, fn, unit) -> tuple[str, str] | None:
+        """(path, text) of the C the project itself has for a function that isn't matched yet: code that behaves
+        like the original without compiling to its bytes (a functional rewrite, checked some other way). A project
+        names where it keeps them in `.decomp.wtf.json`: "seeds": ["equiv/{target}/{symbol}.c"], with {symbol}, {unit}
+        (the unit's name) and {target} (the unit's name up to its first slash). It is where an agent starts instead
+        of a machine draft, and what the matrix compiles for a function that has no C in its file yet."""
+        try:
+            templates = (fp.manifest or {}).get("seeds")
+        except (OSError, ValueError):
+            return None
+        if isinstance(templates, str):
+            templates = [templates]
+        if not isinstance(templates, list):
+            return None
+        meta = self._meta(fn)
+        symbol = meta.get("symbol") or fn["name"]
+        for template in templates[:8]:
+            rel = (str(template).replace("{symbol}", symbol).replace("{unit}", unit.name)
+                   .replace("{target}", unit.name.split("/", 1)[0]))
+            try:
+                path = fp.safe_path(rel)
+                if not path.is_file() or path.stat().st_size > 64 * 1024:
+                    continue
+                text = path.read_text(errors="replace", encoding="utf-8")
+            except (ForkError, OSError):
+                continue
+            _, span = self._find(text, self._names(meta, fn))
+            if span is not None and not csource.is_stub(text[span[0]:span[1]]) and not CHEAT.search(_strip_comments(text)):
+                return rel, text
+        return None
+
     def _matrix_lock(self, proj) -> threading.Lock:
         with self._mlock:
             return self._matrix_locks[proj["id"]]
@@ -163,7 +194,8 @@ class ForkMatrixMixin:
         if not source.strip():
             _, span = self._find(have, names)
             current = have[span[0]:span[1]] if span else ""
-            source = current if current and not csource.is_stub(current) else (fn["best_source"] or "")
+            source = current if current and not csource.is_stub(current) else (
+                fn["best_source"] or (self.project_seed(fp, fn, unit) or ("", ""))[1])
             if not source.strip():
                 raise NetworkError(f"{fn['name']} has no C yet (in {unit.source} or as a best attempt): send its "
                                    "definition as `source`")

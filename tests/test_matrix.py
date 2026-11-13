@@ -529,3 +529,33 @@ def test_the_permuter_compiles_a_round_in_one_build_and_keeps_what_matches(fork,
             break
         job["stop"].wait(0.1)
     assert job["state"] == "done" and net.forks.matrix_status(slug)["permute"]["done"] == job["total"]
+
+
+@needs_tools
+def test_the_projects_own_c_is_the_brief_and_what_the_matrix_compiles(fork):
+    """A project that keeps functional C for unmatched functions: an agent starts from it, and the matrix (so the
+    sweep too) compiles it for a function with no C in its file."""
+    net, slug, agent = fork
+    root = Path(net.project_row(slug)["root"])
+    name = "game_tick"
+    fn = net.store.one("SELECT * FROM functions WHERE name=?", name)
+    if fn["status"] != "open" or fn["best_source"]:
+        pytest.skip("game_tick isn't open and untouched in this run")
+    fp = net.forks._fork_project(net.project_row(slug))
+    assert net.forks.project_seed(fp, fn, fp.unit(fn["unit"])) is None  # the project names no seeds
+    manifest = json.loads((root / ".decomp.wtf.json").read_text())
+    manifest["seeds"] = ["../outside/{symbol}.c", "equiv/{target}/{symbol}.c"]
+    (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
+    (root / "equiv" / "game").mkdir(parents=True)
+    (root / "equiv" / "game" / f"{name}.c").write_text('#include "game.h"\n\n' + _ref(name) + "\n")
+    try:
+        rel, text = net.forks.project_seed(fp, fn, fp.unit(fn["unit"]))
+        assert rel == f"equiv/game/{name}.c" and _ref(name) in text
+        brief = net.get_function(name, slug, agent)
+        assert "The project's own C for this function (equiv/game/game_tick.c)" in brief and "Machine draft" not in brief
+        res = net.forks.matrix(agent, slug, name)
+        assert res["matched"] and res["committed"], res["text"]
+        assert net.store.one("SELECT status FROM functions WHERE name=?", name)["status"] == "matched"
+    finally:
+        manifest.pop("seeds")
+        (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
