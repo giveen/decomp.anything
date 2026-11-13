@@ -26,6 +26,7 @@ from .forkutil import (
     PRAGMA,
     _around,
     _digest,
+    _merge_helpers,
     _pragmas_around,
     _renamed_note,
     _strip_comments,
@@ -376,7 +377,9 @@ class ForkAgentMixin:
     def _placed(self, proj, fp: ForkProject, unit, fn, names: list[str], before: str, code: str, includes: list[str],
                 before_lines: list[str], after_lines: list[str], prelude: str) -> str:
         """The source file's text (`before`) with the function's new definition in place of the old one or of its
-        stub, or where it was in the original when the file doesn't have it yet."""
+        stub, or where it was in the original when the file doesn't have it yet. A macro or static helper sent with
+        it that the file has already takes the old one's place."""
+        before, before_lines = _merge_helpers(before, before_lines, unit.source or "the file")
         _hit, old_span = self._find(before, names)
         pre, post = "".join(ln + "\n" for ln in before_lines), "".join(ln + "\n" for ln in after_lines)
         if old_span:
@@ -402,6 +405,9 @@ class ForkAgentMixin:
         if span is None:
             raise NetworkError(f"send the complete definition of {names[0]} (with its body)")
         code = source[span[0]:span[1]]
+        # what is remembered of a try that didn't match: the function with what was sent before it (macros, types,
+        # helpers, declarations), so the best attempt still compiles when the file no longer has those
+        kept = (source[:span[0]].strip() + "\n\n" if source[:span[0]].strip() else "") + code
         unit = fp.unit(fn["unit"])
         if not unit.source:
             raise NetworkError(f"unit {unit.name} has no source file, so there's nowhere to write it")
@@ -450,7 +456,7 @@ class ForkAgentMixin:
             if not ok:
                 undo()
                 if quiet is None:
-                    self.net._record(fn, agent, None, code, 0)
+                    self.net._record(fn, agent, None, kept, 0)
                 why = "" if builds else ("\n(The file didn't build before your change either, so the error may be in "
                                          "other code of the file: fix that with edit_file.)")
                 return {"text": f"❌ BUILD ERROR (your change was undone){why}\n{log[-3000:]}", "score": None,
@@ -470,14 +476,14 @@ class ForkAgentMixin:
             if broken:
                 undo()
                 if quiet is None:
-                    self.net._record(fn, agent, None, code, 0, compiled=True)
+                    self.net._record(fn, agent, None, kept, 0, compiled=True)
                 return {"text": f"❌ REJECTED and undone: your change breaks matched function(s) {', '.join(broken[:8])}. "
                                 "Check you replaced the right definition (overloads?) and didn't change shared code.",
                         "score": None, "matched": False}
             if linked and d.matched and not (ok := self._verify(proj, fp))[0]:
                 undo()
                 if quiet is None:
-                    self.net._record(fn, agent, None, code, 0, compiled=True)
+                    self.net._record(fn, agent, None, kept, 0, compiled=True)
                 return {"text": f"❌ REJECTED and undone: {unit.source} is linked into the game, and with your change "
                                 f"the game no longer builds byte for byte:\n{_tail(ok[1])}", "score": None,
                         "matched": False}
@@ -487,7 +493,7 @@ class ForkAgentMixin:
             if not matched and not keep and not was_matched:  # tried, not kept: the file stays as it was
                 undo()
                 if quiet is None or score < quiet:
-                    self.net._record(fn, agent, score, code, 0, compiled=True)
+                    self.net._record(fn, agent, score, kept, 0, compiled=True)
                 return {"text": f"{percent_text(pct)} match (score {score}); not kept in {unit.source}", "score": score,
                         "matched": False, "percent": pct}
             self._keep_scores(proj, unit, after, d.unit_scores)
@@ -503,7 +509,7 @@ class ForkAgentMixin:
                                                     f"Edited by {agent.name} with decomp.wtf.")
                 return {"text": f"✅ {fn['name']} still matches; your tidier version is committed.{_renamed_note(d)}",
                         "score": 0, "matched": True}
-            self.net._record(fn, agent, score, code, 0, matched=matched)
+            self.net._record(fn, agent, score, code if matched else kept, 0, matched=matched)
             self._apply_scores(proj, fn["unit"], d.unit_scores, skip=fn["id"], agent=agent, text=after)
             self._remember(proj, fp, unit, d)
             if matched:

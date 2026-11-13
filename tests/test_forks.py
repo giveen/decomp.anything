@@ -131,7 +131,7 @@ def test_guards(fork):
     with pytest.raises(NetworkError, match="assembly"):
         net.attempt(agent, "checksum_save", 'u32 checksum_save(u8 *p, s32 n) { __asm__("nop"); return 0; }', slug)
     with pytest.raises(NetworkError, match="with edit_file first"):
-        net.attempt(agent, "checksum_save", "struct X { int a; };\n" + _ref("checksum_save"), slug)
+        net.attempt(agent, "checksum_save", "int g_extra = 3;\n" + _ref("checksum_save"), slug)
     broken = net.attempt(agent, "checksum_save", "u32 checksum_save(void) { return undefined_thing; }", slug)
     assert broken["score"] is None and "BUILD ERROR" in broken["text"]
     assert (root / "src" / "game.c").read_text() == before

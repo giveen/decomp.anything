@@ -288,6 +288,15 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
 
 
+def _matrix(net: RomNetwork, agent: Agent, slug: str, function: str, source: str, profiles: str, contexts: str,
+            again, exhaustive, permute) -> str:
+    """compiler_matrix; with permute, a miss is followed by the permuter under its closest profile and context."""
+    res = net.forks.matrix(agent, slug, function, source, profiles, contexts, bool(again), exhaustive=bool(exhaustive))
+    if not permute or res["matched"]:
+        return res["text"]
+    return res["text"] + "\n\n" + net.forks.matrix_permute(agent, slug, function)["text"]
+
+
 def _rea_tool(net: RomNetwork, agent: Agent, slug: str, tool: str, arguments=None) -> str:
     if isinstance(arguments, str):
         try:
@@ -347,9 +356,10 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
     "split_file": lambda net, agent, slug, path, at, new_name="", data="":
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
-    "compiler_matrix": lambda net, agent, slug, function, source="", profiles="", contexts="", again=False, exhaustive=False:
-        net.forks.matrix(agent, _fork(net, slug, "compiler_matrix"), function, source, profiles, contexts,
-                         bool(again), exhaustive=bool(exhaustive))["text"],
+    "compiler_matrix": lambda net, agent, slug, function, source="", profiles="", contexts="", again=False,
+                              exhaustive=False, permute=False:
+        _matrix(net, agent, _fork(net, slug, "compiler_matrix"), function, source, profiles, contexts, again,
+                exhaustive, permute),
     "experiment_history": lambda net, agent, slug, function, limit=8:
         net.forks.matrix_history(_fork(net, slug, "experiment_history"), function, limit),
     "import_debug_info": lambda net, agent, slug, path="": json.dumps(net.import_debug_info(slug, path)),
@@ -811,7 +821,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def compiler_matrix(ctx: Context, function: str, source: str = "", profiles: str = "", contexts: str = "",
-                              again: bool = False, exhaustive: bool = False) -> str:
+                              again: bool = False, exhaustive: bool = False, permute: bool = False) -> str:
         """Forks only: compile one function's C under every compiler profile the project declares (compiler
         versions, flags, assembler profiles) and every translation-unit context (its file as it is, the function
         alone, with its neighbours, with the file's globals extern or defined), and diff each result against the
@@ -827,9 +837,12 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
             contexts: comma-separated contexts (file, alone, neighbors, extern, tentative); empty: all
             again: compile even if these exact sources were tried before
             exhaustive: measure every requested configuration even if a learned recipe matches early
+            permute: after a miss, spend up to 45 seconds on rewrites that keep the meaning (statement and
+                declaration order, casts, `register`, loop forms) under the closest profile and context; a batch
+                of rewrites costs one compile. For near misses whose differences are registers or order
         """
         return await run(ctx, "compiler_matrix", function=function, source=source, profiles=profiles,
-                         contexts=contexts, again=again, exhaustive=exhaustive)
+                         contexts=contexts, again=again, exhaustive=exhaustive, permute=permute)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def experiment_history(ctx: Context, function: str, limit: int = 8) -> str:

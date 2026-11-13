@@ -131,40 +131,123 @@ SOURCE_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+\.(?:c|cc|cp|cpp))"', re.
 
 PRAGMA = re.compile(r"^#\s*pragma\b")
 
+DEFINE = re.compile(r"^\s*#\s*define\s+(\w+)")
+_TYPE_START = re.compile(r"^\s*(typedef\b|struct\b|union\b|enum\b)")
+
+
+def _chunks(source: str) -> list[str]:
+    """File-scope text cut into whole things: a preprocessor line with its continuations, a declaration, a
+    `{ ... }` block up to its end (a struct with its name and semicolon, a function with its body). Comments and
+    blank lines between them are dropped."""
+    out: list[str] = []
+    buf: list[str] = []
+    depth, continued = 0, False
+    for real, clean in zip(source.splitlines(), csource._blank(source).splitlines(), strict=False):
+        text = clean.strip()
+        if not text and not buf:
+            continue
+        if continued or (not buf and text.startswith("#")):
+            buf.append(real.rstrip())
+            continued = real.rstrip().endswith("\\")
+            if not continued:
+                out.append("\n".join(buf))
+                buf = []
+            continue
+        buf.append(real.rstrip())
+        depth = max(0, depth + clean.count("{") - clean.count("}"))
+        if depth == 0 and text.endswith((";", "}")):
+            out.append("\n".join(buf))
+            buf = []
+    if buf:
+        out.append("\n".join(buf))
+    return out
+
+
+def _spaceless(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _helper_kind(chunk: str) -> str:
+    """What a chunk sent before a function is: include, pragma, define, decl (a prototype or extern), type (a
+    struct/union/enum/typedef with a body), helper (a static function), or other (not placed with a function)."""
+    clean = csource._blank(chunk).strip()
+    if clean.startswith("#"):
+        return ("include" if INCLUDE_LINE.match(chunk.strip()) else "pragma" if PRAGMA.match(chunk.strip()) else
+                "define" if re.match(r"#\s*(define|undef)\b", clean) else "other")
+    if "{" not in clean:
+        return "decl" if drafts._DECL.match(_spaceless(chunk)) else "other"
+    if _TYPE_START.match(clean) and clean.endswith(";"):
+        return "type"
+    head = clean[:clean.index("{")]
+    if head.rstrip().endswith(")") and re.match(r"(static|inline|__inline__)\b", head):
+        return "helper"
+    return "other"
+
+
 def _around(source: str, span: tuple[int, int], file_text: str, rel: str) -> tuple[list[str], list[str], list[str]]:
-    """What an agent sends around the one definition, as (includes, lines before it, lines after it): project
-    includes, prototypes and extern declarations, `#pragma` lines (push/pop wrappers). Lines the file has already
-    are left out (a wrapper's pragmas aren't: they belong to this function). Anything else (a struct, a global,
-    another function) isn't placed: edit_file is for that, and this says so."""
+    """What an agent sends around the one definition, as (includes, what goes before it, lines after it): project
+    includes, prototypes and extern declarations, `#pragma` lines (push/pop wrappers), and what the function
+    needs to stand on its own: macros, type definitions and static helper functions. What the file has already is
+    left out (a wrapper's pragmas aren't: they belong to this function). A global with a value or another
+    function isn't placed: edit_file is for that, and this says so."""
     have = {ln.strip() for ln in file_text.splitlines()}
-    clean = csource._blank(source)
-
-    def lines(lo: int, hi: int) -> list[str]:
-        return [real.strip() for real, c in zip(source[lo:hi].splitlines(), clean[lo:hi].splitlines(), strict=False) if c.strip()]
-
+    whole = _spaceless(csource._blank(file_text))
     includes, before, after, other = [], [], [], []
-    for ln in lines(0, span[0]):
-        if INCLUDE_LINE.match(ln):
-            if ln not in have:
-                includes.append(ln)
-        elif PRAGMA.match(ln):
-            before.append(ln)
-        elif drafts._DECL.match(ln):
-            if ln not in have:
-                before.append(ln)
-        elif ln not in have:
-            other.append(ln)
-    for ln in lines(span[1], len(source)):
-        if PRAGMA.match(ln):
-            after.append(ln)
-        elif ln not in have:
-            other.append(ln)
+    for chunk in _chunks(source[:span[0]]):
+        kind, line = _helper_kind(chunk), chunk.strip()
+        if kind == "include":
+            if line not in have:
+                includes.append(line)
+        elif kind == "pragma":
+            before.append(line)
+        elif kind == "decl":
+            if _spaceless(line) not in have and line not in have:
+                before.append(_spaceless(line))
+        elif kind in ("define", "type", "helper"):
+            if _spaceless(csource._blank(chunk)) not in whole:
+                before.append(chunk)
+        elif line not in have:
+            other.append(line)
+    for chunk in _chunks(source[span[1]:]):
+        if PRAGMA.match(chunk.strip()):
+            after.append(chunk.strip())
+        elif chunk.strip() not in have:
+            other.append(chunk.strip())
     if other:
-        listing = "\n".join(other[:6]) + ("\n..." if len(other) > 6 else "")
-        raise NetworkError(f"send the function definition, plus any #include \"...\", prototypes, extern declarations "
-                           f"or #pragma lines it needs (those are placed for you). These lines aren't any of that and "
-                           f"aren't in {rel}:\n{listing}\nPut structs, globals and helper functions in with edit_file first")
+        listing = "\n".join("\n".join(other).splitlines()[:6]) + ("\n..." if len(other) > 1 or other[0].count("\n") > 5 else "")
+        raise NetworkError(f"send the function definition, plus what it needs to stand on its own: #include \"...\", "
+                           f"prototypes, extern declarations, #pragma lines, macros, type definitions and static helper "
+                           f"functions (those are placed for you). This isn't any of that and isn't in {rel}:\n{listing}\n"
+                           "Put globals that have a value and other functions in with edit_file first")
     return includes, before, after
+
+
+def _merge_helpers(text: str, chunks: list[str], rel: str) -> tuple[str, list[str]]:
+    """Put new versions of things the file has already where the old ones are: a macro or a static helper sent
+    again with another body replaces its definition (defining it twice wouldn't build). (the file, the chunks still
+    to place before the function.) A type the file defines differently is the file's: edit_file changes it."""
+    left = []
+    for chunk in chunks:
+        kind = _helper_kind(chunk)
+        if kind == "define" and (m := DEFINE.match(chunk)):
+            old = re.search(rf"^[ \t]*#[ \t]*define[ \t]+{re.escape(m.group(1))}\b[^\n]*(?:\\\n[^\n]*)*", text, re.MULTILINE)
+            if old and old.group().rstrip().endswith("\\") is False:
+                text = text[:old.start()] + chunk + text[old.end():]
+                continue
+        elif kind == "helper":
+            name = re.search(r"(\w+)\s*\([^{]*$", csource._blank(chunk)[:csource._blank(chunk).index("{")])
+            span = csource.find(text, name.group(1)) if name else None
+            if name and span and not csource.is_stub(text[span[0]:span[1]]):
+                text = text[:span[0]] + chunk.rstrip("\n") + "\n" + text[span[1]:]
+                continue
+        elif kind == "type":
+            mine = {n for names, _ in _type_blocks(chunk) for n in names}
+            taken = sorted(mine & {n for names, _ in _type_blocks(text) for n in names})
+            if taken:
+                raise NetworkError(f"{rel} already defines `{taken[0]}`, differently from the definition you sent with "
+                                   "the function: use the file's, or change it with edit_file")
+        left.append(chunk)
+    return text, left
 
 def _headers_defining(fp: ForkProject, rel: str, include_lines: list[str], names: set[str]) -> list[str]:
     """Of a file's #include "..." lines, those whose header defines one of `names` (a type, macro or function),

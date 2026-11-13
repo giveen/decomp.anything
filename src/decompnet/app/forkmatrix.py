@@ -37,6 +37,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import random
 import shutil
 import sys
 import threading
@@ -49,10 +51,15 @@ from ..forks import compilerdiff, csource, matrixverify, objdiff, tucontext
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import STATE, ForkError, ForkProject
 from ..network import Agent, NetworkError
+from ..permuter import mutate
 from ..scoring import percent_text
 from .forkutil import CHEAT, _around, _strip_comments, _tail, scaled
 
 log = logging.getLogger("decomp.wtf")
+PERMUTE_SECONDS = 45  # per function per turn
+PERMUTE_BATCH = 24  # rewrites compiled by one run of the matrix build
+PERMUTE_NEAR = 0.10  # a near miss: at most this much of the function differs in its closest cell
+PERMUTE_TURNS = 3  # turns per function, per run of the app, before it's left to agents
 NEAR_PERCENT = 80.0  # a miss at least this close gets the matrix on its own, when its differences are compiler-like
 def _errors(text: str, lines: int = 14) -> str:
     """A compiler's output with its errors first: old GCCs warn about every implicit declaration, and the one line
@@ -201,7 +208,8 @@ class ForkMatrixMixin:
                     was = self._matrix_current(cells)
                     kept, more = self._matrix_keep(agent, slug, proj, fn, source, hits, was)
                     said += more
-                return {"text": said, "matched": bool(hits), "committed": kept, "cells": cells, "repeat": True}
+                return {"text": said, "matched": bool(hits), "committed": kept, "cells": cells, "repeat": True,
+                        "source": source}
 
         run = uuid.uuid4().hex[:12]
         started = time.time()
@@ -261,7 +269,8 @@ class ForkMatrixMixin:
                 out.append(best["classes"].note("done"))
         for c in cells:
             c.pop("rows", None)
-        return {"text": "\n".join(out), "matched": bool(hits), "committed": committed, "cells": cells, "repeat": False}
+        return {"text": "\n".join(out), "matched": bool(hits), "committed": committed, "cells": cells, "repeat": False,
+                "source": source}
 
     def _matrix_build(self, fp: ForkProject, mcfg: dict, plist: list[dict], texts: dict[str, str], fn, unit,
                       symbol: str, run: str, pairs: list[tuple[str, str]] | None = None) -> tuple[list[dict], str | None]:
@@ -332,7 +341,7 @@ class ForkMatrixMixin:
                 c["classes"] = compilerdiff.classify(d.rows) if mips else None
                 c["rows"] = d.rows
 
-            with ThreadPoolExecutor(max_workers=4) as pool:
+            with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as pool:
                 list(pool.map(measure, range(len(builds))))
             return cells, current
         finally:
@@ -626,6 +635,8 @@ class ForkMatrixMixin:
                 "profiles": [p["name"] for p in mcfg["profiles"]] if mcfg else [],
                 "contexts": mcfg["contexts"] if mcfg else [],
                 "sweep": {k: v for k, v in job.items() if k != "stop"} if job else None,
+                "permute": ({k: v for k, v in self._permute_jobs[slug].items() if k != "stop"}
+                            if slug in self._permute_jobs else None),
                 "matches": len(self.matrix_matches(slug)) if mcfg else 0}
 
     def matrix_sweep(self, slug: str, limit: int = 0) -> dict:
@@ -679,6 +690,165 @@ class ForkMatrixMixin:
                         job["tried"] += 1
                         job["matched"] += bool(res["matched"])
                         job["committed"] += bool(res["committed"])
+                job["done"] += 1
+        finally:
+            job["state"] = "stopped" if job["stop"].is_set() else "done"
+            job["current"] = ""
+            job["finished_at"] = time.time()
+
+    # ------------------------------------------------------------------ rewrites of a near miss, a batch at a time
+
+    def matrix_permute(self, agent: Agent, slug: str, function: str, seconds: float = PERMUTE_SECONDS,
+                       stop: threading.Event | None = None) -> dict:
+        """Try rewrites of a near miss that keep its meaning (statement and declaration order, a cast, `register`,
+        a loop's form: permuter.py) under the profile and context where it came closest. Each round's variants are
+        compiled by one run of the project's matrix build, so a round costs about what one compile does.
+        {"text", "matched", "committed", "variants", "improved", "before", "after"}."""
+        proj, fp, _cfg = self.get(slug)
+        mcfg = self.matrix_config(fp)
+        if mcfg is None:
+            raise NetworkError(HOW)
+        fn = self._fn(slug, function)
+        unit = fp.unit(fn["unit"])
+        names = self._names(self._meta(fn), fn)
+        symbol = self._meta(fn).get("symbol") or fn["name"]
+        # start from the closest source the matrix has measured for this function, else from its C as it is
+        closest = self.net.store.one("SELECT source FROM experiments WHERE function_id=? AND source IS NOT NULL AND "
+                                     "score IS NOT NULL AND config=? ORDER BY score, id DESC LIMIT 1", fn["id"], mcfg["digest"])
+        first = None
+        if closest is not None:
+            try:
+                first = self.matrix(agent, slug, function, closest["source"])
+            except NetworkError:  # that source no longer fits the file (a helper it used was renamed): start over
+                first = None
+        if first is None:
+            first = self.matrix(agent, slug, function)
+        base = {"variants": 0, "improved": 0, "before": None, "after": None}
+        if first["matched"]:
+            return {**base, "text": first["text"], "matched": True, "committed": first["committed"]}
+        current = self._matrix_current(first["cells"])
+        cell = self._best_cell(first["cells"], current)
+        if cell is None:
+            raise NetworkError(f"{fn['name']}'s C doesn't compile under any profile, so there is nothing to permute:\n"
+                               + first["text"][-800:])
+        source = first["source"]
+        _, span = self._find(source, names)
+        head, code, tail = source[:span[0]], source[span[0]:span[1]], source[span[1]:]
+        with self._unit_lock(proj, unit.name):
+            have = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
+        includes, before_lines, after_lines = _around(source, span, have, unit.source)
+        profile = next(p for p in mcfg["profiles"] if p["name"] == cell["profile"])
+
+        def body(variant: str) -> str:
+            text = self._placed(proj, fp, unit, fn, names, have, variant, includes, before_lines, after_lines, "")
+            made = tucontext.contexts(text, names[0], ["file", cell["context"]])
+            return made.get(cell["context"], made["file"])  # a context that changes nothing is the file's text
+
+        rng = random.Random(f"{fn['id']}-{hashlib.sha256(code.encode()).hexdigest()}-{self._permute_turns.get(fn['id'], 0)}")
+        self._permute_turns[fn["id"]] = self._permute_turns.get(fn["id"], 0) + 1
+        best = cur = cell["score"]
+        best_code = cur_code = code
+        seen = {code}
+        variants = improved = 0
+        deadline = time.monotonic() + max(1.0, float(seconds))
+        while time.monotonic() < deadline and best > 0 and not (stop is not None and stop.is_set()):
+            cands: list[str] = []
+            for _ in range(PERMUTE_BATCH * 4):
+                cand = mutate(cur_code if rng.random() < 0.85 else best_code, rng)
+                if cand is not None and cand not in seen and self._find(cand, names)[1] is not None:
+                    seen.add(cand)
+                    cands.append(cand)
+                    if len(cands) >= PERMUTE_BATCH:
+                        break
+            if not cands:
+                break  # every rewrite this source allows has been tried
+            texts = {f"v{i}": body(c) for i, c in enumerate(cands)}
+            with self._matrix_lock(proj):
+                measured, _ = self._matrix_build(fp, mcfg, [profile], texts, fn, unit, symbol,
+                                                 f"permute-{uuid.uuid4().hex[:8]}")
+            variants += len(cands)
+            for cand, got in zip(cands, measured, strict=True):
+                score = got["score"]
+                if score is None:
+                    continue
+                if score < best:
+                    best, best_code = score, cand
+                    improved += 1
+                if score <= cur or rng.random() < 0.02:  # mostly downhill, now and then sideways off a plateau
+                    cur, cur_code = score, cand
+            if best == 0:
+                break
+        out = {"variants": variants, "improved": improved, "before": cell["score"], "after": best}
+        where = f"{cell['profile']} / {cell['context']}"
+        if best >= cell["score"]:
+            return {**out, "matched": False, "committed": False,
+                    "text": f"Permuter: {variants} rewrites of {fn['name']} under {where}, none closer than score "
+                            f"{cell['score']}. What is left is not a matter of statement order, declarations or casts."}
+        # the best rewrite goes through the whole matrix: that records it, verifies it and keeps a match
+        final = self.matrix(agent, slug, function, head + best_code + tail)
+        if not final["matched"] and cell["context"] == "file" and cell["profile"] == current:
+            self.net._record(fn, agent, best, (head.strip() + "\n\n" if head.strip() else "") + best_code, 0,
+                             compiled=True, via="permuter")  # agents start from it
+        return {**out, "matched": final["matched"], "committed": final["committed"],
+                "text": f"Permuter: {variants} rewrites of {fn['name']} under {where}; score {cell['score']} -> {best}"
+                        + (" (a match)" if best == 0 else "") + f".\n{final['text']}"
+                        + ("" if final["matched"] else "\n\nThe closest rewrite:\n```c\n" + best_code.strip() + "\n```")}
+
+    def matrix_permute_sweep(self, slug: str, seconds: float = PERMUTE_SECONDS, near: float = PERMUTE_NEAR,
+                             limit: int = 0) -> dict:
+        """Permute every open near miss the matrix has measured (its closest cell differs in at most `near` of the
+        function), closest first, a few turns each."""
+        proj, fp, _cfg = self.get(slug)
+        if self.matrix_config(fp) is None:
+            raise NetworkError(HOW)
+        job = self._permute_jobs.get(slug)
+        if job is not None and job["state"] == "running":
+            return self.matrix_status(slug)
+        job = self._permute_jobs[slug] = {"state": "running", "total": 0, "done": 0, "variants": 0, "improved": 0,
+                                          "matched": 0, "committed": 0, "failed": 0, "current": "",
+                                          "started_at": time.time(), "finished_at": None, "stop": threading.Event()}
+        threading.Thread(target=self._matrix_permute_sweep, args=(slug, proj["id"], job, float(seconds), float(near),
+                                                                 int(limit or 0)), daemon=True,
+                         name=f"matrix-permute-{slug}").start()
+        return self.matrix_status(slug)
+
+    def matrix_permute_stop(self, slug: str) -> dict:
+        job = self._permute_jobs.get(slug)
+        if job is not None:
+            job["stop"].set()
+        return self.matrix_status(slug)
+
+    def _matrix_permute_sweep(self, slug: str, project_id: int, job: dict, seconds: float, near: float,
+                              limit: int) -> None:
+        try:
+            agent, _ = self.net.local_agent("permuter")
+            rows = self.net.store.all(
+                "SELECT f.id, f.name, MIN(e.score) AS s FROM experiments e JOIN functions f ON f.id=e.function_id "
+                "WHERE f.project_id=? AND f.status='open' AND e.score > 0 "
+                "AND COALESCE(json_extract(NULLIF(f.meta,''), '$.matrix.verified'),0)<>? "
+                "AND f.id NOT IN (SELECT function_id FROM experiments WHERE matched=1 AND project_id=?) "
+                "GROUP BY f.id HAVING s <= MAX(f.n_insns, 1) * 100 * ? ORDER BY s * 1.0 / MAX(f.n_insns, 1), f.n_insns",
+                project_id, matrixverify.VERSION, project_id, near)
+            rows = [r for r in rows if self._permute_turns.get(r["id"], 0) < PERMUTE_TURNS]
+            if limit > 0:
+                rows = rows[:limit]
+            job["total"] = len(rows)
+            for r in rows:
+                if job["stop"].is_set():
+                    break
+                job["current"] = r["name"]
+                try:
+                    res = self.matrix_permute(agent, slug, r["name"], seconds, job["stop"])
+                except NetworkError:
+                    job["failed"] += 1
+                except Exception as e:  # noqa: BLE001 one odd function must not stop the rest
+                    log.info("matrix permuter: %s: %s", r["name"], e)
+                    job["failed"] += 1
+                else:
+                    job["variants"] += res["variants"]
+                    job["improved"] += bool(res["improved"])
+                    job["matched"] += bool(res["matched"])
+                    job["committed"] += bool(res["committed"])
                 job["done"] += 1
         finally:
             job["state"] = "stopped" if job["stop"].is_set() else "done"

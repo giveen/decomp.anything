@@ -88,6 +88,28 @@ Repeated identical inputs are answered from the latest recorded run; `again=true
 the original object and verification version. Changes outside these inputs (headers, compiler binaries or build
 scripts) require `again=true`. Historical recipes without byte evidence remain available for a new attempt.
 
+## The permuter, on what the matrix measured
+
+A near miss that differs only in registers or in the order of instructions usually comes down to how the C is
+written, not what it does: the order of statements and declarations, a temporary, a cast, `register`, a loop's
+form. `compiler_matrix(function, permute=true)` follows a miss with up to 45 seconds of such rewrites, under the
+profile and context where the function came closest. A round's rewrites (24 of them) are compiled by one run of
+the project's matrix build, so a round costs about what one compile does. A rewrite that gets closer goes through
+the whole matrix, which records it, verifies it and keeps a match like any other; when nothing gets closer, what is
+left is not a matter of order or casts, and the answer says so.
+
+The project's owner can run it over every open near miss the matrix has measured (`POST /api/matrix/permute`, or
+"Permute near misses" in a function's panel): closest first, three turns per function.
+
+## What goes with a function
+
+`compile_and_diff` and `compiler_matrix` take the function with what it needs to stand on its own: `#include`
+lines, prototypes and extern declarations, `#pragma` lines, macros, type definitions and static helper functions.
+They are placed before the function when the file doesn't have them; a macro or a static helper sent again with
+another body replaces the old one. A try that doesn't match is remembered with all of it, so the best attempt still
+compiles later, when the file no longer has those. A global with a value, another (non-static) function, or a type
+the file already defines differently is the file's business: `edit_file`.
+
 ## For the project's maintainer: declaring a matrix
 
 In the project's `.decomp.wtf.json`:

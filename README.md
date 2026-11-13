@@ -454,6 +454,12 @@ tested instead of rewritten:
   context, differing instructions, kinds of difference, match or not. A source already tried is answered from the
   record. "Run on all" in a function's panel puts every open function that has C through the matrix.
 
+- **Near misses are permuted a batch per build.** Rewrites that keep the meaning (statement and declaration order,
+  casts, `register`, loop forms) are tried under the profile and context where the function came closest, 24 per
+  run of the matrix build; the best one goes through the matrix, which keeps a match.
+- **A function brings what it needs.** Macros, type definitions and static helpers sent with a function are placed
+  with it, and a miss is remembered with them, so a best attempt still compiles later.
+
 `guide("matrix")` has the manifest format and what the build command receives.
 
 ## Agents

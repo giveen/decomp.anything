@@ -58,6 +58,8 @@ class ForkEngine(ForkCreateMixin, ForkLinkMixin, ForkSourceMixin, ForkIndexMixin
         self._linking: dict[str, dict] = {}  # slug -> background link run
         self._matrix_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)  # one compiler matrix at a time
         self._matrix_jobs: dict[str, dict] = {}  # slug -> background matrix sweep
+        self._permute_jobs: dict[str, dict] = {}  # slug -> background permuter run over the matrix's near misses
+        self._permute_turns: dict[int, int] = {}  # function id -> permuter turns spent on it
 
     def _fork_project(self, proj) -> ForkProject:
         """The project's source tree. One place builds it, so a test can stand in for it (tests/test_forks.py)."""

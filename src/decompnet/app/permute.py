@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 
 from .. import scoring
+from ..forks import csource
 from ..network import NetworkError
 from ..permuter import mutate
 
@@ -28,6 +29,16 @@ log = logging.getLogger("decomp.wtf")
 NEAR = 0.06  # a near miss: at most this much of the function differs (best_score <= 6% of n_insns * 100)
 SECONDS = 60  # per function per turn
 MAX_TURNS = 4  # turns per function before it's left to agents
+
+
+def _mutate_function(source: str, name: str, rng: random.Random) -> str | None:
+    """`mutate` on the function alone: a best attempt can come with what it needs before it (macros, types, static
+    helpers: see forkagents._attempt), and a rewrite belongs in the function's body, not in a struct's."""
+    span = csource.find(source, name.split("@")[0])
+    if span is None or csource.is_stub(source[span[0]:span[1]]):
+        return mutate(source, rng)
+    out = mutate(source[span[0]:span[1]], rng)
+    return None if out is None else source[:span[0]] + out + source[span[1]:]
 
 
 @dataclass
@@ -143,7 +154,7 @@ class Permuter:
                 while time.monotonic() < deadline and best > 0 and not st.stop.is_set():
                     cands = []
                     for _ in range(batch_size):
-                        cand = mutate(cur_src if rng.random() < 0.85 else best_src, rng)
+                        cand = _mutate_function(cur_src if rng.random() < 0.85 else best_src, fn["name"], rng)
                         if cand is not None and cand != cur_src:
                             cands.append(cand)
                     if not cands:

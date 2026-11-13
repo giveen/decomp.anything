@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from decompnet import toolchains
-from decompnet.app import tools
+from decompnet.app import forkmatrix, forkutil, tools
 from decompnet.app.engine import RomNetwork
 from decompnet.app.forkengine import ForkEngine
 from decompnet.forks import compilerdiff, csource, tucontext
@@ -405,3 +405,127 @@ def test_the_sweep_tries_what_has_c_and_skips_what_was_tried(fork):
     assert job["state"] == "done" and job["tried"] >= 1 and job["committed"] >= 1, job
     assert net.store.one("SELECT status FROM functions WHERE id=?", fn["id"])["status"] == "matched"
     assert net.forks.matrix_status(slug)["sweep"]["done"] == job["total"]
+
+
+# ------------------------------------------------------------------ what goes with a function
+
+SENT = '''#include "common.h"
+#include "extra.h"
+/* helpers */
+#define O16(o, x) (*(s16 *)((o) + (x)))
+#define LONG(a, b) \\
+    ((a) + \\
+     (b))
+extern s32 D_80070000;
+typedef struct {
+    s32 x;
+    s32 y;
+} Pair;
+static inline s32 twice(s32 v) {
+    return v * 2;
+}
+s32 target(s32 a) {
+    return twice(a) + O16(a, 2);
+}
+'''
+HAVE = '''#include "common.h"
+
+extern s32 D_80070000;
+#define O16(o, x) (*(s16 *)((o) + (x)))
+'''
+
+
+def _sent(source=SENT, have=HAVE):
+    return forkutil._around(source, csource.find(source, "target"), have, "src/a.c")
+
+
+def test_text_is_cut_into_whole_things():
+    chunks = forkutil._chunks(SENT[:SENT.index("s32 target")])
+    assert [forkutil._helper_kind(c) for c in chunks] == ["include", "include", "define", "define", "decl", "type", "helper"]
+    assert chunks[3].count("\n") == 2 and chunks[5].endswith("} Pair;") and chunks[6].endswith("}")
+
+
+def test_a_function_brings_its_macros_types_and_static_helpers():
+    includes, before, after = _sent()
+    assert includes == ['#include "extra.h"'] and after == []
+    # the include, the declaration and the macro the file has already are left out; the rest is placed whole
+    assert [forkutil._helper_kind(c) for c in before] == ["define", "type", "helper"]
+    assert before[0].startswith("#define LONG") and "s32 y;" in before[1] and "return v * 2;" in before[2]
+    assert _sent(have=HAVE + "\n".join(before))[1] == []  # sent again: nothing new
+
+
+@pytest.mark.parametrize("extra", ["int g_table[2] = { 1, 2 };", "s32 other(s32 a) {\n    return a;\n}", "#if 0"])
+def test_a_global_with_a_value_or_another_function_is_still_the_files_business(extra):
+    with pytest.raises(NetworkError, match="with edit_file first"):
+        _sent(extra + "\n" + SENT)
+
+
+def test_a_macro_or_helper_sent_again_replaces_the_old_one():
+    have = HAVE + "static inline s32 twice(s32 v) {\n    return v + v;\n}\n\ns32 target(s32 a);\n"
+    _includes, before, _after = _sent(SENT.replace("((o) + (x)))", "((o) + (x) + 0))"), have)
+    text, left = forkutil._merge_helpers(have, before, "src/a.c")
+    assert text.count("#define O16") == 1 and "(x) + 0))" in text      # the macro's new body, in its old place
+    assert text.count("twice(s32 v)") == 1 and "return v * 2;" in text and "return v + v;" not in text
+    assert [forkutil._helper_kind(c) for c in left] == ["define", "type"]  # LONG and Pair are new: placed before it
+    with pytest.raises(NetworkError, match="already defines `Pair`"):
+        forkutil._merge_helpers(have + "typedef struct { s32 x; } Pair;\n", before, "src/a.c")
+
+
+@needs_tools
+def test_a_miss_is_remembered_with_what_it_needs_and_the_helper_is_replaced_not_doubled(fork):
+    net, slug, agent = fork
+    root = Path(net.project_row(slug)["root"])
+    name = "entity_default_hp"
+    net.claim(agent, slug, name)
+    helper = "#define HP_BONUS 3\nstatic s32 hp_extra(s32 v) {\n    return v + HP_BONUS;\n}\n"
+    wrong = _ref(name).replace("return ", "return hp_extra(0) + ", 1)
+    assert wrong != _ref(name)
+    res = net.attempt(agent, name, helper + wrong, slug)
+    assert res["score"] and not res["matched"], res["text"]
+    text = (root / "src" / "game.c").read_text()
+    assert text.count("#define HP_BONUS 3") == 1 and text.index("hp_extra(s32 v)") < text.index(name + "(")
+    best = net.store.one("SELECT best_source FROM functions WHERE name=?", name)["best_source"]
+    assert best.startswith("#define HP_BONUS 3") and "static s32 hp_extra" in best and best.rstrip().endswith("}")
+    again = net.attempt(agent, name, helper.replace("HP_BONUS 3", "HP_BONUS 4") + wrong, slug)
+    assert again["score"], again["text"]
+    text = (root / "src" / "game.c").read_text()
+    assert text.count("#define HP_BONUS") == 1 and "#define HP_BONUS 4" in text and text.count("hp_extra(s32 v)") == 1
+    # the remembered attempt stands on its own: the matrix compiles it from the record
+    out = net.forks.matrix(agent, slug, name, best, contexts="file,alone")
+    assert all(c["compiled"] for c in out["cells"]), out["text"]
+    net.release(agent, name, "testing", slug)
+
+
+@needs_tools
+def test_the_permuter_compiles_a_round_in_one_build_and_keeps_what_matches(fork, monkeypatch):
+    """The rewrites themselves are permuter.py's; here one of them is the right code, so the run has to find it,
+    put it through the matrix and commit it."""
+    net, slug, agent = fork
+    root = Path(net.project_row(slug)["root"])
+    name = "count_alive_entities"
+    good = _ref(name)
+    near = good.replace("return n;", "return n + 1;")
+    first = net.forks.matrix(agent, slug, name, near, again=True)
+    assert not first["matched"]
+    made = iter([near.replace("n + 1", "n + 2"), "not C at all {", good])
+    monkeypatch.setattr(forkmatrix, "mutate", lambda source, rng: next(made, None))
+    builds = len(list((root / ".decomp-wtf").glob("matrix/*")))
+    res = net.forks.matrix_permute(agent, slug, name, seconds=30)
+    assert res["matched"] and res["committed"], res["text"]
+    assert res["variants"] == 2 and res["improved"] == 1 and res["after"] == 0 and res["before"] > 0
+    assert "Permuter: 2 rewrites" in res["text"] and "MATCH!" in res["text"]
+    assert net.store.one("SELECT status FROM functions WHERE name=?", name)["status"] == "matched"
+    assert good.split("{", 1)[1].strip() in (root / "src" / "game.c").read_text()
+    assert len(list((root / ".decomp-wtf").glob("matrix/*"))) == builds  # nothing left behind
+    # nothing closer: said so, and nothing recorded as progress
+    with pytest.raises(NetworkError):
+        net.forks.matrix_permute(agent, slug, "no_such_function")
+    status = net.forks.matrix_status(slug)
+    assert status["permute"] is None
+    net.forks.matrix_permute_sweep(slug, seconds=1)
+    job = net.forks._permute_jobs[slug]
+    for _ in range(600):
+        if job["state"] != "running":
+            break
+        job["stop"].wait(0.1)
+    assert job["state"] == "done" and net.forks.matrix_status(slug)["permute"]["done"] == job["total"]

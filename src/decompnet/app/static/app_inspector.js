@@ -224,7 +224,7 @@ function renderMatrix(d) {
     ? `<div class="note">${m.saved.verified ? "Verified function bytes and relocations" : "Historical recipe; rerun to verify bytes"} under <b>${esc(m.saved.profile)}</b> / <b>${esc(m.saved.context)}</b>. The normal project build still needs verification.</div>` : "";
   const runs = (m.runs || []).map(matrixTable).join("");
   const exhaustive = `<label class="small"><input type="checkbox" id="matrixExhaustive"> All configurations</label>`;
-  box.innerHTML = `<p class="col-title">Compiler matrix<button class="link-btn" id="matrixRun" type="button">${matrixBusy ? "Running…" : "Run"}</button>${exhaustive}<button class="link-btn" id="matrixSweep" type="button" title="Every open function that has C, closest first; sources already tried are skipped">Run on all functions</button></p>${saved}${runs || `<p class="muted small">Verified recipes from this file are tried first. Select All configurations to measure the complete matrix.</p>`}${runs ? `<p class="muted small">Cells: differing instruction rows. * the file's own profile. verify: zero row differences, byte/constant/reference verification incomplete or failed.</p>` : ""}`;
+  box.innerHTML = `<p class="col-title">Compiler matrix<button class="link-btn" id="matrixRun" type="button">${matrixBusy ? "Running…" : "Run"}</button>${exhaustive}<button class="link-btn" id="matrixPermute" type="button" title="Rewrites that keep the meaning (statement and declaration order, casts, register, loop forms), under the closest profile and context; up to 45 seconds">Permute</button><button class="link-btn" id="matrixPermuteAll" type="button" title="Every open near miss the matrix has measured, closest first, in the background">Permute near misses</button><button class="link-btn" id="matrixSweep" type="button" title="Every open function that has C, closest first; sources already tried are skipped">Run on all functions</button></p>${saved}${runs || `<p class="muted small">Verified recipes from this file are tried first. Select All configurations to measure the complete matrix.</p>`}${runs ? `<p class="muted small">Cells: differing instruction rows. * the file's own profile. verify: zero row differences, byte/constant/reference verification incomplete or failed.</p>` : ""}`;
   $("matrixRun").onclick = async () => {
     if (matrixBusy) return;
     matrixBusy = true;
@@ -234,6 +234,21 @@ function renderMatrix(d) {
       const r = await api("/api/matrix/run", { method: "POST", body: { slug: S.slug, name: d.name, source: dirty, again: true, exhaustive: $("matrixExhaustive").checked } });
       toast(r.committed ? "Matched and committed." : r.matched ? "Matches under another profile or translation unit: saved with its recipe." : "No profile or context matches yet.", r.matched ? undefined : "err");
     } catch (e) { toast(esc(e.message), "err"); } finally { matrixBusy = false; refreshFn(false); }
+  };
+  $("matrixPermute").onclick = async () => {
+    if (matrixBusy) return;
+    matrixBusy = true;
+    $("matrixPermute").textContent = "Permuting…";
+    try {
+      const r = await api("/api/matrix/permute", { method: "POST", body: { slug: S.slug, name: d.name } });
+      toast(r.committed ? "Matched and committed." : r.matched ? "A rewrite matches under another profile or translation unit: saved with its recipe." : r.improved ? `Closer: score ${r.before} → ${r.after} after ${r.variants} rewrites.` : `${r.variants} rewrites, none closer.`, r.matched || r.improved ? undefined : "err");
+    } catch (e) { toast(esc(e.message), "err"); } finally { matrixBusy = false; refreshFn(false); }
+  };
+  $("matrixPermuteAll").onclick = async () => {
+    try {
+      const st = await api("/api/matrix/permute", { method: "POST", body: { slug: S.slug } });
+      toast(st.permute ? `Permuter running on ${st.permute.total || "the"} near misses in the background.` : "Started.");
+    } catch (e) { toast(esc(e.message), "err"); }
   };
   $("matrixSweep").onclick = async () => {
     try {
