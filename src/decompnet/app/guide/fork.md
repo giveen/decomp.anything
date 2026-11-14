@@ -54,4 +54,7 @@ Conventions
 When it won't match
 - Check the function's real signature (C++ mangled names encode it exactly).
 - Look at how matched neighbours handle the same structs and calls.
+- Compiler/context hypotheses (gp-relative or %hi/%lo addressing, delay slots, nops after loads, registers):
+  `compiler_matrix(function)` tests the same C, prioritizing verified recipes from this file. Patterns and partial
+  improvements do not prove correct C; byte verification is required. `guide("matrix")` explains the evidence.
 - Stuck after ~25 compiles: `release_function` with notes on what you tried and the remaining diff.

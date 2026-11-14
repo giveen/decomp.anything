@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS twin_misses(
 CREATE TABLE IF NOT EXISTS draft_tries(
   function_id INTEGER PRIMARY KEY, project_id INTEGER, context_version INTEGER, compiler TEXT,
   outcome TEXT, why TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS experiments(
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, function_id INTEGER NOT NULL, agent_id INTEGER,
+  run TEXT NOT NULL, config TEXT, input_hash TEXT, source_hash TEXT NOT NULL, source TEXT,
+  profile TEXT NOT NULL, compiler TEXT, flags TEXT, context TEXT NOT NULL, current INTEGER NOT NULL DEFAULT 0,
+  compiled INTEGER NOT NULL DEFAULT 0, score INTEGER, percent REAL, diffs INTEGER, matched INTEGER NOT NULL DEFAULT 0,
+  classes TEXT, error TEXT, created_at REAL);
+CREATE INDEX IF NOT EXISTS idx_experiments_fn ON experiments(function_id, id);
+CREATE INDEX IF NOT EXISTS idx_experiments_input ON experiments(function_id, input_hash);
 """
 
 # Columns added after the first release; applied in place to existing databases.
@@ -79,6 +87,9 @@ MIGRATIONS = [
     ("attempts", "compiler", "TEXT"),                          # ... and only while the same command built it
     ("functions", "stuck_at", "REAL"),                         # first attempt that showed the room, not just one
                                                                 # agent, is out of patience with this function
+    ("experiments", "source_path", "TEXT"),                    # scope cross-function learning to the source file
+    ("experiments", "target_hash", "TEXT"),                    # never reuse evidence for a different original object
+    ("experiments", "evidence", "TEXT"),                       # strict byte check and learned-priority provenance
 ]
 
 
@@ -98,6 +109,7 @@ class Store:
         # Network.attempt): the lookup is by function and source, the same pair twin_misses keys machine tries on
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_source ON attempts(function_id, source_hash)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_unit ON functions(project_id, unit, status)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_learning ON experiments(project_id, source_path, config)")
         # by address: a room's sync looks functions up by vram (matches, notes, renames). Without this each lookup
         # scanned every function of the project, so a big room's first sync took minutes to apply.
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_vram ON functions(project_id, vram)")

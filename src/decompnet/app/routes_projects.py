@@ -125,6 +125,28 @@ def register(ctx: ServerContext) -> None:
         res = net.attempt(agent, str(data.get("name", "")), str(data.get("source", "")), slug)
         return {"score": res["score"], "matched": res["matched"], "text": res["text"][-4000:]}
 
+    def p_matrix_run(slug, request, data):
+        """You, running the compiler matrix on a function from the GUI (see forkmatrix.py)."""
+        agent, _ = net.local_agent("you")
+        res = net.forks.matrix(agent, slug, str(data.get("name", "")), str(data.get("source", "")),
+                               again=bool(data.get("again")), exhaustive=bool(data.get("exhaustive")))
+        return {"matched": res["matched"], "committed": res["committed"], "repeat": res["repeat"], "text": res["text"]}
+
+    def p_matrix_sweep(slug, request, data):
+        if data.get("action") == "stop":
+            return net.forks.matrix_stop(slug)
+        return net.forks.matrix_sweep(slug, int(data.get("limit") or 0))
+
+    def p_matrix_permute(slug, request, data):
+        """The permuter over the matrix's near misses: one function (`name`), or all of them in the background."""
+        if data.get("action") == "stop":
+            return net.forks.matrix_permute_stop(slug)
+        if data.get("name"):
+            agent, _ = net.local_agent("you")
+            res = net.forks.matrix_permute(agent, slug, str(data["name"]), float(data.get("seconds") or 45))
+            return {k: res[k] for k in ("matched", "committed", "variants", "improved", "before", "after", "text")}
+        return net.forks.matrix_permute_sweep(slug, float(data.get("seconds") or 45), limit=int(data.get("limit") or 0))
+
     def p_release(slug, request, data):
         agent, _ = net.local_agent("you")
         with contextlib.suppress(NetworkError):  # not yours (any more): nothing to give back
@@ -237,6 +259,9 @@ def register(ctx: ServerContext) -> None:
         "/api/ide": (p_ide, ["POST"]),
         "/api/delete": (p_delete, ["POST"]), "/api/agents/manual": (p_manual, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
+        "/api/matrix": (lambda s, r, d: {**net.forks.matrix_status(s), "saved": net.forks.matrix_matches(s)}, ["GET"]),
+        "/api/matrix/run": (p_matrix_run, ["POST"]), "/api/matrix/sweep": (p_matrix_sweep, ["POST"]),
+        "/api/matrix/permute": (p_matrix_permute, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
         "/api/analysis/task": (p_add_task, ["POST"]),
@@ -258,4 +283,3 @@ def register(ctx: ServerContext) -> None:
     }
     for path, (fn, methods) in routes.items():
         mcp.custom_route(path, methods=methods)(with_project(fn))
-

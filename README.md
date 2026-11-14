@@ -429,6 +429,39 @@ Wii projects (dtk-template) decomp.anything handles the steps between:
 - **Finished files link themselves.** The app marks the file Matching, builds the game and runs the project's
   checksum check, keeping the change only if it passes.
 
+### The compiler matrix
+
+Some games were built with more than one compiler (PlayStation games mix PSY-Q GCC 2.7.2 and 2.8.1, with and without
+the library profile), and a fork's build compiles each file one way. A function can then have the right C and still
+read as a near miss, because its file is built with the wrong compiler or it belongs in another translation unit. A
+project that declares a `matrix` in its `.decomp.wtf.json` (a build command and its compiler profiles) gets that
+tested instead of rewritten:
+
+- **One call, learned search order.** `compiler_matrix(function)` compiles the function's C under each profile and each
+  translation-unit context (its file as it is, the function alone, with its neighbours, with the file's globals
+  `extern` or defined). Verified matches from other functions in the same file prioritize a recipe; a verified
+  early match saves the remaining builds. A miss continues through the remaining configurations. Use
+  `exhaustive=true` to measure all of them. Repeated attempts do not inflate the votes.
+- **A miss says what kind it is.** GP-relative addressing, `%hi`/`%lo` splitting, delay slots, nops after loads and
+  register operands are reported with example rows, alongside unexplained code differences. These are hypotheses,
+  not proof of a compiler cause. Reports quantify improvement against the measured current-profile/file baseline
+  while keeping remaining source, constant and reference differences visible.
+- **Matches are kept.** One the file's own build makes is committed like any match. One that needs the build
+  changed is saved with its recipe (profile, context, source) and taken out of the agents' queue. MATCH requires
+  independent function-byte and relocation verification, plus constant/reference checks, even at 100% similarity;
+  `GET /api/matrix?slug=…` lists them for the maintainer.
+- **Every experiment is recorded** per function (`experiment_history`): source revision, compiler and flags,
+  context, differing instructions, kinds of difference, match or not. A source already tried is answered from the
+  record. "Run on all" in a function's panel puts every open function that has C through the matrix.
+
+- **Near misses are permuted a batch per build.** Rewrites that keep the meaning (statement and declaration order,
+  casts, `register`, loop forms) are tried under the profile and context where the function came closest, 24 per
+  run of the matrix build; the best one goes through the matrix, which keeps a match.
+- **A function brings what it needs.** Macros, type definitions and static helpers sent with a function are placed
+  with it, and a miss is remembered with them, so a best attempt still compiles later.
+
+`guide("matrix")` has the manifest format and what the build command receives.
+
 ## Agents
 
 | Agent | How it connects |

@@ -46,6 +46,7 @@ GUIDES = {
     "analysis": "REA analysis projects: reading a target, recording findings, tasks",
     "rea": "knowledge-first REA discovery, actual tool schemas, provider limits and evidence",
     "investigation": "investigate stalled matches, conflicting evidence and failures with a focused hypothesis test",
+    "matrix": "the compiler matrix: one function under every compiler profile and translation unit a project has",
 }
 
 # Guides worth reading first on each platform.
@@ -148,6 +149,10 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
 6. compile_and_diff says when to move on (no better after 4 compiles in a row; up to 10 for big functions):
    then release_function with precise notes (what you tried, what is left) and claim the next. Very large
    functions: get the structure right first; a near miss is worth the extra compiles.
+7. A miss names observed patterns (gp-relative or %hi/%lo addressing, delay slots, nops after loads, registers).
+   compiler_matrix(function) tests compiler/context hypotheses, prioritizing verified recipes from this file.
+   Even a large improvement can leave a source error; only byte verification declares a matrix match.
+   A "MATRIX MATCH" is saved for the maintainer: release the function with that note and move on.
 
 Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
 scripts (the tools refuse). Write code a human would have written: match the file's style and names.
@@ -283,6 +288,15 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
 
 
+def _matrix(net: RomNetwork, agent: Agent, slug: str, function: str, source: str, profiles: str, contexts: str,
+            again, exhaustive, permute) -> str:
+    """compiler_matrix; with permute, a miss is followed by the permuter under its closest profile and context."""
+    res = net.forks.matrix(agent, slug, function, source, profiles, contexts, bool(again), exhaustive=bool(exhaustive))
+    if not permute or res["matched"]:
+        return res["text"]
+    return res["text"] + "\n\n" + net.forks.matrix_permute(agent, slug, function)["text"]
+
+
 def _rea_tool(net: RomNetwork, agent: Agent, slug: str, tool: str, arguments=None) -> str:
     if isinstance(arguments, str):
         try:
@@ -342,6 +356,12 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
     "split_file": lambda net, agent, slug, path, at, new_name="", data="":
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
+    "compiler_matrix": lambda net, agent, slug, function, source="", profiles="", contexts="", again=False,
+                              exhaustive=False, permute=False:
+        _matrix(net, agent, _fork(net, slug, "compiler_matrix"), function, source, profiles, contexts, again,
+                exhaustive, permute),
+    "experiment_history": lambda net, agent, slug, function, limit=8:
+        net.forks.matrix_history(_fork(net, slug, "experiment_history"), function, limit),
     "import_debug_info": lambda net, agent, slug, path="": json.dumps(net.import_debug_info(slug, path)),
     "export_debug_info": lambda net, agent, slug: json.dumps(net.export_debug_info(slug)),
     "compare_version": lambda net, agent, slug, path: json.dumps(net.compare_version(slug, path)),
@@ -353,7 +373,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "retire_function",
             "import_debug_info", "export_debug_info", "compare_version", "write_source", "rea_tool",
             "inspect_binary", "search_binary", "type_hint", "adopt_rea_names", "why_mismatch"}
-FORK_ONLY = {"edit_file", "file_status", "split_file"}
+FORK_ONLY = {"edit_file", "file_status", "split_file", "compiler_matrix", "experiment_history"}
 ANALYSIS_ONLY = {"complete_function", "read_artifact_entry"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
                   "rea_tool", "read_artifact_entry", "write_source", "inspect_binary", "search_binary", "read_data",
@@ -798,6 +818,38 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         the game still builds byte for byte and every match still matches. A file links only when its code and
         data are exactly one original file's."""
         return await run(ctx, "split_file", path=path, at=at, new_name=new_name, data=data)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def compiler_matrix(ctx: Context, function: str, source: str = "", profiles: str = "", contexts: str = "",
+                              again: bool = False, exhaustive: bool = False, permute: bool = False) -> str:
+        """Forks only: compile one function's C under every compiler profile the project declares (compiler
+        versions, flags, assembler profiles) and every translation-unit context (its file as it is, the function
+        alone, with its neighbours, with the file's globals extern or defined), and diff each result against the
+        original. Patterns suggest experiments, not proof that the C is correct. Verified recipes from other
+        functions in this file are tried first; a verified match can stop the search early. A match under the
+        file's own build is committed, any other match is saved
+        with its recipe for the project's maintainer. A source already tried is answered from the record.
+
+        Args:
+            function: the function
+            source: its complete definition (as for compile_and_diff); empty: the one in its file, else its best attempt
+            profiles: comma-separated profile names to limit the matrix to; empty: all of the project's
+            contexts: comma-separated contexts (file, alone, neighbors, extern, tentative); empty: all
+            again: compile even if these exact sources were tried before
+            exhaustive: measure every requested configuration even if a learned recipe matches early
+            permute: after a miss, spend up to 45 seconds on rewrites that keep the meaning (statement and
+                declaration order, casts, `register`, loop forms) under the closest profile and context; a batch
+                of rewrites costs one compile. For near misses whose differences are registers or order
+        """
+        return await run(ctx, "compiler_matrix", function=function, source=source, profiles=profiles,
+                         contexts=contexts, again=again, exhaustive=exhaustive, permute=permute)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def experiment_history(ctx: Context, function: str, limit: int = 8) -> str:
+        """Forks only: a function's compiler-matrix experiments, newest first: the source revision, each compiler
+        profile with its flags, the translation-unit context, how many instructions differed, what kind of
+        difference was left and whether it matched. Read it before trying another compiler or context by hand."""
+        return await run(ctx, "experiment_history", function=function, limit=limit)
 
     @mcp.prompt(title="Decompile", description="Work loop: claim functions and match them byte for byte.")
     def work(count: str = "5") -> str:

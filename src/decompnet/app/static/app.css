@@ -771,3 +771,9 @@ a.ghost, a.primary { text-decoration: none; }
 .nav-proj.child.d2 { margin-left: 28px; }
 .nav-proj.child.d3 { margin-left: 42px; }
 .nav-proj.child .np-name { font-size: 12px; }
+/* compiler matrix: profiles down, translation-unit contexts across, differing instructions in each cell */
+.matrix-table { border-collapse: collapse; margin: 4px 0 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.matrix-table th, .matrix-table td { padding: 2px 10px; text-align: right; border-bottom: 1px solid rgba(128, 128, 128, .25); }
+.matrix-table th { font-weight: 500; }
+.matrix-table th:first-child { text-align: left; }
+.matrix-table td.ok { font-weight: 600; }

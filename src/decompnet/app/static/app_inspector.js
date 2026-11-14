@@ -184,11 +184,78 @@ async function refreshFn(first) {
     $("fnXref").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn.split("+")[0]); });
     renderPrefill(d);
     $("fnNotes").innerHTML = d.notes.length ? `<p class="col-title">Notes from agents</p>` + d.notes.map((n) => `<div class="note"><small>${esc(n.agent)} · ${clock(n.created_at)}</small>${esc(n.text)}</div>`).join("") : "";
+    renderMatrix(d);
     const tab = S.ftab || (d.status === "matched" || !d.scores.length ? "code" : "diff");
     showFnTab(tab);
   } catch (e) {
     if (first) toast(esc(e.message), "err");
   } finally { fnBusy = false; }
+}
+
+/* The compiler matrix (forks whose project declares one): the function's C under every compiler profile and
+   translation-unit context, as a table of differing instructions, with the runs kept per function. */
+let matrixBusy = false;
+function matrixCell(c) {
+  if (!c) return `<td class="muted">·</td>`;
+  if (c.matched) return `<td class="ok" title="Function bytes and relocation identities verified">MATCH</td>`;
+  if (!c.compiled) return `<td class="muted" title="${esc(c.error || "didn't compile")}">error</td>`;
+  if (c.diffs == null) return `<td class="muted" title="${esc(c.error || "")}">-</td>`;
+  const evidence = c.evidence || {};
+  const detail = [c.kinds, evidence.reason, ...(evidence.literal_details || [])].filter(Boolean).join(" · ");
+  return `<td title="${esc(detail)}${c.percent != null ? ` · ${(Math.floor(c.percent * 10) / 10).toFixed(1)}% similarity` : ""}">${c.diffs === 0 ? "verify" : c.diffs}</td>`;
+}
+function matrixTable(run) {
+  const order = ["file", "alone", "neighbors", "extern", "tentative"];
+  const ctxs = order.filter((c) => run.cells.some((x) => x.context === c));
+  const profs = [...new Set(run.cells.map((x) => x.profile))];
+  const at = new Map(run.cells.map((x) => [`${x.profile}|${x.context}`, x]));
+  const current = (run.cells.find((x) => x.current) || {}).profile;
+  const head = `<tr><th></th>${ctxs.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
+  const rows = profs.map((p) => `<tr><th title="${esc((at.get(`${p}|${ctxs[0]}`) || {}).flags || "")}">${esc(p)}${p === current ? " *" : ""}</th>${ctxs.map((c) => matrixCell(at.get(`${p}|${c}`))).join("")}</tr>`).join("");
+  const evidence = run.evidence_text ? `<p class="small">${esc(run.evidence_text).replace(/\n/g, "<br>")}</p>` : "";
+  return `<small class="muted">${esc(run.agent || "")} · ${clock(run.at)} · source ${esc((run.source_hash || "").slice(0, 8))}</small><table class="matrix-table">${head}${rows}</table>${evidence}`;
+}
+function renderMatrix(d) {
+  const box = $("fnMatrix");
+  if (!box) return;
+  const m = d.matrix;
+  if (!m || !m.configured) { box.innerHTML = ""; return; }
+  const saved = m.saved && d.status !== "matched"
+    ? `<div class="note">${m.saved.verified ? "Verified function bytes and relocations" : "Historical recipe; rerun to verify bytes"} under <b>${esc(m.saved.profile)}</b> / <b>${esc(m.saved.context)}</b>. The normal project build still needs verification.</div>` : "";
+  const runs = (m.runs || []).map(matrixTable).join("");
+  const exhaustive = `<label class="small"><input type="checkbox" id="matrixExhaustive"> All configurations</label>`;
+  box.innerHTML = `<p class="col-title">Compiler matrix<button class="link-btn" id="matrixRun" type="button">${matrixBusy ? "Running…" : "Run"}</button>${exhaustive}<button class="link-btn" id="matrixPermute" type="button" title="Rewrites that keep the meaning (statement and declaration order, casts, register, loop forms), under the closest profile and context; up to 45 seconds">Permute</button><button class="link-btn" id="matrixPermuteAll" type="button" title="Every open near miss the matrix has measured, closest first, in the background">Permute near misses</button><button class="link-btn" id="matrixSweep" type="button" title="Every open function that has C, closest first; sources already tried are skipped">Run on all functions</button></p>${saved}${runs || `<p class="muted small">Verified recipes from this file are tried first. Select All configurations to measure the complete matrix.</p>`}${runs ? `<p class="muted small">Cells: differing instruction rows. * the file's own profile. verify: zero row differences, byte/constant/reference verification incomplete or failed.</p>` : ""}`;
+  $("matrixRun").onclick = async () => {
+    if (matrixBusy) return;
+    matrixBusy = true;
+    $("matrixRun").textContent = "Running…";
+    try {
+      const dirty = S.editDirty ? $("fnEdit").value : "";
+      const r = await api("/api/matrix/run", { method: "POST", body: { slug: S.slug, name: d.name, source: dirty, again: true, exhaustive: $("matrixExhaustive").checked } });
+      toast(r.committed ? "Matched and committed." : r.matched ? "Matches under another profile or translation unit: saved with its recipe." : "No profile or context matches yet.", r.matched ? undefined : "err");
+    } catch (e) { toast(esc(e.message), "err"); } finally { matrixBusy = false; refreshFn(false); }
+  };
+  $("matrixPermute").onclick = async () => {
+    if (matrixBusy) return;
+    matrixBusy = true;
+    $("matrixPermute").textContent = "Permuting…";
+    try {
+      const r = await api("/api/matrix/permute", { method: "POST", body: { slug: S.slug, name: d.name } });
+      toast(r.committed ? "Matched and committed." : r.matched ? "A rewrite matches under another profile or translation unit: saved with its recipe." : r.improved ? `Closer: score ${r.before} → ${r.after} after ${r.variants} rewrites.` : `${r.variants} rewrites, none closer.`, r.matched || r.improved ? undefined : "err");
+    } catch (e) { toast(esc(e.message), "err"); } finally { matrixBusy = false; refreshFn(false); }
+  };
+  $("matrixPermuteAll").onclick = async () => {
+    try {
+      const st = await api("/api/matrix/permute", { method: "POST", body: { slug: S.slug } });
+      toast(st.permute ? `Permuter running on ${st.permute.total || "the"} near misses in the background.` : "Started.");
+    } catch (e) { toast(esc(e.message), "err"); }
+  };
+  $("matrixSweep").onclick = async () => {
+    try {
+      const st = await api("/api/matrix/sweep", { method: "POST", body: { slug: S.slug } });
+      toast(st.sweep ? `Compiler matrix running on ${st.sweep.total || "the"} functions in the background.` : "Started.");
+    } catch (e) { toast(esc(e.message), "err"); }
+  };
 }
 
 /* Editing a function yourself: a highlighted editor over a textarea, judged like an agent's attempt. */

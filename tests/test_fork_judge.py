@@ -196,7 +196,8 @@ def test_edit_file_forgives_whitespace_and_shows_where_the_text_went(fork):
 
 def test_lines_the_file_already_has_may_come_along(fork):
     """Includes and declarations sent with a function are placed in its file (agents' prototypes and pragma
-    wrappers came back as errors before, a wasted turn each); a struct or a global still goes in with edit_file."""
+    wrappers came back as errors before, a wasted turn each), and so are the macros, types and static helpers it
+    needs; a global with a value still goes in with edit_file."""
     net, slug, agent = fork
     out = net.compile_and_diff(agent, "scale", '#include "lit.h"\n\n' + SCALE, slug)
     assert out.startswith("✅ MATCH"), out
@@ -205,5 +206,5 @@ def test_lines_the_file_already_has_may_come_along(fork):
     text = next(p.read_text() for p in (root / "src").rglob("*.c") if "read_gain" in p.read_text())
     assert text.index("extern float gGain;") < text.index("float read_gain(")
     with pytest.raises(Exception) as e:
-        net.compile_and_diff(agent, "read_gain", "struct Gain { float v; };\n" + GAIN, slug)
-    assert "struct Gain" in str(e.value) and "edit_file" in str(e.value)
+        net.compile_and_diff(agent, "read_gain", "float gOther = 1.0f;\n" + GAIN, slug)
+    assert "float gOther" in str(e.value) and "edit_file" in str(e.value)

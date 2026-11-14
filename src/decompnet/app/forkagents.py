@@ -16,7 +16,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
-from ..forks import catalog, csource, drafts, ghidra
+from ..forks import catalog, csource, drafts, ghidra, matrixverify
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import STATE, ForkError, ForkProject
 from ..network import Agent, NetworkError
@@ -26,6 +26,7 @@ from .forkutil import (
     PRAGMA,
     _around,
     _digest,
+    _merge_helpers,
     _pragmas_around,
     _renamed_note,
     _strip_comments,
@@ -188,8 +189,13 @@ class ForkAgentMixin:
         if fn["best_source"] and fn["status"] != "matched":
             lines += ["", f"### Best attempt so far (score {fn['best_score']})", "```c", fn["best_source"].strip(), "```"]
         elif fn["status"] != "matched" and (current is None or csource.is_stub(current)):
-            seed = self._draft(proj, fp, cfg, fn, unit)
-            if seed:
+            own = self.project_seed(fp, fn, unit)
+            seed = None if own else self._draft(proj, fp, cfg, fn, unit)
+            if own:
+                lines += ["", f"### The project's own C for this function ({own[0]}): it behaves like the original, "
+                              "but doesn't compile to its bytes yet", "Start from it: change its form, not what it does.",
+                          "```c", own[1].strip(), "```"]
+            elif seed:
                 lines += ["", "### Machine draft: a starting point, often wrong in types and details", "```c",
                           seed.strip(), "```"]
         twin = self._twin_brief(proj, fn) if fn["status"] != "matched" else []
@@ -218,6 +224,7 @@ class ForkAgentMixin:
                                    "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 6", fn["id"])
         if notes:
             lines += ["", "### Notes"] + [f"- ({n['name']}) {n['text']}" for n in notes]
+        lines += self.matrix_brief(fn, fp)
         lines += ["", "Send compile_and_diff the complete function definition (same name and signature as the original), "
                       "with any #include \"...\", prototypes or #pragma lines it needs. Structs, globals and helper "
                       "functions go in with edit_file."]
@@ -316,7 +323,7 @@ class ForkAgentMixin:
         return "\n".join(out) or "none"
 
     def attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
-                quiet: int | None = None) -> dict:
+                quiet: int | None = None, require_bytes: bool = False) -> dict:
         """`keep`: whether a version that doesn't match stays in the source file (an agent's work in progress) or
         is undone and kept only as the function's best attempt (autopilot's drafts). `prelude`: (decomp.wtf's own
         tries) type definitions the code needs, placed after the file's includes. `quiet`: (the permuter's
@@ -324,7 +331,7 @@ class ForkAgentMixin:
         it builds (twins' tries come unclaimed: a 30-minute claim each kept agents off them, then counted as given up)."""
         held = None if keep else self._hold_for_try(slug, function, agent)
         try:
-            res = self._attempt(agent, slug, function, source, keep, prelude, quiet)
+            res = self._attempt(agent, slug, function, source, keep, prelude, quiet, require_bytes)
         finally:
             if held is not None:
                 with self.net.store.tx() as db:
@@ -372,8 +379,25 @@ class ForkAgentMixin:
         with suppress(NetworkError):
             link.call("/collab/best", agent, function=name, source=source, score=score)
 
+    def _placed(self, proj, fp: ForkProject, unit, fn, names: list[str], before: str, code: str, includes: list[str],
+                before_lines: list[str], after_lines: list[str], prelude: str) -> str:
+        """The source file's text (`before`) with the function's new definition in place of the old one or of its
+        stub, or where it was in the original when the file doesn't have it yet. A macro or static helper sent with
+        it that the file has already takes the old one's place."""
+        before, before_lines = _merge_helpers(before, before_lines, unit.source or "the file")
+        _hit, old_span = self._find(before, names)
+        pre, post = "".join(ln + "\n" for ln in before_lines), "".join(ln + "\n" for ln in after_lines)
+        if old_span:
+            lo, hi = old_span
+            if any(PRAGMA.match(ln) for ln in before_lines + after_lines):  # a new wrapper replaces the old one
+                lo, hi = _pragmas_around(before, lo, hi)
+            after = before[:lo] + pre + code.rstrip("\n") + "\n" + post + before[hi:]
+        else:
+            after = self._insert_in_order(proj, fp, unit, fn, before, pre + code.rstrip("\n") + "\n" + post)
+        return _with_includes(after, includes, prelude)
+
     def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
-                 quiet: int | None = None) -> dict:
+                 quiet: int | None = None, require_bytes: bool = False) -> dict:
         proj, fp, _cfg = self.get(slug)
         fn = self._fn(slug, function)
         meta = self._meta(fn)
@@ -386,6 +410,9 @@ class ForkAgentMixin:
         if span is None:
             raise NetworkError(f"send the complete definition of {names[0]} (with its body)")
         code = source[span[0]:span[1]]
+        # what is remembered of a try that didn't match: the function with what was sent before it (macros, types,
+        # helpers, declarations), so the best attempt still compiles when the file no longer has those
+        kept = (source[:span[0]].strip() + "\n\n" if source[:span[0]].strip() else "") + code
         unit = fp.unit(fn["unit"])
         if not unit.source:
             raise NetworkError(f"unit {unit.name} has no source file, so there's nowhere to write it")
@@ -414,7 +441,7 @@ class ForkAgentMixin:
             scores, builds = self._baseline(proj, fp, unit, before)
             held = self._held(proj, unit.name, before)
             if scores is not None:
-                self._apply_scores(proj, unit.name, scores, text=before)
+                self._apply_scores(proj, unit.name, scores, text=before, skip=fn["id"] if require_bytes else None)
                 protected = {n for n, pct in scores.items()
                              if n != symbol and n not in held and pct is not None and pct >= 100}
                 was_matched = (scores.get(symbol) or 0) >= 100 and symbol not in held
@@ -422,16 +449,7 @@ class ForkAgentMixin:
                 protected = {n for n, pct in (self._last_scores(proj, unit) or {}).items()
                              if n != symbol and n not in held and pct is not None and pct >= 100}
                 was_matched = fn["status"] == "matched"
-            _hit, old_span = self._find(before, names)
-            pre, post = "".join(ln + "\n" for ln in before_lines), "".join(ln + "\n" for ln in after_lines)
-            if old_span:
-                lo, hi = old_span
-                if any(PRAGMA.match(ln) for ln in before_lines + after_lines):  # a new wrapper replaces the old one
-                    lo, hi = _pragmas_around(before, lo, hi)
-                after = before[:lo] + pre + code.rstrip("\n") + "\n" + post + before[hi:]
-            else:
-                after = self._insert_in_order(proj, fp, unit, fn, before, pre + code.rstrip("\n") + "\n" + post)
-            after = _with_includes(after, includes, prelude)
+            after = self._placed(proj, fp, unit, fn, names, before, code, includes, before_lines, after_lines, prelude)
             path.write_text(after, encoding="utf-8")
 
             def undo() -> None:
@@ -443,7 +461,7 @@ class ForkAgentMixin:
             if not ok:
                 undo()
                 if quiet is None:
-                    self.net._record(fn, agent, None, code, 0)
+                    self.net._record(fn, agent, None, kept, 0)
                 why = "" if builds else ("\n(The file didn't build before your change either, so the error may be in "
                                          "other code of the file: fix that with edit_file.)")
                 return {"text": f"❌ BUILD ERROR (your change was undone){why}\n{log[-3000:]}", "score": None,
@@ -453,18 +471,24 @@ class ForkAgentMixin:
             except (ObjdiffError, ForkError) as e:
                 undo()
                 return {"text": f"❌ objdiff couldn't compare (your change was undone): {e}", "score": None, "matched": False}
+            if require_bytes and d.matched:
+                evidence = matrixverify.verify(unit.target, unit.base, symbol, d.renamed)
+                if evidence["byte_exact"] is not True or evidence.get("references"):
+                    undo()
+                    return {"text": "Byte verification failed in the normal build; your change was undone: "
+                                    + evidence["reason"], "score": 1, "matched": False}
             broken = sorted(n for n in protected if n and (d.unit_scores.get(n) or 0) < 100)
             if broken:
                 undo()
                 if quiet is None:
-                    self.net._record(fn, agent, None, code, 0, compiled=True)
+                    self.net._record(fn, agent, None, kept, 0, compiled=True)
                 return {"text": f"❌ REJECTED and undone: your change breaks matched function(s) {', '.join(broken[:8])}. "
                                 "Check you replaced the right definition (overloads?) and didn't change shared code.",
                         "score": None, "matched": False}
             if linked and d.matched and not (ok := self._verify(proj, fp))[0]:
                 undo()
                 if quiet is None:
-                    self.net._record(fn, agent, None, code, 0, compiled=True)
+                    self.net._record(fn, agent, None, kept, 0, compiled=True)
                 return {"text": f"❌ REJECTED and undone: {unit.source} is linked into the game, and with your change "
                                 f"the game no longer builds byte for byte:\n{_tail(ok[1])}", "score": None,
                         "matched": False}
@@ -474,7 +498,7 @@ class ForkAgentMixin:
             if not matched and not keep and not was_matched:  # tried, not kept: the file stays as it was
                 undo()
                 if quiet is None or score < quiet:
-                    self.net._record(fn, agent, score, code, 0, compiled=True)
+                    self.net._record(fn, agent, score, kept, 0, compiled=True)
                 return {"text": f"{percent_text(pct)} match (score {score}); not kept in {unit.source}", "score": score,
                         "matched": False, "percent": pct}
             self._keep_scores(proj, unit, after, d.unit_scores)
@@ -490,7 +514,7 @@ class ForkAgentMixin:
                                                     f"Edited by {agent.name} with decomp.wtf.")
                 return {"text": f"✅ {fn['name']} still matches; your tidier version is committed.{_renamed_note(d)}",
                         "score": 0, "matched": True}
-            self.net._record(fn, agent, score, code, 0, matched=matched)
+            self.net._record(fn, agent, score, code if matched else kept, 0, matched=matched)
             self._apply_scores(proj, fn["unit"], d.unit_scores, skip=fn["id"], agent=agent, text=after)
             self._remember(proj, fp, unit, d)
             if matched:
@@ -503,6 +527,8 @@ class ForkAgentMixin:
         stall = self.net.stall_note(fn["id"], agent.id)
         if d.literals:
             return {"text": f"score {score} (0 = identical). {d.literals_note()}{stall}", "score": score, "matched": False}
-        return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}{stall}", "score": score,
-                "matched": False}
+        # observed patterns and, when warranted, a controlled compiler/context experiment (forkmatrix.py)
+        more = self.matrix_after_miss(agent, slug, fn["name"], source, d.rows, pct) if keep and quiet is None else ""
+        return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}{more}{stall}",
+                "score": score, "matched": False}
 

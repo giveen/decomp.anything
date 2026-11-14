@@ -14,6 +14,7 @@ function eventHtml(ev) {
   switch (ev.kind) {
     case "claim": return `${who} started ${fnLink(d)}`;
     case "match": return `<span class="ok">✓</span> ${who} matched ${fnLink(d)}`;
+    case "matrix": return `<span class="ok">▦</span> ${fnLink(d)} matches under another compiler profile or translation unit (compiler matrix)`;
     case "analyze": return `<span class="ok">✓</span> ${who} analyzed ${fnLink(d)}`;
     case "task": return `${who ? who + " " : ""}added the task ${esc(d)}`;
     case "feature": return `${who ? who + " " : ""}traced the feature ${esc(d)}`;

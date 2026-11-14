@@ -7,8 +7,9 @@ can actually build and play.
 
 The engine is one object per app (RomNetwork.forks): it holds the tree locks and what objdiff last said. Everything else
 is a part beside it, by the job it does: forkcreate makes a fork, forklink links it, forksources gives homeless code a
-file, forkindex keeps the look-alike index, forkagents is what an agent does here, forkauto tries drafts, forkedit reads
-and edits the tree, forkviews answers the page. They are one class at runtime, so a part reaches a helper in another with
+file, forkindex keeps the look-alike index, forkagents is what an agent does here, forkauto tries drafts, forkmatrix
+tries a function under the project's other compilers and translation units, forkedit reads and edits the tree, forkviews
+answers the page. They are one class at runtime, so a part reaches a helper in another with
 a plain self. call; tests/test_fork_parts.py checks that every name resolves and has exactly one owner.
 """
 
@@ -31,6 +32,7 @@ from .forkcreate import ForkCreateMixin
 from .forkedit import ForkEditMixin
 from .forkindex import ForkIndexMixin
 from .forklink import ForkLinkMixin
+from .forkmatrix import ForkMatrixMixin
 from .forksources import ForkSourceMixin
 from .forkutil import (
     TreeLock,
@@ -39,7 +41,7 @@ from .forkviews import ForkViewMixin
 
 
 class ForkEngine(ForkCreateMixin, ForkLinkMixin, ForkSourceMixin, ForkIndexMixin, ForkAgentMixin,
-                 ForkAutoMixin, ForkEditMixin, ForkViewMixin):
+                 ForkAutoMixin, ForkEditMixin, ForkMatrixMixin, ForkViewMixin):
     def __init__(self, net):
         self.net = net
         self._trees: dict[int, TreeLock] = defaultdict(TreeLock)  # project id -> its source tree's lock
@@ -54,6 +56,10 @@ class ForkEngine(ForkCreateMixin, ForkLinkMixin, ForkSourceMixin, ForkIndexMixin
         self._indexing: set[int] = set()
         self._ilock = threading.RLock()
         self._linking: dict[str, dict] = {}  # slug -> background link run
+        self._matrix_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)  # one compiler matrix at a time
+        self._matrix_jobs: dict[str, dict] = {}  # slug -> background matrix sweep
+        self._permute_jobs: dict[str, dict] = {}  # slug -> background permuter run over the matrix's near misses
+        self._permute_turns: dict[int, int] = {}  # function id -> permuter turns spent on it
 
     def _fork_project(self, proj) -> ForkProject:
         """The project's source tree. One place builds it, so a test can stand in for it (tests/test_forks.py)."""
