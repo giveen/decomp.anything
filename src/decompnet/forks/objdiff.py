@@ -92,8 +92,12 @@ class FunctionDiff:
         if not self.literals:
             return ""
         listing = "\n".join(f"- {m.describe()}" for m in self.literals[:6])
-        return ("NOT A MATCH YET: every instruction matches, but constants it loads differ from the original's:\n"
-                f"{listing}\nWrite the literal with the original's value (float vs double, the exact digits).")
+        if all(type(m).__name__ == "JumpTable" for m in self.literals):
+            return ("NOT A MATCH YET: every instruction matches, but the switch's jump table sends a case to another "
+                    f"block than the original's:\n{listing}")
+        return ("NOT A MATCH YET: every instruction matches, but constants it loads (or a switch's jump table) differ "
+                f"from the original's:\n{listing}\nWrite the literal with the original's value (float vs double, the "
+                "exact digits); for a jump table, move the case labels.")
 
     def target_asm(self) -> str:
         return "\n".join(t for _, t, _ in self.rows if t)
