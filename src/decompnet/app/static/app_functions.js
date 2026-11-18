@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [] };
-const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["recon", "Reconstructed"], ["tried", "Tried"], ["matched", "Matched"], ["hot", "Coverage"], ["library", "Library"], ["unmatchable", "Retired"]];
+const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["recon", "Reconstructed"], ["tried", "Tried"], ["matched", "Matched"], ["hot", "Coverage"], ["asm", "Assembly"], ["library", "Library"], ["unmatchable", "Retired"]];
 const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "reconstructed" ? "recon" : f.status === "library" ? "library" : f.status === "asm" ? "asm" : f.status === "unmatchable" ? "unmatchable" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
 const STATE_RANK = { working: 0, recon: 1, tried: 2, open: 3, matched: 4, asm: 5, unmatchable: 6, library: 7 };
 
@@ -27,7 +27,7 @@ function renderList() {
   $("fnRows").innerHTML = shown.map((f, i) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "recon" ? `<span class="st recon" title="reconstructed by an agent: unverified, not a match">reconstructed</span>` : st === "library" ? `<span class="st" title="library/CRT code: not the program's own">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "unmatchable" ? `<span class="st" title="retired: no C can reproduce it (see its notes)">retired</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "recon" ? `<span class="st recon" title="reconstructed by an agent: unverified, not a match">reconstructed</span>` : st === "library" ? `<span class="st" title="${esc(f.why || "library/CRT code: not the program's own")}">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="${esc(f.why || "hand-written assembly: no C compiles to it")}">assembly</span>` : st === "unmatchable" ? `<span class="st" title="retired: no C can reproduce it (see its notes)">retired</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">${analysis ? "to do" : "to do"}</span>`;
     const where = analysis ? (f.vram ? hex8(f.vram) : ["artifact-entry", "recovered-source", "reconstruction"].includes(f.kind) ? "file" : "task")
       : fork ? esc(f.unit || "") : hex8(f.vram);

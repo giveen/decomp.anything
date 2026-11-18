@@ -465,7 +465,7 @@ class ViewsMixin:
             out.append({"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"],
                         "unit": r["unit"], "kind": meta.get("kind") or "", "path": meta.get("path") or "",
                         "child": children.get(meta.get("path")) if meta.get("path") else None, "status": status,
-                        "library": meta.get("library"),
+                        "library": meta.get("library"), "why": meta.get("not_c"),
                         "best": r["best_score"], "attempts": r["attempts"], "hits": int(r["hits"] or 0),
                         "agent": r["agent"] or remote.get(key(r)), "matched_at": r["matched_at"],
                         "matched_by": r["matched_by"]})

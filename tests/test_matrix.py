@@ -602,3 +602,39 @@ def test_a_project_can_name_who_writes_the_rewrites(fork):
         manifest["matrix"].pop("permute")
         (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
         script.unlink(missing_ok=True)
+
+
+@needs_tools
+def test_functions_the_project_says_never_become_c_are_tagged_and_never_handed_out(fork):
+    """A project lists what never becomes C (hand-written assembly, someone's library): the app tags those
+    functions with the reason, never hands them to an agent, and lists them for whoever wants to filter."""
+    net, slug, agent = fork
+    root = Path(net.project_row(slug)["root"])
+    row = net.store.one("SELECT name, meta FROM functions WHERE status='open' ORDER BY name LIMIT 1")
+    if row is None:
+        pytest.skip("no open function left in this run")
+    name, sym = row["name"], json.loads(row["meta"])["symbol"]
+    manifest = json.loads((root / ".decomp.wtf.json").read_text())
+    manifest["not_c"] = [{"list": "config/handwritten.txt", "status": "asm", "why": "chamada direta à BIOS"},
+                         {"list": "config/nothing_here.txt", "status": "library", "why": "SDK"},
+                         {"list": "config/handwritten.txt", "status": "bogus"}]
+    (root / "config").mkdir(exist_ok=True)
+    (root / "config" / "handwritten.txt").write_text(f"# função  tamanho  motivo\n// outro comentário\n{sym} 0x10 BIOS\n")
+    (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
+    try:
+        assert net.forks.not_c(net.forks._fork_project(net.project_row(slug))) == {sym: ("asm", "chamada direta à BIOS")}
+        net.forks.sync(slug, log=lambda *_: None)
+        tagged = net.store.one("SELECT status, meta FROM functions WHERE name=?", name)
+        assert tagged["status"] == "asm" and json.loads(tagged["meta"])["not_c"] == "chamada direta à BIOS"
+        with pytest.raises(NetworkError, match="hand-written assembly"):
+            net.claim_row(agent, slug, name)
+        listed = net.forks.list_functions(slug, "not_c")
+        assert name in listed and "asm: chamada direta à BIOS" in listed
+        assert name not in net.forks.list_functions(slug, "open", 200)
+        shown = next(f for f in net.function_map(slug) if f["name"] == name)
+        assert shown["status"] == "asm" and shown["why"] == "chamada direta à BIOS"
+    finally:
+        manifest.pop("not_c")
+        (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
+        net.forks.sync(slug, log=lambda *_: None)
+    assert net.store.one("SELECT status FROM functions WHERE name=?", name)["status"] == "open"

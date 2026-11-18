@@ -216,6 +216,39 @@ class ForkCreateMixin:
             raise NetworkError(f"objdiff couldn't measure the project: {e}") from None
         raise NetworkError("objdiff gave no report")  # only reached if the lock's holder swallows the read
 
+    def not_c(self, fp) -> dict[str, tuple[str, str]]:
+        """{symbol: (status, why)} for functions the project says never become C, from its `.decomp.wtf.json`:
+
+            "not_c": [{"list": "config/handwritten.{target}.txt", "status": "asm",
+                       "why": "hand-written assembly in the original (BIOS calls, syscall, GTE)"},
+                      {"list": "config/symbols.{target}.psyq.txt", "status": "library", "why": "PsyQ SDK"}]
+
+        Each list names one function per line, first (`name size why`, `name = 0x80012345; // ...`); `#` and `//`
+        lines are comments. `{target}` stands for each unit's first path component. `asm` is assembly no C compiles
+        to, `library` someone else's code linked in: agents are never handed either, and the page can filter them."""
+        try:
+            entries = (fp.manifest or {}).get("not_c") or []
+        except (OSError, ValueError):
+            return {}
+        targets = sorted({u.name.split("/", 1)[0] for u in fp.units()} | {""})
+        out: dict[str, tuple[str, str]] = {}
+        for e in entries if isinstance(entries, list) else []:
+            if not isinstance(e, dict) or e.get("status") not in ("asm", "library") or not e.get("list"):
+                continue
+            for t in targets if "{target}" in str(e["list"]) else [""]:
+                try:
+                    p = fp.safe_path(str(e["list"]).replace("{target}", t))
+                    text = p.read_text(errors="replace", encoding="utf-8") if p.is_file() else ""
+                except (ForkError, OSError):
+                    continue
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith(("#", "//")):
+                        continue
+                    name = line.replace("=", " ").split()[0]
+                    out.setdefault(name, (e["status"], str(e.get("why") or "")))
+        return out
+
     def sync(self, slug: str, log=print, rep: dict | None = None, broken: Collection[str] = frozenset(),
              agent: Agent | None = None) -> dict:
         """Measure the whole project with objdiff (or take a report just made) and update every function's state.
@@ -233,6 +266,7 @@ class ForkCreateMixin:
         used = {r["name"] for r in all_rows}
         nth: dict[tuple[str, str], int] = defaultdict(int)  # a unit can hold two functions of the same name
         held = {u: self._held(proj, u) for u in {r["unit"] for r in all_rows if '"held"' in (r["meta"] or "")}}
+        not_c = self.not_c(fp)  # functions the project says never become C: tagged, never handed to agents
         texts: dict[str, str | None] = {}  # unit -> its source, for functions that match now
         # a function whose code moved to another file of its module (a split) keeps its row: attempts, notes, claims
         here: set[tuple[str, str, int]] = set()
@@ -275,6 +309,8 @@ class ForkCreateMixin:
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
                 if status == "open" and any(meta.get(k) for k in ASM_KEYS):
                     status = "asm"  # hand-written assembly (here or in its twin elsewhere): not for agents
+                if status != "matched" and sym in not_c:
+                    status, meta["not_c"] = not_c[sym]
                 if old is not None and status != "matched" and isinstance(self._meta(old).get("matrix"), dict):
                     meta["matrix"] = self._meta(old)["matrix"]  # a saved compiler-matrix match keeps its recipe
                 score = None if fuzzy is None else scaled(fuzzy, n)
@@ -310,7 +346,15 @@ class ForkCreateMixin:
                     with_history |= {r["function_id"] for r in db.execute(
                         f"SELECT DISTINCT function_id FROM attempts WHERE function_id IN ({','.join('?' * len(chunk))})",
                         chunk)}
+                by_id = {r["id"]: r for rs in moved.values() for r in rs}
                 for fid in gone:
+                    sym = self._meta(by_id[fid]).get("symbol") if fid in by_id else None
+                    if sym in not_c and by_id[fid]["status"] != "matched":
+                        # the project took it out of its report because it never becomes C: keep it, tagged
+                        meta = {**self._meta(by_id[fid]), "not_c": not_c[sym][1]}
+                        db.execute("UPDATE functions SET status=?, meta=? WHERE id=?", (not_c[sym][0], json.dumps(meta), fid))
+                        db.execute("DELETE FROM claims WHERE function_id=?", (fid,))
+                        continue
                     if fid in with_history:
                         db.execute("UPDATE functions SET status='nosource' WHERE id=?", (fid,))
                     else:

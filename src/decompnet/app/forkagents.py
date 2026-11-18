@@ -312,13 +312,17 @@ class ForkAgentMixin:
     def list_functions(self, slug: str, status: str = "open", limit: int = 40) -> str:
         proj, _, _ = self.get(slug)
         where = {"open": "status='open'", "matched": "status='matched'", "all": "1",
-                 "stuck": "stuck_at IS NOT NULL AND status='open'"}.get(status)
+                 "stuck": "stuck_at IS NOT NULL AND status='open'",
+                 "not_c": "status IN ('asm', 'library')"}.get(status)
         if where is None:
-            raise NetworkError("status must be open, matched, all or stuck")
-        rows = self.net.store.all(f"SELECT name, unit, n_insns, status, best_score FROM functions WHERE project_id=? "
+            raise NetworkError("status must be open, matched, all, stuck or not_c")
+        rows = self.net.store.all(f"SELECT name, unit, n_insns, status, best_score, meta FROM functions WHERE project_id=? "
                                   f"AND {where} ORDER BY n_insns LIMIT ?", proj["id"], max(1, min(int(limit), 200)))
         out = [f"{r['name']:<40} {r['unit']:<36} {r['n_insns']:>5} insns  "
-               f"{'matched' if r['status'] == 'matched' else 'best ' + str(r['best_score']) if r['best_score'] is not None else 'new'}"
+               + (r["status"] + (f": {self._meta(r).get('not_c')}" if self._meta(r).get("not_c") else "")
+                  if r["status"] in ("asm", "library") else
+                  "matched" if r["status"] == "matched" else
+                  f"best {r['best_score']}" if r["best_score"] is not None else "new")
                for r in rows]
         return "\n".join(out) or "none"
 
