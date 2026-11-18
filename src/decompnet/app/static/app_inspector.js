@@ -159,6 +159,14 @@ async function refreshFn(first) {
     $("fnPin").classList.toggle("on", pinned);
     $("fnPin").textContent = pinned ? "★ Next (on)" : "★ Next";
     $("fnPin").onclick = () => togglePrio(d.name, !pinned).then(() => refreshFn(false));
+    $("fnGiveBack").hidden = d.status !== "unmatchable";
+    $("fnGiveBack").onclick = async () => {
+      try {
+        await api("/api/function/give_back", { method: "POST", body: { slug: S.slug, name: d.name } });
+        toast("Back in the queue; the agents' verdicts are cleared.");
+        refreshFn(false);
+      } catch (e) { toast(esc(e.message), "err"); }
+    };
     $("noteAdd").onclick = async () => {
       const text = $("noteText").value.trim();
       if (!text) return;

@@ -157,6 +157,20 @@ def register(ctx: ServerContext) -> None:
         net.set_instructions(slug, str(data.get("text", "")))
         return net.overview(slug)
 
+    def p_claim_order(slug, request, data):
+        """The order agents get functions in when they don't ask for one: "" (each agent's own), or a strategy."""
+        from ..network import STRATEGIES
+
+        order = str(data.get("order", ""))
+        if order and order not in STRATEGIES:
+            raise ValueError("order must be one of: " + ", ".join(STRATEGIES))
+        net._update_cfg(slug, lambda cfg: cfg.__setitem__("claim_order", order))
+        return {"claim_order": order}
+
+    def p_give_back(slug, request, data):
+        """A retired function back to the agents (forks)."""
+        return net.forks.give_back(slug, str(data.get("name", "")))
+
     def p_priority(slug, request, data):
         return {"priority": net.set_priority(slug, str(data.get("name", "")), bool(data.get("on", True)))}
 
@@ -264,6 +278,7 @@ def register(ctx: ServerContext) -> None:
         "/api/matrix/permute": (p_matrix_permute, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
+        "/api/claim_order": (p_claim_order, ["POST"]), "/api/function/give_back": (p_give_back, ["POST"]),
         "/api/analysis/task": (p_add_task, ["POST"]),
         "/api/analysis/prefill": (p_analysis_prefill, ["POST"]),
         "/api/analysis/features": (lambda s, r, d: net.features(s), ["GET"]),

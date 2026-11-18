@@ -22,6 +22,13 @@ from ..forks import drafts
 from ..forks.project import ForkProject
 from ..network import Agent, Network, NetworkError
 
+NOT_C_AGENTS, NOT_C_MODELS = 3, 2  # agents, of different models, who must agree a function is no C's
+
+
+def _model_of(agent: str) -> str:
+    """The model behind a helper's name: claude-code-3 and claude-code-7 are one model, codex-1 another."""
+    return re.sub(r"[-_ ]*\d+$", "", agent or "") or agent
+
 
 class ForkAutoMixin:
     def autopilot_prepare(self, slug: str) -> list[int]:
@@ -104,6 +111,53 @@ class ForkAutoMixin:
                     if span:
                         return text[:span[0]] + code + "\n" + text[span[0]:]
         return text.rstrip("\n") + "\n\n" + code
+
+    def vote_not_c(self, agent: Agent, slug: str, function: str, why: str) -> str:
+        """An agent's verdict that no C produces this function. Once NOT_C_AGENTS agents of NOT_C_MODELS different
+        models agree it is retired (status unmatchable, their reasons kept): out of the queue for good, until the
+        user gives it back. One agent alone can't take a function away, and two sessions of one model don't
+        outvote another model."""
+        fn = self._fn(slug, function)
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} is matched: C does produce it")
+        why = " ".join((why or "").split())
+        if len(why) < 15:
+            raise NetworkError("say what in the assembly no C produces (an instruction, a register use, a call into "
+                               "the middle of something): the next agents read it")
+        meta = self._meta(fn)
+        votes = [v for v in meta.get("not_c_votes") or [] if v.get("agent") != agent.name]
+        votes.append({"agent": agent.name, "model": _model_of(agent.name), "why": why[:300], "at": time.time()})
+        agents, models = {v["agent"] for v in votes}, {v["model"] for v in votes}
+        retire = fn["status"] != "unmatchable" and len(agents) >= NOT_C_AGENTS and len(models) >= NOT_C_MODELS
+        meta["not_c_votes"] = votes[-12:]
+        with self.net.store.tx() as db:
+            if retire:
+                reasons = list(dict.fromkeys(v["why"] for v in votes))[:3]
+                meta["unmatchable"] = f"{len(agents)} agents of {len(models)} models agree no C produces it: " + " | ".join(reasons)
+                db.execute("UPDATE functions SET status='unmatchable', meta=?, changed_at=? WHERE id=?",
+                           (json.dumps(meta), time.time(), fn["id"]))
+                db.execute("DELETE FROM claims WHERE function_id=? AND agent_id<>?", (fn["id"], agent.id))
+                self.net._event(db, proj_id := fn["project_id"], agent.id, "retire", fn["name"])
+                db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                           (proj_id, fn["id"], agent.id, f"retired: {meta['unmatchable']}", time.time()))
+            else:
+                db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
+        if retire:
+            return f"{fn['name']} is retired: {len(agents)} agents of {len(models)} models agree no C produces it."
+        return (f"Your verdict is recorded ({len(agents)} of {NOT_C_AGENTS} agents, {len(models)} of {NOT_C_MODELS} "
+                "models so far): the function stays in the queue until enough agents agree.")
+
+    def give_back(self, slug: str, function: str) -> dict:
+        """The user's word over the agents': a retired function goes back to the queue, its verdicts cleared."""
+        fn = self._fn(slug, function)
+        meta = self._meta(fn)
+        meta.pop("unmatchable", None)
+        meta.pop("not_c_votes", None)
+        with self.net.store.tx() as db:
+            db.execute("UPDATE functions SET status=CASE WHEN status='unmatchable' THEN 'open' ELSE status END, meta=?, "
+                       "changed_at=? WHERE id=?", (json.dumps(meta), time.time(), fn["id"]))
+            self.net._event(db, fn["project_id"], None, "note", f"{fn['name']} given back to the agents")
+        return {"ok": True}
 
     def release(self, agent: Agent, slug: str, function: str, notes: str) -> str:
         fn = self._fn(slug, function)

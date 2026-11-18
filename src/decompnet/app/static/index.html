@@ -363,6 +363,15 @@
             <p class="muted small">Every agent on this project gets these with its task: what to focus on, what you know about the game, conventions, things to leave alone.</p>
             <textarea id="instrEdit" rows="6" placeholder="Focus on the game's own code first; leave zlib for later.&#10;The struct at 0x8004AE34 is the player (hp at +0x20).&#10;Name functions in snake_case."></textarea>
             <div class="row"><button class="primary small-btn" id="instrSave" type="button">Save instructions</button></div>
+            <div class="row"><label class="muted small" for="claimOrder">Agents get functions in this order</label>
+              <select id="claimOrder" title="Applies to every claim that doesn't name a function">
+                <option value="">Each agent's own choice</option>
+                <option value="untried">Not tried yet first</option>
+                <option value="easiest">Smallest first</option>
+                <option value="closest">Closest to matching first</option>
+                <option value="finish">Files closest to done first</option>
+                <option value="hardest">Largest first</option>
+              </select></div>
           </div>
         </section>
         <section class="panel">
@@ -582,6 +591,7 @@
       <div class="row">
         <span class="badge" id="fnStatus"></span>
         <button class="ghost small-btn pin" id="fnPin" type="button" title="Agents take this function next">★ Next</button>
+        <button class="ghost small-btn" id="fnGiveBack" type="button" title="Agents agreed no C produces it; give it back to the queue" hidden>Give back</button>
         <button class="ghost small-btn" id="fnConsole" type="button" title="Open this function in the RE console (REA: Ghidra pseudocode, flow graph, callers)" hidden>RE console</button>
         <button class="ghost icon" id="fnPrev" type="button" aria-label="Previous function" title="Previous function (K)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.3 2.7 11.4 3.8 7.2 8l4.2 4.2-1.1 1.1L5 8z"/></svg></button>
         <button class="ghost icon" id="fnNext" type="button" aria-label="Next function" title="Next function (J)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 2.7 4.6 3.8 8.8 8l-4.2 4.2 1.1 1.1L11 8z"/></svg></button>

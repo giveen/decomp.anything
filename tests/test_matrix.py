@@ -638,3 +638,51 @@ def test_functions_the_project_says_never_become_c_are_tagged_and_never_handed_o
         (root / ".decomp.wtf.json").write_text(json.dumps(manifest))
         net.forks.sync(slug, log=lambda *_: None)
     assert net.store.one("SELECT status FROM functions WHERE name=?", name)["status"] == "open"
+
+
+@needs_tools
+def test_three_agents_of_two_models_retire_what_no_c_produces_until_the_user_gives_it_back(fork):
+    net, slug, _ = fork
+    row = net.store.one("SELECT name FROM functions WHERE status='open' ORDER BY name DESC LIMIT 1")
+    if row is None:
+        pytest.skip("no open function left in this run")
+    name = row["name"]
+    why = "jr $t2 to the BIOS table at 0xA0: a trampoline no C produces"
+    said = []
+    for who in ("claude-code-1", "claude-code-2", "codex-1"):
+        agent, _ = net.local_agent(who)
+        net.claim(agent, slug, name)
+        said.append(tools.call(net, agent, slug, "release_function", {"function": name, "notes": why, "not_c": True}))
+    # one model's two sessions aren't enough on their own
+    assert "2 of 3 agents, 1 of 2 models" in said[1] and "Released" in said[1]
+    assert "retired: 3 agents of 2 models agree" in said[2]
+    fn = net.store.one("SELECT status, meta FROM functions WHERE name=?", name)
+    assert fn["status"] == "unmatchable" and len(json.loads(fn["meta"])["not_c_votes"]) == 3
+    late, _ = net.local_agent("claude-code-9")
+    assert all((net.claim_row(late, slug) or {"name": None})["name"] != name for _ in range(1))
+    net.forks.sync(slug, log=lambda *_: None)  # a sync keeps the verdict
+    assert net.store.one("SELECT status FROM functions WHERE name=?", name)["status"] == "unmatchable"
+    net.forks.give_back(slug, name)
+    back = net.store.one("SELECT status, meta FROM functions WHERE name=?", name)
+    assert back["status"] == "open" and "not_c_votes" not in json.loads(back["meta"])
+    with pytest.raises(NetworkError, match="say what in the assembly"):
+        agent, _ = net.local_agent("codex-2")
+        net.forks.vote_not_c(agent, slug, name, "hard")
+
+
+@needs_tools
+def test_the_owner_sets_the_order_agents_get_functions_in(fork):
+    net, slug, _ = fork
+    agent, _ = net.local_agent("order-test")
+    net._update_cfg(slug, lambda cfg: cfg.__setitem__("claim_order", "untried"))
+    try:
+        got = net.claim_row(agent, slug, None, "hardest")  # the agent's own strategy doesn't override the owner's
+        if got is None:
+            pytest.skip("nothing left to claim in this run")
+        untried = net.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open' AND "
+                                "attempts=0", net.project_row(slug)["id"])["n"]
+        if untried:  # one nobody compiled, though the agent asked for the hardest
+            assert got["attempts"] == 0
+        net.release(agent, got["name"], "", slug)
+    finally:
+        net._update_cfg(slug, lambda cfg: cfg.__setitem__("claim_order", ""))

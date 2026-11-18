@@ -43,6 +43,8 @@ STRATEGIES = {
     # near-misses, the ones given up on least first (else every agent resumes the same stuck one)
     "closest": "f.best_score IS NULL, f.abandons ASC, CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC",
     "hardest": "f.n_insns DESC",
+    # what nobody compiled yet first (a first pass over every function), then the smallest
+    "untried": "f.attempts > 0, f.n_insns ASC",
     "random": "RANDOM()",
 }
 
@@ -340,6 +342,10 @@ class Network:
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
             else:
                 proj = proj or self._project(project)  # a strategy always picks from one project
+                # the project's owner may set the order: it applies to every claim without a function
+                order = (json.loads(proj["config"] or "{}") or {}).get("claim_order")
+                if order in STRATEGIES:
+                    strategy = order
                 fn = db.execute(
                     f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                         AND f.id NOT IN (SELECT function_id FROM claims)

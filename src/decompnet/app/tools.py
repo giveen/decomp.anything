@@ -148,7 +148,9 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
    values) with edit_file until file_status says it matches; decomp.anything then links the file.
 6. compile_and_diff says when to move on (no better after 4 compiles in a row; up to 10 for big functions):
    then release_function with precise notes (what you tried, what is left) and claim the next. Very large
-   functions: get the structure right first; a near miss is worth the extra compiles.
+   functions: get the structure right first; a near miss is worth the extra compiles; repeated calls with other
+   numbers go in a local macro sent with the function. A function no C produces (an instruction C never emits, a
+   BIOS call trampoline): release_function(..., not_c=true) with the evidence in the notes.
 7. A miss names observed patterns (gp-relative or %hi/%lo addressing, delay slots, nops after loads, registers).
    compiler_matrix(function) tests compiler/context hypotheses, prioritizing verified recipes from this file.
    Even a large improvement can leave a source error; only byte verification declares a matrix match.
@@ -297,6 +299,17 @@ def _matrix(net: RomNetwork, agent: Agent, slug: str, function: str, source: str
     return res["text"] + "\n\n" + net.forks.matrix_permute(agent, slug, function)["text"]
 
 
+def _release(net: RomNetwork, agent: Agent, slug: str, function: str, notes: str, not_c: bool) -> str:
+    """release_function; with not_c, the agent's verdict that no C produces the function goes with it (forks)."""
+    verdict = ""
+    if not_c:
+        if not net.fork_slug(slug):
+            raise NetworkError("not_c is for forks; in a ROM project retire_function takes a function out with the evidence")
+        verdict = net.forks.vote_not_c(agent, slug, net.resolve_function(agent, slug, function), notes)
+    released = net.release(agent, function, notes, slug)
+    return f"{verdict}\n{released}" if verdict else released
+
+
 def _rea_tool(net: RomNetwork, agent: Agent, slug: str, tool: str, arguments=None) -> str:
     if isinstance(arguments, str):
         try:
@@ -326,7 +339,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "read_artifact_entry": lambda net, agent, slug, entry, offset=0, length=256:
         net.analysis_read_entry(slug, entry, offset, length),
     "write_source": lambda net, agent, slug, function, source: net.write_source(agent, slug, function, source),
-    "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
+    "release_function": lambda net, agent, slug, function, notes, not_c=False:
+        _release(net, agent, slug, function, notes, bool(not_c)),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
         net.edit_context(agent, slug, old, new, message, function or None),
@@ -641,10 +655,16 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "read_artifact_entry", entry=entry, offset=offset, length=length)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def release_function(ctx: Context, function: str, notes: str) -> str:
+    async def release_function(ctx: Context, function: str, notes: str, not_c: bool = False) -> str:
         """Give up a function you're stuck on. Notes are required: what you tried, what is left. Your best
-        attempt is kept for the next agent."""
-        return await run(ctx, "release_function", function=function, notes=notes)
+        attempt is kept for the next agent.
+
+        Args:
+            not_c: (forks) your verdict that NO C produces this function, with the evidence in `notes` (an
+                instruction C never emits, a BIOS call trampoline, a jump into another function). When 3 agents of
+                2 different models agree, it leaves the queue for good, so nobody tries it again. Not for a
+                function that is merely hard."""
+        return await run(ctx, "release_function", function=function, notes=notes, not_c=not_c)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def get_context(ctx: Context, function: str = "") -> str:

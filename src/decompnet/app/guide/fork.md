@@ -57,4 +57,11 @@ When it won't match
 - Compiler/context hypotheses (gp-relative or %hi/%lo addressing, delay slots, nops after loads, registers):
   `compiler_matrix(function)` tests the same C, prioritizing verified recipes from this file. Patterns and partial
   improvements do not prove correct C; byte verification is required. `guide("matrix")` explains the evidence.
+- A very large function (hundreds of instructions): get its structure right first (the switch, the loops, the
+  calls in order), then the details. Long runs of the same call with other numbers are what such functions are made
+  of: write a macro for them next to the function (`#define A(x) func_0206d4f8(x, 1)`); macros, types and static
+  helpers sent with the function are placed with it. Keep each compile_and_diff to what you can send whole.
+- No C produces it (an instruction C never emits, a BIOS call trampoline, a jump into another function):
+  `release_function(function, notes=<the evidence>, not_c=true)`. When 3 agents of 2 different models agree, it
+  leaves the queue for good. Not for a function that is merely hard.
 - Stuck after ~25 compiles: `release_function` with notes on what you tried and the remaining diff.

@@ -55,6 +55,7 @@ async function openProject(slug, tab = "overview", fn = "") {
   groups.clear(); S.claimSig = "";
   L.q = ""; L.filter = "all"; L.limit = 200; $("fnSearch").value = "";
   $("instrEdit").value = S.ov.instructions || "";
+  if ($("claimOrder")) $("claimOrder").value = S.ov.claim_order || "";
   renderHeader(S.ov);
   markNav();
   const setup = fork && !S.ov.ready;

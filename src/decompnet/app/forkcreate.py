@@ -306,11 +306,15 @@ class ForkCreateMixin:
                         fuzzy = None if fuzzy is None else min(fuzzy, 99.99)
                 if old is not None:
                     meta.update({k: v for k, v in self._meta(old).items() if k in ASM_KEYS})
+                    # agents' verdicts that no C produces it, and the retirement they agreed on
+                    meta.update({k: v for k, v in self._meta(old).items() if k in ("not_c_votes", "unmatchable")})
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
                 if status == "open" and any(meta.get(k) for k in ASM_KEYS):
                     status = "asm"  # hand-written assembly (here or in its twin elsewhere): not for agents
                 if status != "matched" and sym in not_c:
                     status, meta["not_c"] = not_c[sym]
+                elif status != "matched" and old is not None and old["status"] == "unmatchable":
+                    status = "unmatchable"  # retired by agents' agreement, until the user gives it back
                 if old is not None and status != "matched" and isinstance(self._meta(old).get("matrix"), dict):
                     meta["matrix"] = self._meta(old)["matrix"]  # a saved compiler-matrix match keeps its recipe
                 score = None if fuzzy is None else scaled(fuzzy, n)
@@ -349,6 +353,8 @@ class ForkCreateMixin:
                 by_id = {r["id"]: r for rs in moved.values() for r in rs}
                 for fid in gone:
                     sym = self._meta(by_id[fid]).get("symbol") if fid in by_id else None
+                    if by_id.get(fid) is not None and by_id[fid]["status"] == "unmatchable":
+                        continue  # retired: kept with its verdicts
                     if sym in not_c and by_id[fid]["status"] != "matched":
                         # the project took it out of its report because it never becomes C: keep it, tagged
                         meta = {**self._meta(by_id[fid]), "not_c": not_c[sym][1]}

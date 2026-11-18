@@ -261,6 +261,13 @@ $("instrSave").onclick = async () => {
     toast("Saved. Agents get them from their next task on.");
   } catch (e) { toast(esc(e.message), "err"); }
 };
+$("claimOrder").onchange = async () => {
+  try {
+    const r = await api("/api/claim_order", { method: "POST", body: { slug: S.slug, order: $("claimOrder").value } });
+    S.ov.claim_order = r.claim_order;
+    toast(r.claim_order ? "Agents now get functions in this order." : "Each agent chooses its own order again.");
+  } catch (e) { toast(esc(e.message), "err"); }
+};
 async function togglePrio(name, on) {
   try {
     const r = await api("/api/priority", { method: "POST", body: { slug: S.slug, name, on } });

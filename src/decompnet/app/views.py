@@ -80,7 +80,7 @@ class ViewsMixin:
                                                  k: getattr(twins, k) for k in ("state", "pairs", "tried", "matched", "asm")},
                                              "helper_matches": helpers,
                                              "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
-                                             "priority": cfg.get("priority", [])}
+                                             "priority": cfg.get("priority", []), "claim_order": cfg.get("claim_order") or ""}
 
     def _repair_pc_toolchain(self, proj, cfg) -> None:
         """A PC project must compile for the target's architecture. Older imports and manual picks can name
