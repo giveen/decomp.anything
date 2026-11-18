@@ -261,6 +261,17 @@ $("instrSave").onclick = async () => {
     toast("Saved. Agents get them from their next task on.");
   } catch (e) { toast(esc(e.message), "err"); }
 };
+/* The owner's focus: a named set of functions (say, the text engine and menus) with its own progress. */
+function renderFocus(f) {
+  const line = $("focusLine"), opt = $("claimOrderFocus");
+  if (!line || !opt) return;
+  opt.hidden = !f;
+  if (!f) { line.hidden = true; return; }
+  opt.textContent = `Focus first: ${f.name}`;
+  const code = f.bytes ? (100 * f.matched_bytes / f.bytes) : 0;
+  line.hidden = false;
+  line.textContent = `${f.name}: ${code.toFixed(1)}% of its code matched · ${f.matched}/${f.functions} functions`;
+}
 $("claimOrder").onchange = async () => {
   try {
     const r = await api("/api/claim_order", { method: "POST", body: { slug: S.slug, order: $("claimOrder").value } });

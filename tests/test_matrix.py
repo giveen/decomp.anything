@@ -686,3 +686,31 @@ def test_the_owner_sets_the_order_agents_get_functions_in(fork):
         net.release(agent, got["name"], "", slug)
     finally:
         net._update_cfg(slug, lambda cfg: cfg.__setitem__("claim_order", ""))
+
+
+@needs_tools
+def test_the_owners_focus_has_its_own_progress_and_comes_first_in_the_queue(fork):
+    """A named set of functions (say, the text engine and the menus): its own progress, first in the queue."""
+    net, slug, _ = fork
+    proj = net.project_row(slug)
+    rows = net.store.all("SELECT name, status, size FROM functions WHERE project_id=? AND status IN ('open', 'matched') "
+                         "ORDER BY n_insns DESC", proj["id"])
+    opened = [r["name"] for r in rows if r["status"] == "open"]
+    matched = [r for r in rows if r["status"] == "matched"]
+    if not opened or not matched:
+        pytest.skip("needs an open and a matched function in this run")
+    focus = [opened[0], matched[0]["name"], "no_such_function"]
+    net._update_cfg(slug, lambda cfg: cfg.update(focus={"name": "Texto e menus", "functions": focus}, claim_order="focus"))
+    try:
+        got = net.focus_progress(net.project_row(slug), json.loads(net.project_row(slug)["config"]))
+        assert got["name"] == "Texto e menus" and got["functions"] == 2 and got["matched"] == 1
+        assert got["matched_bytes"] == matched[0]["size"]
+        assert net.overview(slug)["focus"]["functions"] == 2
+        assert "The owner's focus: Texto e menus, 1/2 functions matched" in tools.project_info(net, slug)
+        agent, _ = net.local_agent("focus-test")
+        first = net.claim_row(agent, slug, None, "easiest")  # the largest open function, because it is in the focus
+        assert first is not None and first["name"] == opened[0]
+        net.release(agent, first["name"], "", slug)
+    finally:
+        net._update_cfg(slug, lambda cfg: cfg.update(focus={}, claim_order=""))
+    assert net.overview(slug)["focus"] is None

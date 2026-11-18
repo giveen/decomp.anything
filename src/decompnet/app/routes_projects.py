@@ -162,10 +162,18 @@ def register(ctx: ServerContext) -> None:
         from ..network import STRATEGIES
 
         order = str(data.get("order", ""))
-        if order and order not in STRATEGIES:
-            raise ValueError("order must be one of: " + ", ".join(STRATEGIES))
+        if order and order not in (*STRATEGIES, "focus"):
+            raise ValueError("order must be one of: " + ", ".join((*STRATEGIES, "focus")))
         net._update_cfg(slug, lambda cfg: cfg.__setitem__("claim_order", order))
         return {"claim_order": order}
+
+    def p_focus(slug, request, data):
+        """The owner's focus: a name and the functions in it (by name); an empty list clears it."""
+        names = [str(n) for n in (data.get("functions") or []) if str(n).strip()][:5000]
+        name = str(data.get("name") or "Focus").strip()[:80]
+        net._update_cfg(slug, lambda cfg: cfg.__setitem__("focus", {"name": name, "functions": names} if names else {}))
+        proj = net.project_row(slug)
+        return {"focus": net.focus_progress(proj, json.loads(proj["config"] or "{}"))}
 
     def p_give_back(slug, request, data):
         """A retired function back to the agents (forks)."""
@@ -279,6 +287,7 @@ def register(ctx: ServerContext) -> None:
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
         "/api/claim_order": (p_claim_order, ["POST"]), "/api/function/give_back": (p_give_back, ["POST"]),
+        "/api/focus": (p_focus, ["POST"]),
         "/api/analysis/task": (p_add_task, ["POST"]),
         "/api/analysis/prefill": (p_analysis_prefill, ["POST"]),
         "/api/analysis/features": (lambda s, r, d: net.features(s), ["GET"]),

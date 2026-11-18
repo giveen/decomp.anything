@@ -198,6 +198,13 @@ def _search_code(net: RomNetwork, slug: str, pattern: str, glob: str = "") -> st
 def project_info(net: RomNetwork, slug: str) -> str:
     wish = net.instructions(slug)
     text = _project_info(net, slug)
+    proj = net.project_row(slug)
+    focus = net.focus_progress(proj, json.loads(proj["config"] or "{}"))
+    if focus:
+        text += (f"\nThe owner's focus: {focus['name']}, {focus['matched']}/{focus['functions']} functions matched "
+                 f"({100 * focus['matched_bytes'] / max(focus['bytes'], 1):.1f}% of its code)"
+                 + (": claim_function hands these out first." if json.loads(proj["config"] or "{}").get("claim_order") == "focus"
+                    else "."))
     if (facts := net.intake_line(slug)):
         text += "\n" + facts
     text += f"\nThe user's instructions for this project (they come first):\n{wish}" if wish else ""

@@ -80,7 +80,22 @@ class ViewsMixin:
                                                  k: getattr(twins, k) for k in ("state", "pairs", "tried", "matched", "asm")},
                                              "helper_matches": helpers,
                                              "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
-                                             "priority": cfg.get("priority", []), "claim_order": cfg.get("claim_order") or ""}
+                                             "priority": cfg.get("priority", []), "claim_order": cfg.get("claim_order") or "",
+                                             "focus": self.focus_progress(proj, cfg)}
+
+    def focus_progress(self, proj, cfg: dict) -> dict | None:
+        """How far the project's focus (a named set of functions the owner cares about first) is: functions and
+        bytes matched, over what can become C (hand-written assembly, libraries and retired ones aren't counted)."""
+        focus = cfg.get("focus") or {}
+        names = focus.get("functions") or []
+        if not names:
+            return None
+        row = self.store.one(
+            "SELECT COUNT(*) AS n, SUM(status='matched') AS m, SUM(size) AS b, SUM(CASE WHEN status='matched' THEN size "
+            "ELSE 0 END) AS mb FROM functions WHERE project_id=? AND name IN (SELECT value FROM json_each(?)) AND "
+            "status NOT IN ('asm', 'library', 'nosource', 'unmatchable')", proj["id"], json.dumps(names))
+        return {"name": focus.get("name") or "Focus", "functions": row["n"] or 0, "matched": row["m"] or 0,
+                "bytes": row["b"] or 0, "matched_bytes": row["mb"] or 0}
 
     def _repair_pc_toolchain(self, proj, cfg) -> None:
         """A PC project must compile for the target's architecture. Older imports and manual picks can name

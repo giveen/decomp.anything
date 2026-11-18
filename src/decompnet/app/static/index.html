@@ -366,12 +366,14 @@
             <div class="row"><label class="muted small" for="claimOrder">Agents get functions in this order</label>
               <select id="claimOrder" title="Applies to every claim that doesn't name a function">
                 <option value="">Each agent's own choice</option>
+                <option value="focus" id="claimOrderFocus" hidden>Focus first</option>
                 <option value="untried">Not tried yet first</option>
                 <option value="easiest">Smallest first</option>
                 <option value="closest">Closest to matching first</option>
                 <option value="finish">Files closest to done first</option>
                 <option value="hardest">Largest first</option>
               </select></div>
+            <p class="muted small" id="focusLine" hidden></p>
           </div>
         </section>
         <section class="panel">

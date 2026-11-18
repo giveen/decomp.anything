@@ -343,17 +343,23 @@ class Network:
             else:
                 proj = proj or self._project(project)  # a strategy always picks from one project
                 # the project's owner may set the order: it applies to every claim without a function
-                order = (json.loads(proj["config"] or "{}") or {}).get("claim_order")
+                pcfg = json.loads(proj["config"] or "{}") or {}
+                order = pcfg.get("claim_order")
+                focus = json.dumps((pcfg.get("focus") or {}).get("functions") or []) if order == "focus" else None
                 if order in STRATEGIES:
                     strategy = order
+                elif focus is not None:
+                    strategy = "closest"  # within the focus, and after it: what is closest to matching
                 fn = db.execute(
                     f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                         AND f.id NOT IN (SELECT function_id FROM claims)
                         AND COALESCE(json_extract(NULLIF(f.meta, ''), '$.matrix.verified'), 0)=0
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                         ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
-                                            AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
-                    (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                                            AND created_at > ?),
+                                 {"f.name IN (SELECT value FROM json_each(?)) DESC, " if focus else ""}{STRATEGIES[strategy]}
+                        LIMIT 1""",
+                    (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN, *((focus,) if focus else ())),
                 ).fetchone()
                 if fn is None:
                     return None
